@@ -42,7 +42,7 @@ namespace SleevesOpenings.Commands
                 List<ElectricalSegment> segments;
                 using (var form = new ElectricalForm(levels, rules.Systems.Electrical))
                 {
-                    if (form.ShowDialog() != DialogResult.OK) return Result.Cancelled;
+                    if (form.ShowDialog(UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
                     segments = form.Result;
                 }
                 if (segments == null || segments.Count == 0) return Result.Cancelled;

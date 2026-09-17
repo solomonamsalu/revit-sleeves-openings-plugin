@@ -41,7 +41,7 @@ namespace SleevesOpenings.Commands
                 List<RefrigerationStack> stacks;
                 using (var form = new RefrigerationForm(levels, rules.Systems.Refrigeration))
                 {
-                    if (form.ShowDialog() != DialogResult.OK) return Result.Cancelled;
+                    if (form.ShowDialog(UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
                     state.AcSystem = form.IsPtac ? "PTAC" : form.IsSplit ? "Split" : "VRF";
                     using (var t = new Transaction(doc, "Sleeves & Openings: AC system")) { t.Start(); ProjectStore.Save(doc, state); t.Commit(); }
                     if (form.IsPtac)

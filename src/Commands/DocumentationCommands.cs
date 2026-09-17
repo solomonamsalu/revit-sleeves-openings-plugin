@@ -63,7 +63,7 @@ namespace SleevesOpenings.Commands
 
                 var openings = RiserIndex.AllOpenings(doc);
                 var categories = openings.Select(o => o.Instance.Category).Where(c => c != null)
-                    .GroupBy(c => c.Id.IntegerValue).Select(g => g.First()).ToList();
+                    .GroupBy(c => c.Id.Value).Select(g => g.First()).ToList();
                 if (categories.Count == 0)
                 {
                     TaskDialog.Show("Schedule", "No add-in openings in the model yet.");

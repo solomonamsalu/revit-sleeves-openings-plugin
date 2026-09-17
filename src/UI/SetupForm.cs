@@ -63,7 +63,7 @@ namespace SleevesOpenings.UI
             var roleCol = new DataGridViewComboBoxColumn { HeaderText = "Role", Name = "Role", FillWeight = 60 };
             roleCol.Items.AddRange(Enum.GetNames(typeof(LevelRole)));
             _levelGrid.Columns.Add(roleCol);
-            foreach (var lv in _levels.All.AsEnumerable().Reverse())   // top of building first
+            foreach (var lv in _levels.Everything.AsEnumerable().Reverse())   // top of building first, reference levels included so they can be un-ignored
                 _levelGrid.Rows.Add(lv.Name, lv.Elevation.ToString("0.##"), lv.Role.ToString());
             levelBox.Controls.Add(_levelGrid);
             root.Controls.Add(levelBox, 0, 0);
@@ -133,7 +133,7 @@ namespace SleevesOpenings.UI
             {
                 var name = (string)row.Cells["Level"].Value;
                 var role = (LevelRole)Enum.Parse(typeof(LevelRole), (string)row.Cells["Role"].Value);
-                var lv = _levels.All.First(l => l.Name == name);
+                var lv = _levels.Everything.First(l => l.Name == name);
                 lv.Role = role;
             }
             _state.LevelRoles = _levels.ToRoles();

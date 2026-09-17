@@ -36,7 +36,7 @@ namespace SleevesOpenings.Commands
 
                 using (var form = new WorkflowForm(steps, WorkGate.FileName(doc)))
                 {
-                    if (form.ShowDialog() != DialogResult.OK || form.LaunchButtonId == null) return Result.Succeeded;
+                    if (form.ShowDialog(UI.RevitWindow.Instance) != DialogResult.OK || form.LaunchButtonId == null) return Result.Succeeded;
 
                     // Ribbon buttons of an add-in are postable as CustomCtrl_%CustomCtrl_%<tab>%<panel>%<button>.
                     var id = RevitCommandId.LookupCommandId(form.LaunchButtonId);

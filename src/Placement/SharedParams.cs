@@ -36,7 +36,7 @@ namespace SleevesOpenings.Placement
         public static List<Category> MappedCategories(Document doc, RuleSet rules, ProjectState state)
         {
             var cats = new Dictionary<long, Category>();
-            void Add(Category c) { if (c != null) cats[c.Id.IntegerValue] = c; }
+            void Add(Category c) { if (c != null) cats[c.Id.Value] = c; }
             Add(Category.GetCategory(doc, BuiltInCategory.OST_GenericModel));
             foreach (var role in FamilyRole.All)
                 Add(FamilyMapping.FindSymbol(doc, FamilyMapping.Get(rules, state, role))?.Category);

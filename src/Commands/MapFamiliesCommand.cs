@@ -32,7 +32,7 @@ namespace SleevesOpenings.Commands
         {
             using (var form = new FamilyMapForm(doc, rules, state))
             {
-                if (form.ShowDialog() != DialogResult.OK) return false;
+                if (form.ShowDialog(UI.RevitWindow.Instance) != DialogResult.OK) return false;
                 form.Apply();
                 using (var t = new Transaction(doc, "Sleeves & Openings: Map Families"))
                 {

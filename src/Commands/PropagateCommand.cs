@@ -63,7 +63,7 @@ namespace SleevesOpenings.Commands
 
                 using (var form = new PropagateForm(sources, levels, plan.GenLevel))
                 {
-                    if (form.ShowDialog() != DialogResult.OK) return Result.Cancelled;
+                    if (form.ShowDialog(UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
                     var items = form.Items();
 
                     PropagateReport report;
@@ -126,6 +126,21 @@ namespace SleevesOpenings.Commands
 
             var picked = uidoc.Selection.GetElementIds().Where(byId.ContainsKey).Select(id => byId[id]).ToList();
             if (picked.Count > 0) return picked;
+
+            // Nothing pre-selected: offer everything on the level (openings can be invisible in structural views,
+            // so picking is not always possible) or let the user pick.
+            var ask = new TaskDialog("Propagate")
+            {
+                MainInstruction = $"{all.Count} add-in opening(s) on {level.Name}",
+                MainContent = "Propagate all of them, or pick some in the view?",
+                CommonButtons = TaskDialogCommonButtons.Cancel
+            };
+            ask.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, $"Propagate all {all.Count}",
+                string.Join(", ", all.GroupBy(o => o.Data.System).Select(g => $"{g.Count()} {g.Key}")));
+            ask.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, "Pick openings in the view", "Only add-in openings on this level can be picked.");
+            var choice = ask.Show();
+            if (choice == TaskDialogResult.CommandLink1) return all;
+            if (choice != TaskDialogResult.CommandLink2) return null;
 
             try
             {

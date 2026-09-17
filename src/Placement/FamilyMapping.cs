@@ -42,10 +42,17 @@ namespace SleevesOpenings.Placement
         public string NameParam { get; set; }
         public string DownHeightParam { get; set; }
 
+        /// <summary>Checkbox-sized family (see FamilyRule.SizeToggles). Null = ordinary length parameters.</summary>
+        public Dictionary<string, string> SizeToggles { get; set; }
+        public string SizeTogglePattern { get; set; }
+
+        public bool UsesSizeToggles => SizeToggles != null && SizeToggles.Count > 0;
+
         public static FamilyMapEntry FromRule(FamilyRule r) => r == null ? null : new FamilyMapEntry
         {
             FamilyName = r.Family, TypeName = r.Type, WidthParam = r.WidthParam, LengthParam = r.LengthParam,
-            DiameterParam = r.DiameterParam, NameParam = r.NameParam, DownHeightParam = r.DownHeightParam
+            DiameterParam = r.DiameterParam, NameParam = r.NameParam, DownHeightParam = r.DownHeightParam,
+            SizeToggles = r.SizeToggles, SizeTogglePattern = r.SizeTogglePattern
         };
     }
 
@@ -60,9 +67,19 @@ namespace SleevesOpenings.Placement
 
         public static FamilyMapEntry Get(RuleSet rules, ProjectState state, string role)
         {
+            var rule = rules.Family(role);
             if (state?.FamilyMap != null && state.FamilyMap.TryGetValue(role, out var e) && !string.IsNullOrEmpty(e.FamilyName))
+            {
+                // Size toggles live in rules.json only; carry them onto the project mapping when it is the same family.
+                if (e.SizeToggles == null && rule?.SizeToggles != null &&
+                    string.Equals(e.FamilyName, rule.Family, StringComparison.OrdinalIgnoreCase))
+                {
+                    e.SizeToggles = rule.SizeToggles;
+                    e.SizeTogglePattern = rule.SizeTogglePattern;
+                }
                 return e;
-            return FamilyMapEntry.FromRule(rules.Family(role));
+            }
+            return FamilyMapEntry.FromRule(rule);
         }
 
         public static IEnumerable<FamilySymbol> AllSymbols(Document doc) =>

@@ -105,6 +105,10 @@ namespace SleevesOpenings.Audit
         private double? Actual(OpeningRecord o, Func<FamilyMapEntry, string> pick)
         {
             var map = MapFor(o);
+            // Checkbox-sized sleeve: the diameter is whichever "<prefix> <size>" toggle is on
+            if (map != null && map.UsesSizeToggles && pick(map) == map.DiameterParam && o.Data.Diameter.HasValue
+                && Enum.TryParse(o.Data.System, out SystemKind sys))
+                return SizeToggles.Current(o.Instance, map, sys);
             var name = map != null ? pick(map) : null;
             if (string.IsNullOrEmpty(name)) return null;
             var p = o.Instance.LookupParameter(name) ?? o.Instance.Symbol.LookupParameter(name);

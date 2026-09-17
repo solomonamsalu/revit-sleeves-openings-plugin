@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Newtonsoft.Json;
 
@@ -36,6 +36,14 @@ namespace SleevesOpenings.Rules
         [JsonProperty("diameterParam")] public string DiameterParam { get; set; }
         [JsonProperty("nameParam")] public string NameParam { get; set; }
         [JsonProperty("downHeightParam")] public string DownHeightParam { get; set; }
+
+        /// <summary>
+        /// "Checkbox" sleeve families: every size is pre-drawn and switched on by a Yes/No parameter named
+        /// "&lt;prefix&gt; &lt;size&gt;" (e.g. "Storm 6"). Maps each SystemKind to its prefix; the add-in turns every
+        /// toggle matching sizeTogglePattern off and the one for the system + size on.
+        /// </summary>
+        [JsonProperty("sizeToggles", ObjectCreationHandling = ObjectCreationHandling.Replace)] public Dictionary<string, string> SizeToggles { get; set; }
+        [JsonProperty("sizeTogglePattern")] public string SizeTogglePattern { get; set; }
     }
 
     public class NamingRules
@@ -182,7 +190,7 @@ namespace SleevesOpenings.Rules
     /// <summary>Manual p.2: rules that must be confirmed before any work starts.</summary>
     public class GeneralRules
     {
-        [JsonProperty("mustConfirm")] public List<string> MustConfirm { get; set; } = new List<string>
+        [JsonProperty("mustConfirm", ObjectCreationHandling = ObjectCreationHandling.Replace)] public List<string> MustConfirm { get; set; } = new List<string>
         {
             "I am working from the Owner's plan, not the Approved plan.",
             "I checked and confirmed this file is the latest version."
@@ -214,5 +222,6 @@ namespace SleevesOpenings.Rules
         [JsonProperty("bulkhead")] public string Bulkhead { get; set; } = "bulkhead";
         [JsonProperty("setback")] public string Setback { get; set; } = "setback|terrace";
         [JsonProperty("cellar")] public string Cellar { get; set; } = "cellar|basement";
+        [JsonProperty("ignore")] public string Ignore { get; set; } = @"\btos\b|top of (steel|slab|wall)|\bt\.?o\.?[sw]?\b|parapet";
     }
 }

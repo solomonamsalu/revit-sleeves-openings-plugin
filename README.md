@@ -1,14 +1,22 @@
 # Sleeves & Openings — Revit add-in
 
-Automates the office *Sleeves & Openings Standards Manual* inside Revit 2024.
+Automates the office *Sleeves & Openings Standards Manual* inside Revit 2024 and Revit 2026.
 See [FEATURES.md](FEATURES.md) for the full plan.
 
 ## Build & install
 ```
-dotnet build -c Release
-install.bat        # copies to %ProgramData%\Autodesk\Revit\Addins\2024
+dotnet build -c Release      # builds both: bin\Release\2024 (net48) and bin\Release\2026 (net10.0-windows)
+install.bat                  # copies each build to %ProgramData%\Autodesk\Revit\Addins\<year>
 ```
 Restart Revit; a **Sleeves & Openings** ribbon tab appears.
+
+| Revit | Target framework | Needs |
+|---|---|---|
+| 2024 | `net48` | .NET Framework 4.8 dev pack (in the .NET SDK) |
+| 2026 (26.5+) | `net10.0-windows` | .NET 10 SDK (`winget install Microsoft.DotNet.SDK.10`) |
+
+Build one version only: `dotnet build -c Release -f net10.0-windows`.
+Revit API DLLs are read from `C:\Program Files\Autodesk\Revit <year>`; override with `-p:RevitAPIPath=...`.
 
 ## Rules
 All sizes/clearances live in `Rules/rules.json` (inches). Lookup order:

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Reflection;
 using Autodesk.Revit.DB;
@@ -26,6 +26,7 @@ namespace SleevesOpenings
                                        "SleevesOpenings", "logs");
                 Directory.CreateDirectory(LogPath);
                 Log("Starting");
+                UI.RevitWindow.MainHandle = application.MainWindowHandle;
 
                 BuildRibbon(application);
                 return Result.Succeeded;

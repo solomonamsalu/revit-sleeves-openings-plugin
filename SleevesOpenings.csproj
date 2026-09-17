@@ -1,7 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    One build, two Revit versions:
+      net48           -> Revit 2024 (.NET Framework 4.8)   -> bin\<Config>\2024\
+      net10.0-windows -> Revit 2026 (.NET 10)             -> bin\<Config>\2026\
+    `dotnet build -c Release` produces both; install.bat copies each to its Addins folder.
+    Build one only:  dotnet build -c Release -f net10.0-windows
+  -->
   <PropertyGroup>
-    <TargetFramework>net48</TargetFramework>
+    <TargetFrameworks>net48;net10.0-windows</TargetFrameworks>
     <LangVersion>9.0</LangVersion>
     <OutputType>Library</OutputType>
     <RootNamespace>SleevesOpenings</RootNamespace>
@@ -13,11 +20,27 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <UseWindowsForms>true</UseWindowsForms>
     <UseWPF>true</UseWPF>
-    <DefineConstants>$(DefineConstants);REVIT2024</DefineConstants>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net48'">
+    <RevitVersion>2024</RevitVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
+    <RevitVersion>2026</RevitVersion>
+    <!-- .NET Core libraries don't copy NuGet DLLs to bin by default; Revit needs Newtonsoft next to the add-in -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <!-- CA1416: platform-compat analyzer flags every WinForms/WPF call; the add-in is Windows-only by definition -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
 
   <PropertyGroup>
-    <RevitAPIPath>C:\Program Files\Autodesk\Revit 2024</RevitAPIPath>
+    <RevitAPIPath>C:\Program Files\Autodesk\Revit $(RevitVersion)</RevitAPIPath>
+    <DefineConstants>$(DefineConstants);REVIT$(RevitVersion)</DefineConstants>
+    <OutputPath>bin\$(Configuration)\$(RevitVersion)\</OutputPath>
+    <!-- Each target needs its own obj folder too, or the two compiles overwrite each other's DLL -->
+    <IntermediateOutputPath>obj\$(Configuration)\$(RevitVersion)\</IntermediateOutputPath>
   </PropertyGroup>
 
   <ItemGroup>

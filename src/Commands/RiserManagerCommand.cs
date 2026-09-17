@@ -21,7 +21,7 @@ namespace SleevesOpenings.Commands
                 var state = ProjectStore.Load(doc);
                 var levels = LevelClassifier.Classify(doc, App.Rules(doc), state);
                 using (var form = new RiserManagerForm(uidoc, levels, state))
-                    form.ShowDialog();
+                    form.ShowDialog(UI.RevitWindow.Instance);
                 return Result.Succeeded;
             }
             catch (Exception ex)

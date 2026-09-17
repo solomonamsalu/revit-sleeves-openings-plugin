@@ -48,7 +48,7 @@ namespace SleevesOpenings.Placement
                 Label = data.Label, Riser = data.Riser
             };
             ApplySizes(inst, inst.Symbol, map, spec);
-            data.Width = width; data.Length = length; data.Diameter = diameter;
+            data.Width = width; data.Length = length; data.Diameter = spec.Diameter;   // toggles may have rounded up
             data.WriteTo(inst);
             SharedParams.Write(inst, data);
         }
@@ -139,6 +139,15 @@ namespace SleevesOpenings.Placement
         /// </summary>
         private void ApplySizes(FamilyInstance inst, FamilySymbol symbol, FamilyMapEntry map, OpeningSpec spec)
         {
+            // Checkbox-sized sleeve family: tick "<prefix> <size>", untick the rest. The stamp records the size shown.
+            if (spec.Diameter.HasValue && map.UsesSizeToggles)
+            {
+                var shown = SizeToggles.Apply(inst, map, spec.System, spec.Diameter.Value, out var note);
+                if (note != null) App.Log($"Size toggle ({spec.System} {spec.SizeText}): {note}");
+                if (shown.HasValue) { spec.Diameter = shown; return; }
+                // no toggle for this system: fall through to ordinary parameters (if any)
+            }
+
             var typeDriven = new List<(string name, double inches)>();
             foreach (var (name, val) in SizePairs(map, spec))
             {

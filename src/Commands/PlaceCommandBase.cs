@@ -102,6 +102,8 @@ namespace SleevesOpenings.Commands
                         t.Start();
                         try
                         {
+                            // One click = one riser: after the first placement the riser name counts up (ST-1, ST-2, ...)
+                            if (placed > 0) NextRiserName(doc, spec);
                             placed += PlaceAtClick(ctx, placer, spec, symbol, map, pt).Count;
                             t.Commit();
                         }
@@ -129,12 +131,38 @@ namespace SleevesOpenings.Commands
             }
         }
 
+        /// <summary>
+        /// Advances a riser name that ends in a number ("ST-1" -> "ST-2") to the next one not yet used in the model,
+        /// and renames the label to match. Names without a trailing number are left alone.
+        /// </summary>
+        private static void NextRiserName(Document doc, OpeningSpec spec)
+        {
+            if (string.IsNullOrEmpty(spec.Riser)) return;
+            var m = System.Text.RegularExpressions.Regex.Match(spec.Riser, @"^(.*?)(\d+)$");
+            if (!m.Success) return;
+
+            var used = new HashSet<string>(Risers.RiserIndex.AllOpenings(doc).Select(o => o.Riser).Where(r => r != null), StringComparer.OrdinalIgnoreCase);
+            string old = spec.Riser, stem = m.Groups[1].Value;
+            int n = int.Parse(m.Groups[2].Value);
+            string next;
+            do next = stem + (++n); while (used.Contains(next));
+
+            spec.Riser = next;
+            if (!string.IsNullOrEmpty(spec.Label)) spec.Label = spec.Label.Replace(old, next);
+        }
+
         /// <summary>Family/type for the role; opens Map Families if nothing usable is mapped yet.</summary>
         private FamilyMapEntry ResolveFamily(PlaceContext ctx, string role, out FamilySymbol symbol)
         {
             var map = FamilyMapping.Get(ctx.Rules, ctx.State, role);
             symbol = FamilyMapping.FindSymbol(ctx.Doc, map);
-            if (symbol != null) return map;
+            if (symbol != null)
+            {
+                // rules.json may name the family but not its parameters; detect them from the loaded family
+                if (map.WidthParam == null || map.LengthParam == null || map.DiameterParam == null || map.NameParam == null)
+                    FamilyMapping.GuessParams(ctx.Doc, symbol, map);
+                return map;
+            }
 
             var td = new TaskDialog(Title)
             {
@@ -203,7 +231,7 @@ namespace SleevesOpenings.Commands
         protected static InputForm Ask(string title, string info, params InputForm.Field[] fields)
         {
             var f = new InputForm(title, info, fields);
-            return f.ShowDialog() == DialogResult.OK ? f : null;
+            return f.ShowDialog(UI.RevitWindow.Instance) == DialogResult.OK ? f : null;
         }
     }
 }

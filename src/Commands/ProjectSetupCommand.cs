@@ -33,7 +33,7 @@ namespace SleevesOpenings.Commands
 
                 using (var form = new SetupForm(rules, levels, state))
                 {
-                    if (form.ShowDialog() != DialogResult.OK) return Result.Cancelled;
+                    if (form.ShowDialog(UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
                     form.Apply();
 
                     var report = new SetupReport();

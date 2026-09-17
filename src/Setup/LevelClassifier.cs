@@ -6,7 +6,8 @@ using SleevesOpenings.Rules;
 
 namespace SleevesOpenings.Setup
 {
-    public enum LevelRole { Cellar, Apartment, Setback, Roof, Bulkhead }
+    /// <summary>Ignore = reference level (top of steel, parapet, T.O. slab): never a floor, nothing is placed or propagated there.</summary>
+    public enum LevelRole { Cellar, Apartment, Setback, Roof, Bulkhead, Ignore }
 
     public class ClassifiedLevel
     {
@@ -22,7 +23,11 @@ namespace SleevesOpenings.Setup
     /// </summary>
     public class LevelMap
     {
-        public List<ClassifiedLevel> All { get; } = new List<ClassifiedLevel>();   // ascending elevation
+        /// <summary>Every level in the model, ascending, including ignored reference levels (for the setup grid).</summary>
+        public List<ClassifiedLevel> Everything { get; } = new List<ClassifiedLevel>();
+
+        /// <summary>The building's real levels, ascending: everything except Ignore. All placement/propagation/audit uses this.</summary>
+        public List<ClassifiedLevel> All => Everything.Where(l => l.Role != LevelRole.Ignore).ToList();
 
         public IEnumerable<ClassifiedLevel> Apartments => All.Where(l => l.Role == LevelRole.Apartment);
         public ClassifiedLevel Lowest => All.FirstOrDefault();
@@ -44,7 +49,7 @@ namespace SleevesOpenings.Setup
         }
 
         public Dictionary<string, string> ToRoles() =>
-            All.ToDictionary(l => l.Name, l => l.Role.ToString());
+            Everything.ToDictionary(l => l.Name, l => l.Role.ToString());
     }
 
     public static class LevelClassifier
@@ -62,19 +67,23 @@ namespace SleevesOpenings.Setup
             foreach (var lv in levels)
             {
                 LevelRole role;
+                var guess = GuessRole(lv.Name, rules.LevelClassification);
                 if (saved != null && saved.LevelRoles.TryGetValue(lv.Name, out var savedRole)
                     && System.Enum.TryParse(savedRole, out LevelRole parsed))
-                    role = parsed;
+                    // Apartment is the fallback guess, not a decision: a reference level saved as Apartment
+                    // before the Ignore role existed still becomes Ignore. Any other saved role is respected.
+                    role = parsed == LevelRole.Apartment && guess == LevelRole.Ignore ? guess : parsed;
                 else
-                    role = GuessRole(lv.Name, rules.LevelClassification);
+                    role = guess;
 
-                map.All.Add(new ClassifiedLevel { Level = lv, Role = role });
+                map.Everything.Add(new ClassifiedLevel { Level = lv, Role = role });
             }
             return map;
         }
 
         public static LevelRole GuessRole(string name, LevelClassificationRules rx)
         {
+            if (Match(name, rx.Ignore)) return LevelRole.Ignore;
             if (Match(name, rx.Bulkhead)) return LevelRole.Bulkhead;
             if (Match(name, rx.Roof)) return LevelRole.Roof;
             if (Match(name, rx.Setback)) return LevelRole.Setback;

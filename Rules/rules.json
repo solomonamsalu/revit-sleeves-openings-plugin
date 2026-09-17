@@ -2,38 +2,51 @@
   "version": 1,
   "_comment": "All lengths are in INCHES. Source: Sleeves & Openings Standards Manual. Edit family names/params to match your library.",
 
+  "_familiesComment": "Office (MPI) families, Revit 2026, category Mechanical Equipment. A null *Param is detected from the loaded family (Width/Length/Diameter/Comments and common variants); set it explicitly if detection picks the wrong one. Verify in Setup > Map Families.",
   "families": {
     "regularOpening": {
-      "family": "Regular Opening",
-      "type": null,
-      "file": "Families/Regular Opening.rfa",
-      "widthParam": "Width",
-      "lengthParam": "Length",
-      "nameParam": "Comments"
+      "family": "Openings",
+      "type": "Mechanical opening",
+      "file": "Families/Openings.rfa",
+      "widthParam": null,
+      "lengthParam": null,
+      "nameParam": null
     },
     "pipeReferenceOpening": {
-      "family": "Pipe Reference Opening",
-      "type": null,
-      "file": "Families/Pipe Reference Opening.rfa",
-      "widthParam": "Width",
-      "lengthParam": "Length",
-      "nameParam": "Comments",
-      "downHeightParam": "Down Height"
+      "family": "Ref pipes opening",
+      "type": "Type1",
+      "file": "Families/Ref pipes opening.rfa",
+      "widthParam": null,
+      "lengthParam": null,
+      "nameParam": null,
+      "downHeightParam": null
     },
     "roundSleeve": {
-      "family": "Round Sleeve",
+      "family": "MPI - Sleeves Family",
       "type": null,
-      "file": "Families/Round Sleeve.rfa",
-      "diameterParam": "Diameter",
-      "nameParam": "Comments"
+      "file": "Families/MPI - Sleeves Family.rfa",
+      "diameterParam": null,
+      "nameParam": null,
+      "_sizeTogglesComment": "This family has no diameter parameter: each size is a Yes/No parameter '<prefix> <size>' (Storm 4..12, Sanitary 4..12, Vent 4..12, Fire 3..10, Gas 3..10, Cold Water 2..12, Hot Water 3..4, Electrical 2..5, Condensate 3). The add-in ticks the one for the system + size and unticks the rest; a size the family lacks rounds UP to the next available. TO CONFIRM WITH OFFICE: DryerExhaust -> Vent? Bathtub -> Sanitary (or the Double Sleeve for Tub family)? Sizes are sleeve sizes, not pipe sizes?",
+      "sizeToggles": {
+        "Storm": "Storm",
+        "AreaDrain": "Storm",
+        "Condensate": "Condensate",
+        "Standpipe": "Fire",
+        "DryerExhaust": "Vent",
+        "Bathtub": "Sanitary",
+        "Toilet": "Sanitary",
+        "Electrical": "Electrical"
+      },
+      "sizeTogglePattern": "^(?<prefix>Cold Water|Hot Water|Condensate|Electrical|Fire|Gas|Sanitary|Storm|Vent)\\s+(?<size>\\d+(?:\\.\\d+)?)$"
     },
     "electricalOpening": {
-      "family": "Electrical Opening",
-      "type": null,
-      "file": "Families/Electrical Opening.rfa",
-      "widthParam": "Width",
-      "lengthParam": "Length",
-      "nameParam": "Comments"
+      "family": "Openings",
+      "type": "Electrical opening",
+      "file": "Families/Openings.rfa",
+      "widthParam": null,
+      "lengthParam": null,
+      "nameParam": null
     }
   },
 
@@ -118,11 +131,12 @@
   },
 
   "levelClassification": {
-    "_comment": "Regex (case-insensitive) matched against level names. First match wins; unmatched levels are treated as apartment floors.",
-    "roof": "roof|rf\b",
-    "bulkhead": "bulkhead|bh\b|penthouse mech",
+    "_comment": "Regex (case-insensitive) matched against level names, tried in the order ignore, bulkhead, roof, setback, cellar; first match wins; unmatched levels are apartment floors. JSON needs \\b for a regex word boundary. Ignore = reference levels (top of steel / slab, parapet): never a floor, nothing is placed or propagated there. Override any level in Project Setup.",
+    "ignore": "\\btos\\b|top of (steel|slab|wall)|\\bt\\.?o\\.?[sw]?\\b|parapet",
+    "roof": "roof|\\brf\\b|^r\\d*$|^r\\d+\\b",
+    "bulkhead": "bulkhead|\\bbh\\b|penthouse mech",
     "setback": "setback|terrace",
-    "cellar": "cellar|basement|sub|garage|foundation"
+    "cellar": "cellar|basement|\\bsub|garage|foundation|footing|parking|slab on grade|^b\\d*$"
   },
 
   "generalRules": {

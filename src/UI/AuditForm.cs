@@ -156,7 +156,7 @@ namespace SleevesOpenings.UI
                 var sb = new StringBuilder("Severity,Rule,Level,Riser,System,Message,ElementIds\n");
                 foreach (var i in _all)
                     sb.AppendLine(string.Join(",", new[] { i.Severity.ToString(), i.Rule, i.Level, i.Riser, i.System, i.Message, i.FixLabel,
-                        string.Join(" ", i.Elements.Select(x => x.IntegerValue)) }.Select(Csv)));
+                        string.Join(" ", i.Elements.Select(x => x.Value)) }.Select(Csv)));
                 File.WriteAllText(dlg.FileName, sb.ToString(), Encoding.UTF8);
             }
         }

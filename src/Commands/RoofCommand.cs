@@ -48,7 +48,7 @@ namespace SleevesOpenings.Commands
                         new InputForm.Field { Key = "space", Label = "Auto-space openings", Choices = new[] { "Yes", "No" }, Default = "Yes" },
                         new InputForm.Field { Key = "skip", Label = "Skip risers already on roof", Choices = new[] { "Yes", "No" }, Default = "Yes" },
                     });
-                if (form.ShowDialog() != DialogResult.OK) return Result.Cancelled;
+                if (form.ShowDialog(UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
 
                 var source = levels.All.First(l => l.Name == form.Value("src")).Level;
                 var roof = levels.All.First(l => l.Name == form.Value("roof")).Level;

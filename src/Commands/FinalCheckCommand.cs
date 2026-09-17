@@ -30,7 +30,7 @@ namespace SleevesOpenings.Commands
 
                 List<AuditIssue> Rerun() => new Auditor(doc, rules, ProjectStore.Load(doc), levels).Run();
                 using (var form = new AuditForm(uidoc, issues, auditor.OpeningCount, Rerun))
-                    form.ShowDialog();
+                    form.ShowDialog(UI.RevitWindow.Instance);
                 return Result.Succeeded;
             }
             catch (Exception ex)

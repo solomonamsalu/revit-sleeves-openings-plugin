@@ -31,7 +31,7 @@ namespace SleevesOpenings.Setup
 
             using (var form = new GeneralRulesForm(rules.GeneralRules, FileName(doc), Environment.UserName))
             {
-                if (form.ShowDialog() != DialogResult.OK)
+                if (form.ShowDialog(UI.RevitWindow.Instance) != DialogResult.OK)
                 {
                     App.Log("General rules not confirmed — work blocked");
                     return false;
