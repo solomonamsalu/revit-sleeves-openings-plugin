@@ -25,6 +25,10 @@ namespace SleevesOpenings.Commands
             {
                 var rules = App.Rules(doc);
                 var state = ProjectStore.Load(doc);
+
+                // Manual p.2: confirm the drawing set before anything else is set up.
+                if (!WorkGate.Ensure(doc, rules, state)) return Result.Cancelled;
+
                 var levels = LevelClassifier.Classify(doc, rules, state);
 
                 using (var form = new SetupForm(rules, levels, state))
@@ -42,14 +46,12 @@ namespace SleevesOpenings.Commands
                         t.Commit();
                     }
 
-                    var unchecked_ = state.Preflight.Where(kv => !kv.Value).Select(kv => kv.Key).ToList();
                     var summary =
                         $"Lowest level: {levels.Lowest?.Name ?? "-"}\n" +
                         $"Highest apartment floor (start here): {levels.HighestApartment?.Name ?? "-"}\n" +
                         $"Main roof: {levels.MainRoof?.Name ?? "-"}\n" +
                         $"Setbacks: {(levels.Setbacks.Any() ? string.Join(", ", levels.Setbacks.Select(l => l.Name)) : "-")}\n" +
                         $"Bulkhead: {levels.Bulkhead?.Name ?? "-"}\n\n" +
-                        (unchecked_.Count > 0 ? "Still to verify:\n  - " + string.Join("\n  - ", unchecked_) + "\n\n" : "") +
                         report;
 
                     var td = new TaskDialog("Project Setup complete")

@@ -12,6 +12,7 @@
     <Platforms>x64</Platforms>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
     <DefineConstants>$(DefineConstants);REVIT2024</DefineConstants>
   </PropertyGroup>
 
@@ -38,5 +39,6 @@
   <ItemGroup>
     <None Include="Rules\rules.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Families\**\*.rfa" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Icons\*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -68,6 +68,8 @@ namespace SleevesOpenings.Commands
                 };
                 ctx.Levels = LevelClassifier.Classify(doc, ctx.Rules, ctx.State);
 
+                if (!WorkGate.Ensure(doc, ctx.Rules, ctx.State)) return Result.Cancelled;
+
                 var spec = BuildSpec(ctx);
                 if (spec == null) return Result.Cancelled;
 
@@ -75,11 +77,16 @@ namespace SleevesOpenings.Commands
                 if (symbol == null) return Result.Cancelled;
 
                 EnsureWorkPlane(ctx);
+                EnsureSharedParams(ctx.Doc, ctx.Rules, ctx.State);
 
                 var guard = new PlacementGuard(doc, ctx.Rules, ctx.Level);
                 var placer = new Placer(doc, plan);
                 int placed = 0;
 
+                // One click session = one undo step.
+                using (var session = new TransactionGroup(doc, $"Place {Title}"))
+                {
+                session.Start();
                 while (true)
                 {
                     XYZ pt;
@@ -87,7 +94,7 @@ namespace SleevesOpenings.Commands
                     catch (OperationCanceledException) { break; }
 
                     double hw = (spec.Width ?? spec.Diameter ?? 0) / 2, hl = (spec.Length ?? spec.Diameter ?? 0) / 2;
-                    var warnings = guard.Check(pt, hw, hl);
+                    var warnings = guard.Check(pt, hw, hl, spec.System);
                     if (warnings.Count > 0 && !ConfirmWarnings(warnings)) continue;
 
                     using (var t = new Transaction(doc, $"Place {Title}"))
@@ -107,6 +114,8 @@ namespace SleevesOpenings.Commands
                             if (td.Show() != TaskDialogResult.Retry) break;
                         }
                     }
+                }
+                if (placed > 0) session.Assimilate(); else session.RollBack();
                 }
 
                 App.Log($"{Title}: placed {placed} on {ctx.Level.Name}");
@@ -144,6 +153,17 @@ namespace SleevesOpenings.Commands
             return map;
         }
 
+        /// <summary>Binds SO System / SO Riser / SO Size to the mapped categories (idempotent).</summary>
+        public static void EnsureSharedParams(Document doc, RuleSet rules, ProjectState state)
+        {
+            using (var t = new Transaction(doc, "Sleeves & Openings: shared parameters"))
+            {
+                t.Start();
+                try { SharedParams.EnsureBound(doc, SharedParams.MappedCategories(doc, rules, state)); t.Commit(); }
+                catch (Exception ex) { t.RollBack(); App.Log("Shared params not bound: " + ex.Message); }
+            }
+        }
+
         /// <summary>PickPoint needs a work plane; plan views normally have one, but make sure.</summary>
         private static void EnsureWorkPlane(PlaceContext ctx)
         {
@@ -159,10 +179,13 @@ namespace SleevesOpenings.Commands
 
         private bool ConfirmWarnings(List<string> warnings)
         {
+            bool hard = warnings.Any(PlacementGuard.IsHard);
             var td = new TaskDialog(Title)
             {
-                MainInstruction = "This location breaks a rule from the manual",
-                MainContent = "• " + string.Join("\n• ", warnings) + "\n\nPlace anyway?",
+                MainInstruction = hard ? "This location is NOT allowed by the manual" : "This location breaks a rule from the manual",
+                MainContent = "- " + string.Join(Environment.NewLine + "- ", warnings.Select(PlacementGuard.Clean)) +
+                              Environment.NewLine + Environment.NewLine +
+                              (hard ? "Place anyway? (You will have to justify this to the reviewer.)" : "Place anyway?"),
                 CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No,
                 DefaultButton = TaskDialogResult.No
             };

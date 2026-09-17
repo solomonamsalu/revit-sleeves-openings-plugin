@@ -19,7 +19,6 @@ namespace SleevesOpenings.UI
         private readonly ProjectState _state;
 
         private DataGridView _levelGrid;
-        private CheckedListBox _preflight;
         private ComboBox _bathtub;
         private ComboBox _condensate;
         private CheckBox _doFamilies;
@@ -69,12 +68,25 @@ namespace SleevesOpenings.UI
             levelBox.Controls.Add(_levelGrid);
             root.Controls.Add(levelBox, 0, 0);
 
-            // --- Preflight (right) ---
-            var preBox = new GroupBox { Text = "Always verify (from the manual)", Dock = DockStyle.Fill };
-            _preflight = new CheckedListBox { Dock = DockStyle.Fill, CheckOnClick = true };
-            foreach (var item in _rules.Preflight)
-                _preflight.Items.Add(item, _state.Preflight.TryGetValue(item, out var done) && done);
-            preBox.Controls.Add(_preflight);
+            // --- General rules (right): enforced by the gate, shown here for information only ---
+            var preBox = new GroupBox { Text = "General rules (enforced)", Dock = DockStyle.Fill };
+            var c = _state.Confirmation;
+            string status = c == null ? "Not confirmed."
+                : $"Confirmed by {c.User} on {c.Date:yyyy-MM-dd HH:mm} for {c.FileName}." + (_rules.GeneralRules.ReconfirmEveryDay ? " Re-asked each working day." : "");
+            var f = _rules.Fixtures;
+            var rulesText = new Label
+            {
+                Dock = DockStyle.Fill, Padding = new Padding(8),
+                Text = "Confirmed before setup and before any work:" + Environment.NewLine + "  - " + string.Join(Environment.NewLine + "  - ", _rules.GeneralRules.MustConfirm) +
+                       Environment.NewLine + "  " + status + Environment.NewLine + Environment.NewLine +
+                       "Checked automatically against the model (Final Check):" + Environment.NewLine +
+                       "  - Shower drains: a sleeve within " + Units.FormatInches(f.ShowerDrain.SleeveRadius) + " of every drain" + Environment.NewLine +
+                       "  - Toilets: floor-mounted needs a sleeve nearby; wall-hung must NOT have a slab sleeve outside the wall" + Environment.NewLine +
+                       "  - Medicine cabinets and niches: no sleeve behind them (" + Units.FormatInches(f.MedicineCabinet.Clearance) + " clearance)" + Environment.NewLine +
+                       "  - Never at the edge of a wall; not in the middle of a room" + Environment.NewLine + Environment.NewLine +
+                       "Fixture recognition patterns are in rules.json → fixtures."
+            };
+            preBox.Controls.Add(rulesText);
             root.Controls.Add(preBox, 1, 0);
 
             // --- Project answers ---
@@ -125,10 +137,6 @@ namespace SleevesOpenings.UI
                 lv.Role = role;
             }
             _state.LevelRoles = _levels.ToRoles();
-
-            _state.Preflight = new Dictionary<string, bool>();
-            for (int i = 0; i < _preflight.Items.Count; i++)
-                _state.Preflight[(string)_preflight.Items[i]] = _preflight.GetItemChecked(i);
 
             var keys = _rules.Systems.Bathtub.Options.Keys.ToList();
             _state.BathtubOption = _bathtub.SelectedIndex > 0 ? keys[_bathtub.SelectedIndex - 1] : null;

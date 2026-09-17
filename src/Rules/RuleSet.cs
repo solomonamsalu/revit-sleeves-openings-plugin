@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Newtonsoft.Json;
 
@@ -15,7 +16,8 @@ namespace SleevesOpenings.Rules
         [JsonProperty("clearances")] public ClearanceRules Clearances { get; set; } = new ClearanceRules();
         [JsonProperty("viewRange")] public ViewRangeRules ViewRange { get; set; } = new ViewRangeRules();
         [JsonProperty("levelClassification")] public LevelClassificationRules LevelClassification { get; set; } = new LevelClassificationRules();
-        [JsonProperty("preflight")] public List<string> Preflight { get; set; } = new List<string>();
+        [JsonProperty("generalRules")] public GeneralRules GeneralRules { get; set; } = new GeneralRules();
+        [JsonProperty("fixtures")] public FixtureRules Fixtures { get; set; } = new FixtureRules();
 
         /// <summary>Where this rule set was loaded from (for display/debugging).</summary>
         [JsonIgnore] public string SourcePath { get; set; }
@@ -96,6 +98,12 @@ namespace SleevesOpenings.Rules
         [JsonProperty("linesPerIndoorUnitSplit")] public int LinesPerIndoorUnitSplit { get; set; } = 2;
         [JsonProperty("roofExtraWidth")] public double RoofExtraWidth { get; set; } = 3;
         [JsonProperty("roofExtraLength")] public double RoofExtraLength { get; set; } = 3;
+        [JsonProperty("inchesPerLine")] public double InchesPerLine { get; set; } = 1.5;
+        [JsonProperty("minLength")] public double MinLength { get; set; } = 6;
+
+        /// <summary>Suggested opening size (inches) for n refrigeration lines side by side.</summary>
+        public (double width, double length) SuggestSize(int lines) =>
+            (Math.Max(MinLength, lines * InchesPerLine + 2), MinLength);
     }
 
     public class ElectricalRules
@@ -103,6 +111,17 @@ namespace SleevesOpenings.Rules
         [JsonProperty("conduitSpacingCenterToCenter")] public double ConduitSpacingCenterToCenter { get; set; } = 0.75;
         [JsonProperty("extraCirclesForRoof")] public int ExtraCirclesForRoof { get; set; } = 1;
         [JsonProperty("roofSleeveDiameter")] public double RoofSleeveDiameter { get; set; } = 2;
+        [JsonProperty("openingMargin")] public double OpeningMargin { get; set; } = 0;
+        [JsonProperty("circleDiameter")] public double CircleDiameter { get; set; } = 0.75;
+
+        /// <summary>Opening W x L (inches) for n circles in a grid with the given column count.</summary>
+        public (double width, double length, int rows) OpeningFor(int circles, int columns)
+        {
+            columns = Math.Max(1, columns);
+            int rows = (int)Math.Ceiling(circles / (double)columns);
+            return (columns * ConduitSpacingCenterToCenter + 2 * OpeningMargin,
+                    rows * ConduitSpacingCenterToCenter + 2 * OpeningMargin, rows);
+        }
 
         /// <summary>Conduit circles needed at a floor = apartments served above that floor + roof.</summary>
         public int CirclesFor(int apartmentsAbove) => apartmentsAbove + ExtraCirclesForRoof;
@@ -150,12 +169,43 @@ namespace SleevesOpenings.Rules
         [JsonProperty("roofMinFromWallOrCurb")] public double RoofMinFromWallOrCurb { get; set; } = 12;
         [JsonProperty("roofMinBetweenOpenings")] public double RoofMinBetweenOpenings { get; set; } = 24;
         [JsonProperty("ervSpacingExact")] public double ErvSpacingExact { get; set; } = 24;
+        /// <summary>Farther than this from any wall inside a room = "middle of the room" (rules 20-21). 0 disables.</summary>
+        [JsonProperty("midRoomDistance")] public double MidRoomDistance { get; set; } = 36;
     }
 
     public class ViewRangeRules
     {
         [JsonProperty("topLevelAboveOffset")] public double TopLevelAboveOffset { get; set; } = 0;
         [JsonProperty("bottomAssociatedLevelOffset")] public double BottomAssociatedLevelOffset { get; set; } = 0;
+    }
+
+    /// <summary>Manual p.2: rules that must be confirmed before any work starts.</summary>
+    public class GeneralRules
+    {
+        [JsonProperty("mustConfirm")] public List<string> MustConfirm { get; set; } = new List<string>
+        {
+            "I am working from the Owner's plan, not the Approved plan.",
+            "I checked and confirmed this file is the latest version."
+        };
+        [JsonProperty("reconfirmEveryDay")] public bool ReconfirmEveryDay { get; set; } = true;
+    }
+
+    /// <summary>Manual p.2 "Always verify" as model checks: how to recognise each fixture and what a sleeve must do near it.</summary>
+    public class FixtureRules
+    {
+        [JsonProperty("showerDrain")] public FixtureRule ShowerDrain { get; set; } = new FixtureRule { Match = "shower.?drain|floor.?drain|shower", PipeSize = 2, SleeveRadius = 24 };
+        [JsonProperty("toilet")] public FixtureRule Toilet { get; set; } = new FixtureRule { Match = "toilet|water.?closet", WallHungMatch = "wall.?hung|wall.?mount|carrier", PipeSize = 4, SleeveRadius = 24 };
+        [JsonProperty("medicineCabinet")] public FixtureRule MedicineCabinet { get; set; } = new FixtureRule { Match = "medicine.?cabinet", Clearance = 2 };
+        [JsonProperty("niche")] public FixtureRule Niche { get; set; } = new FixtureRule { Match = "niche", Clearance = 2 };
+    }
+
+    public class FixtureRule
+    {
+        [JsonProperty("match")] public string Match { get; set; }
+        [JsonProperty("wallHungMatch")] public string WallHungMatch { get; set; }
+        [JsonProperty("pipeSize")] public double PipeSize { get; set; }
+        [JsonProperty("sleeveRadius")] public double SleeveRadius { get; set; } = 24;
+        [JsonProperty("clearance")] public double Clearance { get; set; } = 2;
     }
 
     public class LevelClassificationRules

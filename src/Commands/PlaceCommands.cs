@@ -20,14 +20,18 @@ namespace SleevesOpenings.Commands
             var r = ctx.Rules.Systems.Exhaust;
             string roofNote = ctx.OnRoof ? $" This is a roof level: +{Units.FormatInches(r.RoofIncreaseTotal)} total is added (rule 56)." : "";
             var f = Ask(Title,
-                $"Enter the duct size from the floor plan. {Units.FormatInches(r.ClearanceEachSide)} clearance is added on each side (rule 16).{roofNote}",
-                Num("w", "Duct width (in)"), Num("h", "Duct height (in)"), Txt("riser", "Riser name", "KX-1"));
+                $"Enter the duct size from the floor plan. {Units.FormatInches(r.ClearanceEachSide)} clearance is added on each side (rule 16).{roofNote} " +
+                $"ERV openings are grouped on the roof exactly {Units.FormatInches(ctx.Rules.Clearances.ErvSpacingExact)} apart (rules 54-55).",
+                Num("w", "Duct width (in)"), Num("h", "Duct height (in)"), Txt("riser", "Riser name", "KX-1"),
+                new UI.InputForm.Field { Key = "kind", Label = "Type", Choices = new[] { "Exhaust", "ERV" }, Default = "Exhaust" });
             if (f == null) return null;
 
             double extra = ctx.OnRoof ? r.RoofIncreaseTotal : 0;
-            return OpeningSpec.Rect(SystemKind.Exhaust, FamilyRole.RegularOpening,
+            var spec = OpeningSpec.Rect(f.Value("kind") == "ERV" ? SystemKind.ERV : SystemKind.Exhaust, FamilyRole.RegularOpening,
                 r.OpeningSize(f.Inches("w")) + extra, r.OpeningSize(f.Inches("h")) + extra,
                 ctx.Rules.Naming.ExhaustPattern.Replace("{riser}", f.Value("riser")));
+            spec.Riser = f.Value("riser");
+            return spec;
         }
     }
 

@@ -33,8 +33,32 @@ namespace SleevesOpenings.Placement
             if (!string.IsNullOrEmpty(spec.Label))
                 SetText(inst, map.NameParam, spec.Label);
 
-            OpeningData.From(spec, level).WriteTo(inst);
+            var data = OpeningData.From(spec, level);
+            data.WriteTo(inst);
+            SharedParams.Write(inst, data);
             return inst;
+        }
+
+        /// <summary>Re-applies sizes and label to an existing instance and updates its stamp (used by Final Check fixes).</summary>
+        public void Resize(FamilyInstance inst, FamilyMapEntry map, OpeningData data, double? width, double? length, double? diameter)
+        {
+            var spec = new OpeningSpec
+            {
+                System = (SystemKind)Enum.Parse(typeof(SystemKind), data.System), Width = width, Length = length, Diameter = diameter,
+                Label = data.Label, Riser = data.Riser
+            };
+            ApplySizes(inst, inst.Symbol, map, spec);
+            data.Width = width; data.Length = length; data.Diameter = diameter;
+            data.WriteTo(inst);
+            SharedParams.Write(inst, data);
+        }
+
+        public void Relabel(FamilyInstance inst, FamilyMapEntry map, OpeningData data, string label)
+        {
+            SetText(inst, map?.NameParam, label);
+            data.Label = label;
+            data.WriteTo(inst);
+            SharedParams.Write(inst, data);
         }
 
         // ---- instance creation per family placement type ----

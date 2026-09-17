@@ -14,12 +14,31 @@ namespace SleevesOpenings.Setup
     public class ProjectState
     {
         public Dictionary<string, string> LevelRoles { get; set; } = new Dictionary<string, string>();   // level name -> role
-        public Dictionary<string, bool> Preflight { get; set; } = new Dictionary<string, bool>();
+        /// <summary>Last confirmation of the manual's general rules (who, when). Null = never confirmed.</summary>
+        public WorkConfirmation Confirmation { get; set; }
         public string BathtubOption { get; set; }            // "two6" | "one10"
         public bool? CondensateRequired { get; set; }
         public DateTime? LastSetup { get; set; }
         /// <summary>Per-project family/parameter mapping chosen in "Map Families" (overrides rules.json families).</summary>
         public Dictionary<string, Placement.FamilyMapEntry> FamilyMap { get; set; } = new Dictionary<string, Placement.FamilyMapEntry>();
+        /// <summary>Where each riser is meant to end (tap-outs, bulkheads, setbacks) so the auditor does not flag them.</summary>
+        public Dictionary<string, RiserEnds> RiserEnds { get; set; } = new Dictionary<string, RiserEnds>();
+        /// <summary>"PTAC", "Split" or "VRF" once the refrigeration planner has been run.</summary>
+        public string AcSystem { get; set; }
+    }
+
+    public class RiserEnds
+    {
+        public string Top { get; set; }       // level name where the riser legitimately ends going up (null = roof expected)
+        public string Bottom { get; set; }    // level name where it legitimately ends going down (null = lowest expected)
+        public string Note { get; set; }      // e.g. "KX-3 tap-out", "to bulkhead"
+    }
+
+    public class WorkConfirmation
+    {
+        public string User { get; set; }
+        public DateTime Date { get; set; }
+        public string FileName { get; set; }
     }
 
     public static class ProjectStore

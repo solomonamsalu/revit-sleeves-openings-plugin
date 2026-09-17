@@ -78,6 +78,22 @@ Placement-time guards: wall edge, shear wall, beam, < 1' from column, mid-room.
 
 ---
 
+## Status (2026-09-17)
+All ten features implemented in a first version (F9 as a modal dialog rather than a dockable pane).
+Verified in Revit 2024 with generated test families: F1-F4, F8, F9. F5-F7 and F10 built, awaiting test.
+
+Second pass (same day), no client input needed:
+- General rules gate before any work (Owner's plan, latest file, always-verify) — replaces the checklist.
+- Exact wall geometry (location line + thickness) for shear walls, wall-edge, roof wall clearance, roof spacing.
+- Click-time warnings: wall edge, mid-room (rules 20-21), standpipe 5.5" to wall; hard vs soft warnings.
+- Final Check fixes: fixed sizes, size drift, missing floors, lone area drain, riser ids, names.
+- Declared riser ends (tap-outs / bulkheads) in Riser Manager and from Propagate's stop level; auditor respects them.
+- ERV type on Exhaust: exactly 2' between ERVs on the roof (audit + roof generator).
+- Workflow panel: the manual's 13 steps with live status and one-click launch.
+- Placement session = one undo step.
+
+Waiting on client: office RFA families, toilet sleeve sizes (page 17), bathtub "dead center" definition.
+
 ## Build order
 1. F1 + F2
 2. F3 fixed-size systems (chute, condensate, dryer, storm/AD, standpipe)

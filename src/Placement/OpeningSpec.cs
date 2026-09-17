@@ -8,7 +8,7 @@ namespace SleevesOpenings.Placement
     public enum SystemKind
     {
         Exhaust, GarbageChute, DryerExhaust, MotorizedDamper, Refrigeration, Electrical,
-        Storm, AreaDrain, Condensate, Standpipe, Bathtub, Toilet
+        Storm, AreaDrain, Condensate, Standpipe, Bathtub, Toilet, ERV
     }
 
     /// <summary>What to place: role + size (inches) + label. Built by the commands from rules.json.</summary>

@@ -68,12 +68,16 @@
       "downHeight": 0,
       "linesPerIndoorUnitSplit": 2,
       "roofExtraWidth": 3,
-      "roofExtraLength": 3
+      "roofExtraLength": 3,
+      "inchesPerLine": 1.5,
+      "minLength": 6
     },
     "electrical": {
       "conduitSpacingCenterToCenter": 0.75,
       "extraCirclesForRoof": 1,
-      "roofSleeveDiameter": 2
+      "roofSleeveDiameter": 2,
+      "circleDiameter": 0.75,
+      "openingMargin": 0
     },
     "storm": {
       "sleeveOverPipe": 2,
@@ -104,7 +108,8 @@
     "minFromWallEdge": 4,
     "roofMinFromWallOrCurb": 12,
     "roofMinBetweenOpenings": 24,
-    "ervSpacingExact": 24
+    "ervSpacingExact": 24,
+    "midRoomDistance": 36
   },
 
   "viewRange": {
@@ -120,14 +125,20 @@
     "cellar": "cellar|basement|sub|garage|foundation"
   },
 
-  "preflight": [
-    "Using the Owner's plan (not the Approved plan)",
-    "Confirmed this file is the latest version",
-    "Verified shower drain type",
-    "Verified toilet type (wall-hung?)",
-    "Verified medicine cabinets",
-    "Verified niches",
-    "Asked whether the building requires condensate risers",
-    "Asked how bathtub sleeves should be done (two 6\" or one 10\")"
-  ]
+  "generalRules": {
+    "_comment": "Confirmed at the start of Project Setup and before any work (manual p.2). A No blocks the add-in.",
+    "mustConfirm": [
+      "I am working from the Owner's plan, not the Approved plan.",
+      "I checked and confirmed this file is the latest version."
+    ],
+    "reconfirmEveryDay": true
+  },
+
+  "fixtures": {
+    "_comment": "Manual p.2 'Always verify': the add-in finds these fixtures in the model (family/type/category name matched case-insensitively) and checks the sleeves against them in Final Check. Lengths in inches.",
+    "showerDrain": { "match": "shower.?drain|linear.?drain|trench.?drain|floor.?drain|shower", "pipeSize": 2, "sleeveRadius": 24 },
+    "toilet":      { "match": "toilet|water.?closet|\\bwc\\b", "wallHungMatch": "wall.?hung|wall.?mount|carrier|back.?to.?wall", "pipeSize": 4, "sleeveRadius": 24 },
+    "medicineCabinet": { "match": "medicine.?cabinet|med.?cab", "clearance": 2 },
+    "niche":       { "match": "niche|recess", "clearance": 2 }
+  }
 }
