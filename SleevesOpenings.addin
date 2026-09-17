@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>Sleeves and Openings</Name>
+    <Assembly>SleevesOpenings\SleevesOpenings.dll</Assembly>
+    <FullClassName>SleevesOpenings.App</FullClassName>
+    <AddInId>7C3E9A21-5B4D-4F6E-9A1C-2D8F0B6E4A53</AddInId>
+    <VendorId>SleevesOpenings</VendorId>
+    <VendorDescription>Sleeves and Openings Standards Add-in</VendorDescription>
+  </AddIn>
+</RevitAddIns>

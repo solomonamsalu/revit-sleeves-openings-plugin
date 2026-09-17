@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "_comment": "All lengths are in INCHES. Source: Sleeves & Openings Standards Manual. Edit family names/params to match your library.",
+
+  "families": {
+    "regularOpening": {
+      "family": "Regular Opening",
+      "type": null,
+      "file": "Families/Regular Opening.rfa",
+      "widthParam": "Width",
+      "lengthParam": "Length",
+      "nameParam": "Comments"
+    },
+    "pipeReferenceOpening": {
+      "family": "Pipe Reference Opening",
+      "type": null,
+      "file": "Families/Pipe Reference Opening.rfa",
+      "widthParam": "Width",
+      "lengthParam": "Length",
+      "nameParam": "Comments",
+      "downHeightParam": "Down Height"
+    },
+    "roundSleeve": {
+      "family": "Round Sleeve",
+      "type": null,
+      "file": "Families/Round Sleeve.rfa",
+      "diameterParam": "Diameter",
+      "nameParam": "Comments"
+    },
+    "electricalOpening": {
+      "family": "Electrical Opening",
+      "type": null,
+      "file": "Families/Electrical Opening.rfa",
+      "widthParam": "Width",
+      "lengthParam": "Length",
+      "nameParam": "Comments"
+    }
+  },
+
+  "naming": {
+    "electrical": "ELECTRIC",
+    "dryerExhaust": "DE",
+    "exhaustPattern": "{riser}"
+  },
+
+  "systems": {
+    "exhaust": {
+      "clearanceEachSide": 2,
+      "roofIncreaseTotal": 4,
+      "floorPlanWinsOverRiserDiagram": true
+    },
+    "garbageChute": {
+      "fixedWidth": 28.5,
+      "fixedLength": 28.5,
+      "roofClearance": 0,
+      "allowOffset": false
+    },
+    "dryerExhaust": {
+      "radius": 2,
+      "roofOpeningWidth": 6,
+      "roofOpeningLength": 6,
+      "minSpacing": 8
+    },
+    "motorizedDamper": {
+      "clearanceEachSide": 2
+    },
+    "refrigeration": {
+      "downHeight": 0,
+      "linesPerIndoorUnitSplit": 2,
+      "roofExtraWidth": 3,
+      "roofExtraLength": 3
+    },
+    "electrical": {
+      "conduitSpacingCenterToCenter": 0.75,
+      "extraCirclesForRoof": 1,
+      "roofSleeveDiameter": 2
+    },
+    "storm": {
+      "sleeveOverPipe": 2,
+      "areaDrainDiameter": 10,
+      "areaDrainCount": 2,
+      "areaDrainSpacingCenterToCenter": 24,
+      "detailDeckEdgeOffset": 12
+    },
+    "condensate": {
+      "sleeveDiameter": 3
+    },
+    "standpipe": {
+      "sleeveOverPipe": 2,
+      "minCenterToWall": 5.5,
+      "minCenterToCenter": 8
+    },
+    "bathtub": {
+      "options": {
+        "two6": { "count": 2, "diameter": 6 },
+        "one10": { "count": 1, "diameter": 10 }
+      },
+      "default": null
+    }
+  },
+
+  "clearances": {
+    "minFromColumn": 12,
+    "minFromWallEdge": 4,
+    "roofMinFromWallOrCurb": 12,
+    "roofMinBetweenOpenings": 24,
+    "ervSpacingExact": 24
+  },
+
+  "viewRange": {
+    "topLevelAboveOffset": 0,
+    "bottomAssociatedLevelOffset": 0
+  },
+
+  "levelClassification": {
+    "_comment": "Regex (case-insensitive) matched against level names. First match wins; unmatched levels are treated as apartment floors.",
+    "roof": "roof|rf\b",
+    "bulkhead": "bulkhead|bh\b|penthouse mech",
+    "setback": "setback|terrace",
+    "cellar": "cellar|basement|sub|garage|foundation"
+  },
+
+  "preflight": [
+    "Using the Owner's plan (not the Approved plan)",
+    "Confirmed this file is the latest version",
+    "Verified shower drain type",
+    "Verified toilet type (wall-hung?)",
+    "Verified medicine cabinets",
+    "Verified niches",
+    "Asked whether the building requires condensate risers",
+    "Asked how bathtub sleeves should be done (two 6\" or one 10\")"
+  ]
+}

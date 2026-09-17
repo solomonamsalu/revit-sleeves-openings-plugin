@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <OutputType>Library</OutputType>
+    <RootNamespace>SleevesOpenings</RootNamespace>
+    <AssemblyName>SleevesOpenings</AssemblyName>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <PlatformTarget>x64</PlatformTarget>
+    <Configurations>Debug;Release</Configurations>
+    <Platforms>x64</Platforms>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <UseWindowsForms>true</UseWindowsForms>
+    <DefineConstants>$(DefineConstants);REVIT2024</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <RevitAPIPath>C:\Program Files\Autodesk\Revit 2024</RevitAPIPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="RevitAPI">
+      <HintPath>$(RevitAPIPath)\RevitAPI.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>$(RevitAPIPath)\RevitAPIUI.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <!-- Default rule set and family library ship next to the DLL -->
+  <ItemGroup>
+    <None Include="Rules\rules.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Families\**\*.rfa" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
