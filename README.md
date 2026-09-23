@@ -36,6 +36,7 @@ drop the RFA files into `Families/` so *Project Setup* can load them.
 | **F1 Rules Engine** — every size/clearance from the manual in `rules.json` | Setup → Reload / Edit Rules | `src/Rules` |
 | **F2 Project Setup** — level roles, "always verify" checklist, family loading, view range | Setup → Project Setup | `src/Setup` |
 | **Map Families / Create Test Families** — pick loaded families per role, or generate parametric test families | Setup | `src/Placement/FamilyMapping.cs`, `src/Setup/TestFamilyFactory.cs` |
+| **Adopt Existing** — stamp sleeves/openings that were placed by hand (system from label / size toggle / family, riser ids by position) so every check and list below includes them; driven by the `adopt` section of rules.json | Setup → Adopt Existing | `src/Setup/Adopter.cs`, `src/Commands/AdoptCommand.cs` |
 | **F3 Smart Placement** — Exhaust, Chute, Dryer, Damper, Refrigeration, Storm, Area Drain ×2, Condensate, Standpipe, Bathtub; guards for columns / shear walls / beams | Place – Mechanical, Place – Plumbing / FP | `src/Placement`, `src/Commands/PlaceCommands.cs` |
 | **F4 Riser Propagation** — copy openings floor by floor to each riser's stop level | Risers → Propagate Risers | `src/Risers/Propagator.cs` |
 | **F9 Riser Manager** — every riser with floors, sizes, gaps, offsets; select / zoom | Risers → Riser Manager | `src/UI/RiserManagerForm.cs` |
@@ -45,7 +46,10 @@ drop the RFA files into `Families/` so *Project Setup* can load them.
 | **F7 Refrigeration Plan** — PTAC / split / VRF, stacks, floors served, condenser roof, coverage check; Pipe Reference Openings on every floor (+3" on roof) | Plan → Refrigeration Plan | `src/UI/RefrigerationForm.cs`, `src/Commands/RefrigerationCommand.cs` |
 | **F10 Documentation** — shared parameters `SO System` / `SO Riser` / `SO Size`, schedule per category, tag all openings in a plan, sync parameters | Document | `src/Placement/SharedParams.cs`, `src/Commands/DocumentationCommands.cs` |
 
-Every element the add-in places carries a stamp (extensible storage) with system, riser id, size and level;
+Every element the add-in places (or adopts) carries a stamp (extensible storage) with system, riser id, size and level;
 propagation, roof generation, the auditor and the schedule all read it.
+
+Columns, beams and walls are read from the host model **and from linked Revit models** (`clearances.includeLinkedModels`,
+optional `linkedModelMatch` regex) — on most projects the structural model is a link.
 
 Logs: `%LOCALAPPDATA%\SleevesOpenings\logs`.

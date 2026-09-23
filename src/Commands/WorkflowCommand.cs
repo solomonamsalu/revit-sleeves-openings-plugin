@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Forms;
@@ -82,6 +82,17 @@ namespace SleevesOpenings.Commands
                 Detail = familiesOk ? "Regular Opening, Pipe Reference Opening and Round Sleeve are mapped." : "Map the office families (or create test families) before placing.",
                 State = familiesOk ? StepState.Done : StepState.Todo,
                 ButtonId = Btn("Setup", familiesOk ? "MapFamilies" : "TestFamilies"), ButtonText = familiesOk ? "Map Families" : "Test Families"
+            });
+            int adopted = openings.Count(o => o.Data.Adopted);
+            var adoptable = new Adopter(doc, rules, state).Scan();
+            steps.Add(new WorkflowStep
+            {
+                Title = "2b. Adopt existing openings — sleeves already in the model",
+                Detail = adoptable.Candidates.Count > 0 ? $"{adoptable.Candidates.Count} hand-placed sleeve(s)/opening(s) not yet known to the add-in ({adopted} adopted so far). Adopt them so Final Check and Riser Manager include them."
+                       : adopted > 0 ? $"{adopted} existing element(s) adopted; nothing new to adopt."
+                       : "No hand-placed sleeves/openings found (or none match rules.json 'adopt').",
+                State = adoptable.Candidates.Count > 0 ? StepState.Todo : adopted > 0 ? StepState.Done : StepState.NotNeeded,
+                ButtonId = Btn("Setup", "Adopt"), ButtonText = "Adopt Existing"
             });
             steps.Add(new WorkflowStep
             {

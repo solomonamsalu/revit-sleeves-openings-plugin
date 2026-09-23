@@ -16,32 +16,46 @@ namespace SleevesOpenings.Placement
         public class WallInfo
         {
             public Wall Wall;
-            public Curve Centerline;
+            public Curve Centerline;        // in host coordinates (linked walls are transformed)
             public double HalfWidth;
             public bool IsShear;
+            public bool IsFoundation;       // foundation / retaining wall (structural usage or wall function)
+            public LinkedModels.Source Source;
+
+            /// <summary>"123" or "123 (24 Skillman Str)" for a linked wall.</summary>
+            public string Label => Source != null ? Source.Describe(Wall.Id) : Wall.Id.ToString();
         }
 
         private readonly Document _doc;
         public List<WallInfo> Walls { get; }
 
-        public WallGeometry(Document doc, Level level)
+        /// <summary>Walls crossing the level, from the host and (per rules) every linked model.</summary>
+        public WallGeometry(Document doc, Level level, LinkedModels links = null)
         {
             _doc = doc;
+            links = links ?? new LinkedModels(doc, App.Rules(doc));
             double z = level.Elevation;
-            Walls = new FilteredElementCollector(doc).OfClass(typeof(Wall)).Cast<Wall>()
-                .Where(w =>
+            Walls = new List<WallInfo>();
+            foreach (var src in links.Sources)
+            {
+                foreach (var w in new FilteredElementCollector(src.Doc).OfClass(typeof(Wall)).Cast<Wall>())
                 {
+                    if (!(w.Location is LocationCurve lc)) continue;
                     var bb = w.get_BoundingBox(null);
-                    return bb != null && bb.Min.Z - 1 <= z && bb.Max.Z + 1 >= z && w.Location is LocationCurve;
-                })
-                .Select(w => new WallInfo
-                {
-                    Wall = w,
-                    Centerline = ((LocationCurve)w.Location).Curve,
-                    HalfWidth = w.Width / 2,
-                    IsShear = w.StructuralUsage == StructuralWallUsage.Shear || w.StructuralUsage == StructuralWallUsage.Combined
-                })
-                .ToList();
+                    if (bb == null) continue;
+                    bb = LinkedModels.TransformBox(bb, src.Transform);
+                    if (bb.Min.Z - 1 > z || bb.Max.Z + 1 < z) continue;
+                    Walls.Add(new WallInfo
+                    {
+                        Wall = w,
+                        Centerline = src.Transform.IsIdentity ? lc.Curve : lc.Curve.CreateTransformed(src.Transform),
+                        HalfWidth = w.Width / 2,
+                        IsShear = w.StructuralUsage == StructuralWallUsage.Shear || w.StructuralUsage == StructuralWallUsage.Combined,
+                        IsFoundation = w.WallType?.Function == WallFunction.Foundation || w.WallType?.Function == WallFunction.Retaining,
+                        Source = src
+                    });
+                }
+            }
         }
 
         /// <summary>Distance from a point to the wall centerline, measured in plan.</summary>
@@ -84,9 +98,9 @@ namespace SleevesOpenings.Placement
         public IEnumerable<WallInfo> Straddled(XYZ pt, double r) =>
             Walls.Where(w => Relate(w, pt, r) == Relation.Edge);
 
-        /// <summary>Shear walls the footprint touches at all.</summary>
+        /// <summary>Concrete walls (shear or foundation) the footprint touches at all.</summary>
         public IEnumerable<WallInfo> ShearHits(XYZ pt, double r) =>
-            Walls.Where(w => w.IsShear && Relate(w, pt, r) != Relation.Clear);
+            Walls.Where(w => (w.IsShear || w.IsFoundation) && Relate(w, pt, r) != Relation.Clear);
 
         /// <summary>Room containing the point on this level, or null.</summary>
         public Room RoomAt(XYZ pt, Level level)

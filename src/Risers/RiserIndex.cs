@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -117,7 +118,8 @@ namespace SleevesOpenings.Risers
                 case "Standpipe": return "SP";
                 case "Bathtub": return "TUB";
                 case "Toilet": return "WC";
-                default: return "R";
+                // adopted systems outside the manual (Sanitary, Vent, ColdWater...): first three letters
+                default: return string.IsNullOrEmpty(system) ? "R" : system.Substring(0, Math.Min(3, system.Length)).ToUpperInvariant();
             }
         }
     }

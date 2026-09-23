@@ -52,6 +52,8 @@ namespace SleevesOpenings.Placement
         public string Level { get; set; }
         public string PlacedBy { get; set; }
         public DateTime Placed { get; set; }
+        /// <summary>True when the stamp was added to an existing element by Adopt Existing (not placed by the add-in).</summary>
+        public bool Adopted { get; set; }
 
         private static readonly Guid SchemaGuid = new Guid("3D5E7F91-2B4C-4A6D-8E9F-0A1B2C3D4E5F");
         private const string Field = "Json";

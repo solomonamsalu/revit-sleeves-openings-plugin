@@ -205,7 +205,7 @@ namespace SleevesOpenings.Audit
                 foreach (var w in g.Check(o.Point, HalfW(o), HalfL(o), sys))
                 {
                     string text = PlacementGuard.Clean(w);
-                    string rule = text.Contains("shear wall") ? "Rule 27" : text.Contains("beam") ? "Rule 28" : text.Contains("column") ? "Rule 26"
+                    string rule = text.Contains("shear wall") || text.Contains("foundation wall") ? "Rule 27" : text.Contains("beam") ? "Rule 28" : text.Contains("column") ? "Rule 26"
                                 : text.Contains("edge of wall") ? "General" : text.Contains("Standpipe") ? "Standpipe" : "Rule 20-21";
                     Add(PlacementGuard.IsHard(w) ? Severity.Error : Severity.Warning, rule, text, o);
                 }
@@ -236,7 +236,7 @@ namespace SleevesOpenings.Audit
                         var near = walls.Nearest(a.Point, out double face);
                         double gapIn = Units.FeetToInches(face - RadiusFt(a));
                         if (near != null && gapIn < c.RoofMinFromWallOrCurb)
-                            Add(Severity.Warning, "Rule 58", $"Roof opening {Units.FormatInches(Math.Max(0, gapIn))} from wall/curb {near.Wall.Id} (min {Units.FormatInches(c.RoofMinFromWallOrCurb)})", a);
+                            Add(Severity.Warning, "Rule 58", $"Roof opening {Units.FormatInches(Math.Max(0, gapIn))} from wall/curb {near.Label} (min {Units.FormatInches(c.RoofMinFromWallOrCurb)})", a);
                     }
 
                     for (int j = i + 1; j < list.Count; j++)

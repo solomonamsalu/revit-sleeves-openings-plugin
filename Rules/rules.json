@@ -122,7 +122,10 @@
     "roofMinFromWallOrCurb": 12,
     "roofMinBetweenOpenings": 24,
     "ervSpacingExact": 24,
-    "midRoomDistance": 36
+    "midRoomDistance": 36,
+    "_linkedComment": "Columns, beams and walls are also read from linked Revit models (the structural model is usually a link). linkedModelMatch = regex on the link name, empty = all links.",
+    "includeLinkedModels": true,
+    "linkedModelMatch": ""
   },
 
   "viewRange": {
@@ -132,11 +135,11 @@
 
   "levelClassification": {
     "_comment": "Regex (case-insensitive) matched against level names, tried in the order ignore, bulkhead, roof, setback, cellar; first match wins; unmatched levels are apartment floors. JSON needs \\b for a regex word boundary. Ignore = reference levels (top of steel / slab, parapet): never a floor, nothing is placed or propagated there. Override any level in Project Setup.",
-    "ignore": "\\btos\\b|top of (steel|slab|wall)|\\bt\\.?o\\.?[sw]?\\b|parapet",
+    "ignore": "\\btos\\b|top of (steel|slab|wall)|\\bt\\.?o\\.?[sw]?\\b|parapet|^-?\\d+'\\s*-?\\s*[\\d /]*\"?$",
     "roof": "roof|\\brf\\b|^r\\d*$|^r\\d+\\b",
     "bulkhead": "bulkhead|\\bbh\\b|penthouse mech",
     "setback": "setback|terrace",
-    "cellar": "cellar|basement|\\bsub|garage|foundation|footing|parking|slab on grade|^b\\d*$"
+    "cellar": "cell[ae]r|basement|\\bsub|garage|foundation|footing|parking|slab on grade|^b\\d*$"
   },
 
   "generalRules": {
@@ -154,5 +157,49 @@
     "toilet":      { "match": "toilet|water.?closet|\\bwc\\b", "wallHungMatch": "wall.?hung|wall.?mount|carrier|back.?to.?wall", "pipeSize": 4, "sleeveRadius": 24 },
     "medicineCabinet": { "match": "medicine.?cabinet|med.?cab", "clearance": 2 },
     "niche":       { "match": "niche|recess", "clearance": 2 }
+  },
+
+  "adopt": {
+    "_comment": "Setup > Adopt Existing: stamps openings/sleeves that were placed by hand so Final Check, Riser Manager, Propagate and Schedule see them. All regexes are case-insensitive. System is decided in this order: 1. nameToSystem on the label (nameParams) and on the type name; 2. for checkbox-sized sleeves, the prefix of the toggle that is ON via togglePrefixToSystem; 3. the matcher's default system. Systems the manual sizes (Exhaust, GarbageChute, DryerExhaust, MotorizedDamper, Refrigeration, Electrical, Storm, AreaDrain, Condensate, Standpipe, Bathtub, Toilet, ERV) get size checks; any other name (Sanitary, Vent, ColdWater, HotWater, Gas...) is still checked for structure, wall edges, overlaps and riser continuity.",
+    "matchers": [
+      { "family": "^MPI - Sleeves Family",      "role": "roundSleeve",          "system": null },
+      { "family": "^MPI - Double Sleeve for Tub", "role": "roundSleeve",        "system": "Bathtub" },
+      { "family": "^Openings$", "type": "electric", "role": "electricalOpening", "system": "Electrical" },
+      { "family": "^Openings$",                  "role": "regularOpening",       "system": "Exhaust" },
+      { "family": "^Ref pipes opening",          "role": "pipeReferenceOpening", "system": "Refrigeration" },
+      { "family": "^SO Test Opening",            "role": "regularOpening",       "system": "Exhaust" },
+      { "family": "^SO Test Sleeve",             "role": "roundSleeve",          "system": null }
+    ],
+    "togglePrefixToSystem": {
+      "Storm": "Storm",
+      "Condensate": "Condensate",
+      "Fire": "Standpipe",
+      "Electrical": "Electrical",
+      "Vent": "Vent",
+      "Sanitary": "Sanitary",
+      "Cold Water": "ColdWater",
+      "Hot Water": "HotWater",
+      "Gas": "Gas"
+    },
+    "nameToSystem": [
+      { "match": "^DE\\b|dryer",           "system": "DryerExhaust" },
+      { "match": "chute|^GC\\b",           "system": "GarbageChute" },
+      { "match": "^ERV",                   "system": "ERV" },
+      { "match": "^MD\\b|damper",          "system": "MotorizedDamper" },
+      { "match": "^[KTG]X-?\\d|exhaust",   "system": "Exhaust" },
+      { "match": "^GD\\b",                 "system": "Exhaust" },
+      { "match": "electric|^EL\\b",        "system": "Electrical" },
+      { "match": "^REF\\b|refrig",         "system": "Refrigeration" },
+      { "match": "^AD\\b|area drain",      "system": "AreaDrain" },
+      { "match": "^ST-?\\d|storm",         "system": "Storm" },
+      { "match": "^CD\\b|condensate",      "system": "Condensate" },
+      { "match": "^SP\\b|standpipe",       "system": "Standpipe" },
+      { "match": "^TUB\\b|bathtub|tub",    "system": "Bathtub" },
+      { "match": "^WC\\b|toilet",          "system": "Toilet" }
+    ],
+    "nameParams": [ "Comments", "Mark", "Label", "Name" ],
+    "riserTolerance": 6,
+    "riserIdFromName": "^[A-Za-z]{1,4}-?\\d{1,3}$",
+    "areaDrainPairTolerance": 2
   }
 }

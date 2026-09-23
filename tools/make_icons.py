@@ -99,6 +99,14 @@ def test_families():
     return im
 icons['TestFamilies'] = test_families
 
+def adopt():
+    # existing sleeve (ring) getting the add-in's stamp (tick)
+    im, d = base(COL['setup'])
+    ring(d, 50, 64, 26, 9)
+    line(d, [(74, 74), (88, 90), (112, 46)], 10)
+    return im
+icons['Adopt'] = adopt
+
 # ---------------- Place – Mechanical
 def exhaust():
     im, d = base(COL['mech'])

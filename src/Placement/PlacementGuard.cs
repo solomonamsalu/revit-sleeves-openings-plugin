@@ -9,35 +9,38 @@ namespace SleevesOpenings.Placement
     /// <summary>
     /// Click-time checks from the manual: 1' from columns (26), never in shear walls (27) or beams (28),
     /// never at the edge of a wall (general rule), not mid-room (20-21), standpipe 5½" to wall.
-    /// Walls use exact geometry; columns/beams use bounding boxes.
+    /// Walls use exact geometry; columns/beams use bounding boxes. Structure is read from the host and from
+    /// linked Revit models (clearances.includeLinkedModels) — on most projects the structural model is a link.
     /// </summary>
     public class PlacementGuard
     {
-        private readonly Document _doc;
         private readonly RuleSet _rules;
         private readonly Level _level;
-        private readonly List<Element> _columns, _beams;
+        private readonly List<Structural> _columns, _beams;
         private readonly WallGeometry _walls;
+
+        /// <summary>A column or beam from the host or a linked model, with its box in host coordinates.</summary>
+        private class Structural
+        {
+            public BoundingBoxXYZ Box;
+            public string Label;
+        }
 
         public PlacementGuard(Document doc, RuleSet rules, Level level, WallGeometry walls = null)
         {
-            _doc = doc; _rules = rules; _level = level;
-            _walls = walls ?? new WallGeometry(doc, level);
-            _columns = OnLevel(Collect(BuiltInCategory.OST_StructuralColumns).Concat(Collect(BuiltInCategory.OST_Columns)));
-            _beams = OnLevel(Collect(BuiltInCategory.OST_StructuralFraming));
+            _rules = rules; _level = level;
+            var links = new LinkedModels(doc, rules);
+            _walls = walls ?? new WallGeometry(doc, level, links);
+            _columns = OnLevel(links.Collect(BuiltInCategory.OST_StructuralColumns).Concat(links.Collect(BuiltInCategory.OST_Columns)));
+            _beams = OnLevel(links.Collect(BuiltInCategory.OST_StructuralFraming));
         }
 
-        private IEnumerable<Element> Collect(BuiltInCategory cat) =>
-            new FilteredElementCollector(_doc).OfCategory(cat).WhereElementIsNotElementType();
-
-        private List<Element> OnLevel(IEnumerable<Element> elems)
+        private List<Structural> OnLevel(IEnumerable<(Element Element, BoundingBoxXYZ Box, LinkedModels.Source Source)> elems)
         {
             double z = _level.Elevation;
-            return elems.Where(e =>
-            {
-                var bb = e.get_BoundingBox(null);
-                return bb != null && bb.Min.Z - 1 <= z && bb.Max.Z + 1 >= z;
-            }).ToList();
+            return elems.Where(e => e.Box.Min.Z - 1 <= z && e.Box.Max.Z + 1 >= z)
+                        .Select(e => new Structural { Box = e.Box, Label = e.Source.Describe(e.Element.Id) })
+                        .ToList();
         }
 
         /// <summary>Warnings for a proposed point and half-sizes (inches). Prefix "!" marks hard errors (structure).</summary>
@@ -52,24 +55,25 @@ namespace SleevesOpenings.Placement
             double minCol = Units.InchesToFeet(c.MinFromColumn);
             foreach (var col in _columns)
             {
-                double d = DistanceXY(pt, col.get_BoundingBox(null)) - r;
+                double d = DistanceXY(pt, col.Box) - r;
                 if (d < minCol)
-                    warnings.Add($"{Units.FormatInches(Math.Max(0, Units.FeetToInches(d)))} from column {col.Id} (rule 26: keep {Units.FormatInches(c.MinFromColumn)})");
+                    warnings.Add($"{Units.FormatInches(Math.Max(0, Units.FeetToInches(d)))} from column {col.Label} (rule 26: keep {Units.FormatInches(c.MinFromColumn)})");
             }
 
-            // Rule 27: shear walls (exact)
+            // Rule 27: shear walls (exact); foundation / retaining walls are concrete too (engineer's comment: out of the FND wall)
             foreach (var w in _walls.ShearHits(pt, r))
-                warnings.Add($"!Inside concrete shear wall {w.Wall.Id} (rule 27: never)");
+                warnings.Add(w.IsShear ? $"!Inside concrete shear wall {w.Label} (rule 27: never)"
+                                       : $"!Inside foundation wall {w.Label} (rule 27: never)");
 
             // Rule 28: beams
             foreach (var b in _beams)
-                if (Overlaps(pt, hw, hl, b.get_BoundingBox(null)))
-                    warnings.Add($"!Inside structural beam {b.Id} (rule 28: never)");
+                if (Overlaps(pt, hw, hl, b.Box))
+                    warnings.Add($"!Inside structural beam {b.Label} (rule 28: never)");
 
             // General rule: never at the edge of a wall
             foreach (var w in _walls.Straddled(pt, r))
-                if (!w.IsShear)
-                    warnings.Add($"Sits on the edge of wall {w.Wall.Id} — no room for sheetrock studs (general rule)");
+                if (!w.IsShear && !w.IsFoundation)
+                    warnings.Add($"Sits on the edge of wall {w.Label} — no room for sheetrock studs (general rule)");
 
             // Standpipe: 5½" from pipe centre to any wall face
             if (system == SystemKind.Standpipe)
@@ -77,7 +81,7 @@ namespace SleevesOpenings.Placement
                 double minWall = Units.InchesToFeet(_rules.Systems.Standpipe.MinCenterToWall);
                 var near = _walls.Nearest(pt, out double face);
                 if (near != null && face >= 0 && face < minWall)
-                    warnings.Add($"Standpipe centre {Units.FormatInches(Units.FeetToInches(face))} from wall {near.Wall.Id} (min {Units.FormatInches(_rules.Systems.Standpipe.MinCenterToWall)})");
+                    warnings.Add($"Standpipe centre {Units.FormatInches(Units.FeetToInches(face))} from wall {near.Label} (min {Units.FormatInches(_rules.Systems.Standpipe.MinCenterToWall)})");
             }
 
             // Rules 20-21: avoid the middle of rooms

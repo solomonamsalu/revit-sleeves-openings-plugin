@@ -18,6 +18,7 @@ namespace SleevesOpenings.Rules
         [JsonProperty("levelClassification")] public LevelClassificationRules LevelClassification { get; set; } = new LevelClassificationRules();
         [JsonProperty("generalRules")] public GeneralRules GeneralRules { get; set; } = new GeneralRules();
         [JsonProperty("fixtures")] public FixtureRules Fixtures { get; set; } = new FixtureRules();
+        [JsonProperty("adopt")] public AdoptRules Adopt { get; set; } = new AdoptRules();
 
         /// <summary>Where this rule set was loaded from (for display/debugging).</summary>
         [JsonIgnore] public string SourcePath { get; set; }
@@ -179,6 +180,52 @@ namespace SleevesOpenings.Rules
         [JsonProperty("ervSpacingExact")] public double ErvSpacingExact { get; set; } = 24;
         /// <summary>Farther than this from any wall inside a room = "middle of the room" (rules 20-21). 0 disables.</summary>
         [JsonProperty("midRoomDistance")] public double MidRoomDistance { get; set; } = 36;
+        /// <summary>Also read columns, beams and walls from linked Revit models (the structural model is usually a link).</summary>
+        [JsonProperty("includeLinkedModels")] public bool IncludeLinkedModels { get; set; } = true;
+        /// <summary>Regex on the link name; empty = every link.</summary>
+        [JsonProperty("linkedModelMatch")] public string LinkedModelMatch { get; set; }
+    }
+
+    /// <summary>
+    /// "Adopt Existing": how to recognise openings and sleeves that were placed by hand (or by another tool)
+    /// so they get the add-in's stamp and take part in Final Check, Riser Manager, propagation and schedules.
+    /// Everything here is data: which families, which text/toggle/type names mean which system.
+    /// </summary>
+    public class AdoptRules
+    {
+        [JsonProperty("matchers", ObjectCreationHandling = ObjectCreationHandling.Replace)] public List<AdoptMatcher> Matchers { get; set; } = new List<AdoptMatcher>();
+
+        /// <summary>Checkbox-sized sleeve: the prefix of the toggle that is ON names the system ("Storm" -> Storm, "Fire" -> Standpipe).</summary>
+        [JsonProperty("togglePrefixToSystem", ObjectCreationHandling = ObjectCreationHandling.Replace)] public Dictionary<string, string> TogglePrefixToSystem { get; set; } = new Dictionary<string, string>();
+
+        /// <summary>Label / type name patterns that decide the system before anything else ("^DE" -> DryerExhaust, "chute" -> GarbageChute).</summary>
+        [JsonProperty("nameToSystem", ObjectCreationHandling = ObjectCreationHandling.Replace)] public List<NameMatcher> NameToSystem { get; set; } = new List<NameMatcher>();
+
+        /// <summary>Text parameters read (in order) for the label, on the instance then the type.</summary>
+        [JsonProperty("nameParams", ObjectCreationHandling = ObjectCreationHandling.Replace)] public List<string> NameParams { get; set; } = new List<string> { "Comments", "Mark" };
+
+        /// <summary>Openings of one system within this XY distance (inches) on different floors are one riser.</summary>
+        [JsonProperty("riserTolerance")] public double RiserTolerance { get; set; } = 6;
+
+        /// <summary>A label matching this regex is already a riser id (KX2, MD-1) and is kept as such.</summary>
+        [JsonProperty("riserIdFromName")] public string RiserIdFromName { get; set; } = @"^[A-Za-z]{1,4}-?\d{1,3}$";
+
+        /// <summary>Two storm sleeves of the area-drain size this close (inches) to the manual's c-c spacing are an area-drain pair.</summary>
+        [JsonProperty("areaDrainPairTolerance")] public double AreaDrainPairTolerance { get; set; } = 2;
+    }
+
+    public class AdoptMatcher
+    {
+        [JsonProperty("family")] public string Family { get; set; }     // regex on the family name
+        [JsonProperty("type")] public string Type { get; set; }         // regex on the type name (optional)
+        [JsonProperty("role")] public string Role { get; set; }         // FamilyRole.* — which parameters to read
+        [JsonProperty("system")] public string System { get; set; }     // default system when name/toggle decide nothing (optional)
+    }
+
+    public class NameMatcher
+    {
+        [JsonProperty("match")] public string Match { get; set; }
+        [JsonProperty("system")] public string System { get; set; }
     }
 
     public class ViewRangeRules
