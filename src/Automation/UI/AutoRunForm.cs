@@ -121,7 +121,7 @@ namespace SleevesOpenings.Automation.UI
                 Dock = DockStyle.Fill, AllowUserToAddRows = false, AllowUserToDeleteRows = false, RowHeadersVisible = false, ReadOnly = true,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, SelectionMode = DataGridViewSelectionMode.FullRowSelect
             };
-            foreach (var (h, w) in new[] { ("Floor", 45), ("Tag", 40), ("Meaning", 90), ("Size here (DN)", 45), ("Size above (UP)", 45), ("Ducts", 25), ("DWG position (in)", 60), ("Result", 90), ("How it was read", 120) })
+            foreach (var (h, w) in new[] { ("Floor", 45), ("Tag", 40), ("Meaning", 90), ("Size down (DN)", 55), ("Size up (UP)", 55), ("Ducts", 25), ("DWG position (in)", 60), ("Result", 90), ("How it was read", 120) })
                 _risers.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = h, FillWeight = w });
             _risersPage = new TabPage("Risers (DWG)");
             _risersPage.Controls.Add(_risers);
