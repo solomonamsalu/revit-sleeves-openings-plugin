@@ -19,6 +19,10 @@ namespace SleevesOpenings.Rules
         [JsonProperty("generalRules")] public GeneralRules GeneralRules { get; set; } = new GeneralRules();
         [JsonProperty("fixtures")] public FixtureRules Fixtures { get; set; } = new FixtureRules();
         [JsonProperty("adopt")] public AdoptRules Adopt { get; set; } = new AdoptRules();
+        /// <summary>Auto Run: which tag definitions (read from the engineer's PDF) mean an opening.</summary>
+        [JsonProperty("legend")] public Automation.Legend.LegendRules Legend { get; set; } = new Automation.Legend.LegendRules();
+        /// <summary>Auto Run: how the engineer draws risers in the DWG (blocks, bubble attributes, connector layers).</summary>
+        [JsonProperty("dwgProfile")] public Automation.Drawings.DwgProfile DwgProfile { get; set; } = new Automation.Drawings.DwgProfile();
 
         /// <summary>Where this rule set was loaded from (for display/debugging).</summary>
         [JsonIgnore] public string SourcePath { get; set; }

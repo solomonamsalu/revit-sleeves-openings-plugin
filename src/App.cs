@@ -27,6 +27,9 @@ namespace SleevesOpenings
                 Directory.CreateDirectory(LogPath);
                 Log("Starting");
                 UI.RevitWindow.MainHandle = application.MainWindowHandle;
+#if NETFRAMEWORK
+                AppDomain.CurrentDomain.AssemblyResolve += ResolveFromAddinFolder;
+#endif
 
                 BuildRibbon(application);
                 return Result.Succeeded;
@@ -39,6 +42,27 @@ namespace SleevesOpenings
         }
 
         public Result OnShutdown(UIControlledApplication application) => Result.Succeeded;
+
+#if NETFRAMEWORK
+        /// <summary>
+        /// Revit 2024 ships older System.Memory / System.Buffers / Unsafe than ACadSharp and PdfPig need and has no
+        /// binding redirects, so those loads fail. Serve them from the add-in folder when ours is the same or newer.
+        /// </summary>
+        private static Assembly ResolveFromAddinFolder(object sender, ResolveEventArgs args)
+        {
+            try
+            {
+                var wanted = new AssemblyName(args.Name);
+                var path = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), wanted.Name + ".dll");
+                if (!File.Exists(path)) return null;
+                var ours = AssemblyName.GetAssemblyName(path);
+                if (wanted.Version != null && ours.Version < wanted.Version) return null;
+                Log($"Resolving {args.Name} from the add-in folder ({ours.Version})");
+                return Assembly.LoadFrom(path);
+            }
+            catch (Exception ex) { Log($"Resolve {args.Name} failed: {ex.Message}"); return null; }
+        }
+#endif
 
         /// <summary>Rules for the given document (project override > user > default). Cached per model path.</summary>
         public static RuleSet Rules(Document doc)
@@ -75,6 +99,14 @@ namespace SleevesOpenings
                 "Choose which loaded families and parameters are used for Regular Opening, Pipe Reference Opening, Round Sleeve and Electrical Opening."));
             setup.AddItem(Button("TestFamilies", "Create Test\nFamilies", asm, typeof(Commands.CreateTestFamiliesCommand),
                 "No office families yet? Generates a parametric test opening and test sleeve, loads them and maps them so every Place button works."));
+            setup.AddItem(Button("Adopt", "Adopt\nExisting", asm, typeof(Commands.AdoptCommand),
+                "Stamp sleeves/openings that were placed by hand so Final Check, Riser Manager, Propagate and Schedule include them."));
+            setup.AddItem(Button("ExportKey", "Export\nAnswer Key", asm, typeof(Commands.ExportAnswerKeyCommand),
+                "Read-only: write every sleeve/opening in this model (system, size, level, location) plus levels, grids and links to CSV, to score automatic placement against a finished model."));
+
+            var auto = app.CreateRibbonPanel(TabName, "Automate");
+            auto.AddItem(Button("AutoRun", "Auto\nRun", asm, typeof(Automation.AutoRunCommand),
+                "Place sleeves and openings from the engineer's PDF + DWG. Checks what is already in the model, reads the drawings and matches their floors to the Revit levels."));
 
             // Place: one button per manual section. Click a plan, enter the engineer's size, click locations, Esc.
             var mech = app.CreateRibbonPanel(TabName, "Place – Mechanical");

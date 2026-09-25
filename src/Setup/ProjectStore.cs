@@ -25,6 +25,8 @@ namespace SleevesOpenings.Setup
         public Dictionary<string, RiserEnds> RiserEnds { get; set; } = new Dictionary<string, RiserEnds>();
         /// <summary>"PTAC", "Split" or "VRF" once the refrigeration planner has been run.</summary>
         public string AcSystem { get; set; }
+        /// <summary>Auto Run: drawing files, floor-to-level overrides, existing-openings choice.</summary>
+        public SleevesOpenings.Automation.AutomationInputs Automation { get; set; } = new SleevesOpenings.Automation.AutomationInputs();
     }
 
     public class RiserEnds

@@ -107,6 +107,26 @@ def adopt():
     return im
 icons['Adopt'] = adopt
 
+def export_key():
+    # sleeve (ring) exported to a sheet (arrow out)
+    im, d = base(COL['setup'])
+    ring(d, 44, 64, 22, 9)
+    line(d, [(72, 64), (110, 64)], 10)
+    d.polygon([(112, 64), (94, 48), (94, 80)], fill=W)
+    return im
+icons['ExportKey'] = export_key
+
+def auto_run():
+    # drawing sheet feeding a sleeve (ring): sheet with a play arrow
+    im, d = base(COL['plan'])
+    d.rectangle((22, 26, 70, 102), outline=W, width=8)
+    d.polygon([(80, 40), (112, 64), (80, 88)], fill=W)
+    line(d, [(32, 48), (60, 48)], 6)
+    line(d, [(32, 64), (60, 64)], 6)
+    line(d, [(32, 80), (52, 80)], 6)
+    return im
+icons['AutoRun'] = auto_run
+
 # ---------------- Place – Mechanical
 def exhaust():
     im, d = base(COL['mech'])
