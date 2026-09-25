@@ -14,7 +14,8 @@ namespace SleevesOpenings.Setup
         public Level Level { get; set; }
         public LevelRole Role { get; set; }
         public string Name => Level.Name;
-        public double Elevation => Level.Elevation;
+        /// <summary>Model Z (internal origin), for geometry and ordering; Level.Elevation follows the level type's base point.</summary>
+        public double Elevation => Level.ProjectElevation;
     }
 
     /// <summary>

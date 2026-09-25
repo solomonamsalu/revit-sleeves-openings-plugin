@@ -97,7 +97,7 @@ namespace SleevesOpenings.Setup
                 vr.SetOffset(PlanViewPlane.TopClipPlane, topOff);
 
                 // Cut plane must sit between bottom and top: clamp if the view had a tall cut plane.
-                double floorToFloor = above.Elevation - level.Elevation;
+                double floorToFloor = above.Level.ProjectElevation - level.ProjectElevation;
                 double cut = vr.GetOffset(PlanViewPlane.CutPlane);
                 if (vr.GetLevelId(PlanViewPlane.CutPlane) != level.Id || cut <= botOff || cut >= floorToFloor + topOff)
                 {

@@ -37,7 +37,7 @@ namespace SleevesOpenings.Placement
 
         private List<Structural> OnLevel(IEnumerable<(Element Element, BoundingBoxXYZ Box, LinkedModels.Source Source)> elems)
         {
-            double z = _level.Elevation;
+            double z = _level.ProjectElevation;          // model Z (Elevation follows the level type's base point)
             return elems.Where(e => e.Box.Min.Z - 1 <= z && e.Box.Max.Z + 1 >= z)
                         .Select(e => new Structural { Box = e.Box, Label = e.Source.Describe(e.Element.Id) })
                         .ToList();

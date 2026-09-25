@@ -10,7 +10,7 @@
       "file": "Families/Openings.rfa",
       "widthParam": null,
       "lengthParam": null,
-      "nameParam": null
+      "nameParam": "Riser Number"
     },
     "pipeReferenceOpening": {
       "family": "Ref pipes opening",
@@ -46,7 +46,7 @@
       "file": "Families/Openings.rfa",
       "widthParam": null,
       "lengthParam": null,
-      "nameParam": null
+      "nameParam": "Riser Number"
     }
   },
 
@@ -160,9 +160,10 @@
   },
 
   "legend": {
-    "_comment": "Auto Run: tag meanings are read from the engineer's PDF (ABBREVIATIONS table, SYMBOLS list, schedules). officeFixed = tags the office always uses and PDFs do not define (only KX and TX). categories are tried in order against the definition text (regex, case-insensitive); the first match wins. system = gets an opening of that system; ignore = no opening; labelOnHost = no opening, but the tag is added to the label of the duct opening it sits on (ERV-FSD). A definition matching nothing is 'not a riser'.",
+    "_comment": "Auto Run: tag meanings are read from the engineer's PDF (ABBREVIATIONS table, SYMBOLS list, schedules). officeFixed = tags the office always uses and PDFs do not define (only KX and TX). categories are tried in order against the definition text (regex, case-insensitive); the first match wins. system = gets an opening of that system; ignore = no opening; labelOnHost = no opening, but the tag is added to the label of the duct opening it sits on (ERV-FSD). review = not decided yet: reported with that text, not placed. A definition matching nothing is 'not a riser'. Also applied to the note written next to a riser that has no tag.",
     "officeFixed": { "KX": "KITCHEN EXHAUST", "TX": "TOILET EXHAUST" },
     "categories": [
+      { "match": "COMBUSTION AIR|FUEL VENT|GAS FLUE", "review": "combustion air / Type B fuel vent: needs a decision" },
       { "match": "DIFFUSER|GRILLE|REGISTER|LOUVER", "ignore": true },
       { "match": "\\b(EXHAUST|SUPPLY|RETURN|OUTSIDE|RELIEF|TRANSFER) AIR\\b", "ignore": true },
       { "match": "PARKING|GARAGE", "system": "Exhaust" },
@@ -184,7 +185,41 @@
     "connectorLayers": "RISER",
     "groupDistance": 12,
     "pointTolerance": 15,
-    "maxTagDistance": 36
+    "maxTagDistance": 36,
+    "maxNoteDistance": 120,
+    "_ductLayers": "Regex on layers holding the duct outlines (rectangles / the X in a riser): a rectangular opening is turned the way its duct is drawn.",
+    "ductLayers": "DUCT",
+    "_referenceFolders": "Regex on folder names (searched next to the model) holding the per-floor drawings at Revit's 0,0 (office xrefs). Used to line the DWG up with Revit for floors that have no DWG imported/linked in the model.",
+    "referenceFolders": "^XREF\\s*-?\\s*(ME|M|MECH|MECHANICAL|HVAC|HV)$",
+    "_gridFiles": "Regex on the file name of the office grid-lines DWG (same 0,0 as the xrefs), searched in and next to the xref folder. Its grids must land on the Revit grids (this model's, or a Revit link's) within 1\", or nothing is placed.",
+    "gridFiles": "\\bGRID"
+  },
+
+  "sleeveViews": {
+    "_comment": "Auto Run: after placing, one plan per floor that has sleeves/openings, as in the PL model: a copy of that level's plan (mechanical first) named '<level name><nameSuffix>', Sub-Discipline = subDiscipline (the Project Browser folder), the manual's view range (unless a view template sets it), every opening tagged when a tag family for its category is loaded. An existing view with that name is reused.",
+    "subDiscipline": "Sleeves",
+    "nameSuffix": " Sleeves",
+    "_tag": "false = no separate tags: the opening shows its riser name itself (Openings family: 'Riser Number' in its corner). Tags Auto Run placed earlier in the Sleeves views are removed. true = tag every opening with the category's default tag.",
+    "tag": false,
+    "_transparentLabels": "true = the name text drawn inside the opening families (Riser Number) gets a transparent background: the family's text types are set to Transparent and the family is reloaded (instance values kept).",
+    "transparentLabels": true
+  },
+
+  "automation": {
+    "_comment": "Auto Run after placing and the checks against other sets. finalCheck = run Final Check on the openings this run placed; autoFix = apply its fixes that have one right answer (size, name, riser id) to those openings only (never moves, copies or deletes). riserDiagram = read the engineer's riser diagram and report tagged risers (GX-1...) the floor plans do not show. referenceSet = TESTING ONLY (enabled: false in normal use; the S&O set is what Auto Run produces): a finished Sleeves & Openings set (PDF) of a past project to compare with: files = regex on PDF names searched in the project folder; its HVAC openings are the rectangles in the colour of the legend row legendText; tags = text up to maxTagSize points inside them; each sheet is lined up by its grid bubbles (all within gridTolerance). Openings within matchRadius are paired, then compared: position within positionTolerance, size within sizeTolerance. Inches.",
+    "finalCheck": true,
+    "autoFix": true,
+    "riserDiagram": true,
+    "referenceSet": {
+      "enabled": false,
+      "files": "SLEEVES\\s*(&|AND)?\\s*OPENINGS",
+      "legendText": "HVAC OPENINGS",
+      "maxTagSize": 8,
+      "matchRadius": 24,
+      "positionTolerance": 3,
+      "sizeTolerance": 1,
+      "gridTolerance": 6
+    }
   },
 
   "adopt": {

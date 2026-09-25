@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace SleevesOpenings.Automation.Legend
 {
-    public enum TagCategory { Opening, Ignore, Other, Undefined }
+    public enum TagCategory { Opening, Ignore, Other, Undefined, Review }
 
     /// <summary>One tag and what the drawings say it means.</summary>
     public class LegendEntry
@@ -26,11 +26,13 @@ namespace SleevesOpenings.Automation.Legend
         public TagCategory Category;
         public string System;         // for Opening
         public bool LabelOnHost;      // FSD/GD: no opening, tag goes on the host duct opening's label
+        public string Review;         // Review: why it waits for a decision
 
         public string Describe() =>
             Category == TagCategory.Opening ? $"opening ({System})" :
             Category == TagCategory.Ignore ? (LabelOnHost ? "no opening (label on the duct opening)" : "no opening") :
-            Category == TagCategory.Undefined ? "not defined in the drawings" : "not a riser";
+            Category == TagCategory.Undefined ? "not defined in the drawings" :
+            Category == TagCategory.Review ? Review + " - reported, not placed" : "not a riser";
     }
 
     /// <summary>
@@ -94,7 +96,8 @@ namespace SleevesOpenings.Automation.Legend
             foreach (var c in rules?.Categories ?? new List<LegendCategory>())
             {
                 if (string.IsNullOrEmpty(c.Match) || !Regex.IsMatch(definition, c.Match, RegexOptions.IgnoreCase)) continue;
-                if (c.Ignore) { m.Category = TagCategory.Ignore; m.LabelOnHost = c.LabelOnHost; }
+                if (!string.IsNullOrEmpty(c.Review)) { m.Category = TagCategory.Review; m.Review = c.Review; }
+                else if (c.Ignore) { m.Category = TagCategory.Ignore; m.LabelOnHost = c.LabelOnHost; }
                 else if (!string.IsNullOrEmpty(c.System)) { m.Category = TagCategory.Opening; m.System = c.System; }
                 return;
             }

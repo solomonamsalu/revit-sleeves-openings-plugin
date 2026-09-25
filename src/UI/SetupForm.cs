@@ -64,7 +64,7 @@ namespace SleevesOpenings.UI
             roleCol.Items.AddRange(Enum.GetNames(typeof(LevelRole)));
             _levelGrid.Columns.Add(roleCol);
             foreach (var lv in _levels.Everything.AsEnumerable().Reverse())   // top of building first, reference levels included so they can be un-ignored
-                _levelGrid.Rows.Add(lv.Name, lv.Elevation.ToString("0.##"), lv.Role.ToString());
+                _levelGrid.Rows.Add(lv.Name, lv.Level.Elevation.ToString("0.##"), lv.Role.ToString());
             levelBox.Controls.Add(_levelGrid);
             root.Controls.Add(levelBox, 0, 0);
 

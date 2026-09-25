@@ -34,7 +34,7 @@ namespace SleevesOpenings.Placement
         {
             _doc = doc;
             links = links ?? new LinkedModels(doc, App.Rules(doc));
-            double z = level.Elevation;
+            double z = level.ProjectElevation;
             Walls = new List<WallInfo>();
             foreach (var src in links.Sources)
             {
@@ -105,7 +105,7 @@ namespace SleevesOpenings.Placement
         /// <summary>Room containing the point on this level, or null.</summary>
         public Room RoomAt(XYZ pt, Level level)
         {
-            try { return _doc.GetRoomAtPoint(new XYZ(pt.X, pt.Y, level.Elevation + 1.0)); }
+            try { return _doc.GetRoomAtPoint(new XYZ(pt.X, pt.Y, level.ProjectElevation + 1.0)); }
             catch { return null; }
         }
     }

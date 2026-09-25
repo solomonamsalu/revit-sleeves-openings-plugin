@@ -14,6 +14,10 @@ namespace SleevesOpenings.Automation
     {
         public string Pdf { get; set; }
         public string Dwg { get; set; }
+        /// <summary>Folder of per-floor drawings at Revit's 0,0 (office xrefs), used to line the DWG up with Revit.</summary>
+        public string Xrefs { get; set; }
+        /// <summary>The office's Sleeves &amp; Openings set (PDF) to compare the result with; "" = none wanted (not searched for again).</summary>
+        public string Reference { get; set; }
     }
 
     /// <summary>Auto Run inputs, saved in the project (ProjectState) so the next run fills them in.</summary>

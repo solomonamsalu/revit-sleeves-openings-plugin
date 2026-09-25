@@ -62,7 +62,7 @@ namespace SleevesOpenings.Placement
         static readonly Regex RxWidth = new Regex(@"^(opening\s*)?(width|w|dim\s*x|x)$", RegexOptions.IgnoreCase);
         static readonly Regex RxLength = new Regex(@"^(opening\s*)?(length|depth|height|l|h|d|dim\s*y|y)$", RegexOptions.IgnoreCase);
         static readonly Regex RxDiameter = new Regex(@"(diameter|dia\b|radius|nominal)", RegexOptions.IgnoreCase);
-        static readonly Regex RxName = new Regex(@"^(comments|mark|label|name|text|description|tag)$", RegexOptions.IgnoreCase);
+        static readonly string[] NamePreference = { "Riser Number", "Name", "Label", "Tag", "Text", "Description", "Comments", "Mark" };
         static readonly Regex RxDownHeight = new Regex(@"down\s*height", RegexOptions.IgnoreCase);
 
         public static FamilyMapEntry Get(RuleSet rules, ProjectState state, string role)
@@ -155,7 +155,9 @@ namespace SleevesOpenings.Placement
             map.LengthParam = map.LengthParam ?? lengths.FirstOrDefault(n => RxLength.IsMatch(n) && n != map.WidthParam);
             map.DiameterParam = map.DiameterParam ?? lengths.FirstOrDefault(n => RxDiameter.IsMatch(n));
             map.DownHeightParam = map.DownHeightParam ?? lengths.FirstOrDefault(n => RxDownHeight.IsMatch(n));
-            map.NameParam = map.NameParam ?? texts.FirstOrDefault(n => RxName.IsMatch(n)) ?? "Comments";
+            // the family's own name parameter first: Comments/Mark only when it has none
+            map.NameParam = map.NameParam ?? NamePreference.Select(p => texts.FirstOrDefault(n => string.Equals(n, p, StringComparison.OrdinalIgnoreCase)))
+                                                           .FirstOrDefault(n => n != null) ?? "Comments";
         }
 
         /// <summary>Suggests a symbol for a role by family-name keywords when nothing is mapped yet.</summary>

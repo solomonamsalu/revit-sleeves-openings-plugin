@@ -20,6 +20,7 @@ namespace SleevesOpenings.Automation.Legend
         [JsonProperty("categories", ObjectCreationHandling = ObjectCreationHandling.Replace)]
         public List<LegendCategory> Categories { get; set; } = new List<LegendCategory>
         {
+            new LegendCategory { Match = @"COMBUSTION AIR|FUEL VENT|GAS FLUE", Review = "combustion air / Type B fuel vent: needs a decision" },
             new LegendCategory { Match = @"DIFFUSER|GRILLE|REGISTER|LOUVER", Ignore = true },
             new LegendCategory { Match = @"\b(EXHAUST|SUPPLY|RETURN|OUTSIDE|RELIEF|TRANSFER) AIR\b", Ignore = true },
             new LegendCategory { Match = @"PARKING|GARAGE", System = "Exhaust" },
@@ -43,5 +44,7 @@ namespace SleevesOpenings.Automation.Legend
         [JsonProperty("ignore")] public bool Ignore { get; set; }
         /// <summary>No opening of its own, but its tag is added to the label of the duct opening it sits on (ERV-FSD).</summary>
         [JsonProperty("labelOnHost")] public bool LabelOnHost { get; set; }
+        /// <summary>Not decided yet: reported with this text, not placed (plan section 14, left tasks).</summary>
+        [JsonProperty("review")] public string Review { get; set; }
     }
 }

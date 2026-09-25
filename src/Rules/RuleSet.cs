@@ -23,6 +23,10 @@ namespace SleevesOpenings.Rules
         [JsonProperty("legend")] public Automation.Legend.LegendRules Legend { get; set; } = new Automation.Legend.LegendRules();
         /// <summary>Auto Run: how the engineer draws risers in the DWG (blocks, bubble attributes, connector layers).</summary>
         [JsonProperty("dwgProfile")] public Automation.Drawings.DwgProfile DwgProfile { get; set; } = new Automation.Drawings.DwgProfile();
+        /// <summary>Auto Run: the per-floor "Sleeves" review views (folder = Sub-Discipline, name = level + suffix).</summary>
+        [JsonProperty("sleeveViews")] public Automation.SleeveViewRules SleeveViews { get; set; } = new Automation.SleeveViewRules();
+        /// <summary>Auto Run: Final Check after placing, the riser diagram check, the S&amp;O set comparison.</summary>
+        [JsonProperty("automation")] public Automation.AutomationRules Automation { get; set; } = new Automation.AutomationRules();
 
         /// <summary>Where this rule set was loaded from (for display/debugging).</summary>
         [JsonIgnore] public string SourcePath { get; set; }

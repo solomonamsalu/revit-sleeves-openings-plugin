@@ -86,7 +86,7 @@ namespace SleevesOpenings.Electrical
 
             double r = Units.InchesToFeet(rules.CircleDiameter) / 2;
             int n = 0;
-            foreach (var c in CircleCentres(seg, rules, seg.Point, level.Elevation))
+            foreach (var c in CircleCentres(seg, rules, seg.Point, level.ProjectElevation))
             {
                 // A full circle is two arcs in Revit.
                 doc.Create.NewDetailCurve(view, Arc.Create(c, r, 0, Math.PI, XYZ.BasisX, XYZ.BasisY));

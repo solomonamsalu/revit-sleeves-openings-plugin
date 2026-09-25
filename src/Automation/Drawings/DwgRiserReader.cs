@@ -25,6 +25,8 @@ namespace SleevesOpenings.Automation.Drawings
         public List<string> Tags = new List<string>();         // from bubbles: "TX1", "ERV-SA"
         public List<RiserLabel> Labels = new List<RiserLabel>();
         public List<string> Evidence = new List<string>();     // how tags/labels were attached, for the report
+        /// <summary>For a riser with no tag and no label: the notes written next to it, nearest first ("COMBUSTION AIR AND TYPE B FUEL VENT UP IN SHAFT").</summary>
+        public List<string> Notes = new List<string>();
 
         public string Tag => Tags.FirstOrDefault();
         public RiserLabel Label => Labels.FirstOrDefault(l => l.Down != null || l.Up != null) ?? Labels.FirstOrDefault();
@@ -53,6 +55,14 @@ namespace SleevesOpenings.Automation.Drawings
     /// </summary>
     public static class DwgRiserReader
     {
+        /// <summary>Block name given to a riser placed at the end of a tag line (no symbol drawn there).</summary>
+        public const string LineEnd = "(end of the tag line)";
+        /// <summary>Block name given to a riser placed where an UP/DN label's arrow points (no symbol drawn there).</summary>
+        public const string ArrowTip = "(UP/DN label arrow)";
+
+        /// <summary>A riser position with no symbol drawn (placed from a tag line or an UP/DN arrow).</summary>
+        public static bool Drawn(RiserSymbol s) => s.Block != LineEnd && s.Block != ArrowTip;
+
         private class Bubble { public string Tag; public double X, Y, Radius; public bool Used; }
         private class Segment { public List<(double X, double Y)> Points = new List<(double, double)>(); }
         private class Note { public string Text; public double X, Y; public List<(double X, double Y)> Arrows = new List<(double, double)>(); }
@@ -71,7 +81,7 @@ namespace SleevesOpenings.Automation.Drawings
             var bubbles = new List<Bubble>();
             var segments = new List<Segment>();
             var notes = new List<Note>();
-            Collect(doc.Entities, Xf.Identity, 0, riserRx, tagRx, connRx, profile, symbols, bubbles, segments, notes);
+            Collect(doc.Entities, DwgXform.Identity, 0, riserRx, tagRx, connRx, profile, symbols, bubbles, segments, notes);
 
             foreach (var floor in sheets.Floors)
             {
@@ -90,23 +100,18 @@ namespace SleevesOpenings.Automation.Drawings
             return result;
         }
 
-        // ------------------------------------------------------------------ collection (with block transforms)
-
-        private struct Xf
+        /// <summary>Every riser symbol in the drawing, with no floor split (a per-floor drawing used to check alignment).</summary>
+        public static List<RiserSymbol> Symbols(CadDocument doc, DwgProfile profile)
         {
-            public double Ox, Oy, Cos, Sin, Sx, Sy;
-            public static Xf Identity => new Xf { Cos = 1, Sx = 1, Sy = 1 };
-            public (double X, double Y) Apply(double x, double y) =>
-                (Ox + (x * Sx) * Cos - (y * Sy) * Sin, Oy + (x * Sx) * Sin + (y * Sy) * Cos);
-            public Xf Then(Insert ins)
-            {
-                var (ox, oy) = Apply(ins.InsertPoint.X, ins.InsertPoint.Y);
-                double a = Math.Atan2(Sin, Cos) + ins.Rotation;
-                return new Xf { Ox = ox, Oy = oy, Cos = Math.Cos(a), Sin = Math.Sin(a), Sx = Sx * ins.XScale, Sy = Sy * ins.YScale };
-            }
+            var symbols = new List<RiserSymbol>();
+            Collect(doc.Entities, DwgXform.Identity, 0, new Regex(profile.RiserBlocks, RegexOptions.IgnoreCase), new Regex(profile.TagBlocks, RegexOptions.IgnoreCase),
+                    new Regex(profile.ConnectorLayers, RegexOptions.IgnoreCase), profile, symbols, new List<Bubble>(), new List<Segment>(), new List<Note>());
+            return symbols;
         }
 
-        private static void Collect(IEnumerable<Entity> entities, Xf xf, int depth, Regex riserRx, Regex tagRx, Regex connRx, DwgProfile profile,
+        // ------------------------------------------------------------------ collection (with block transforms)
+
+        private static void Collect(IEnumerable<Entity> entities, DwgXform xf, int depth, Regex riserRx, Regex tagRx, Regex connRx, DwgProfile profile,
                                     List<RiserSymbol> symbols, List<Bubble> bubbles, List<Segment> segments, List<Note> notes)
         {
             foreach (var e in entities)
@@ -205,8 +210,18 @@ namespace SleevesOpenings.Automation.Drawings
                 {
                     anchors.Add((b, fx, fy, true));
                     if (!symbols.Any(o => Dist(o.X, o.Y, fx, fy) <= profile.PointTolerance))
-                        symbols.Add(new RiserSymbol { X = fx, Y = fy, Block = "(end of the tag line)" });
+                        symbols.Add(new RiserSymbol { X = fx, Y = fy, Block = LineEnd });
                 }
+            }
+
+            // 1b. An UP/DN label's arrow marks a riser even where no symbol is drawn (a duct moved into a shaft).
+            foreach (var n in notes.Where(n => n.Arrows.Count > 0))
+            {
+                var label = RiserLabel.Parse(n.Text);
+                if (label == null || !(label.GoesDown || label.GoesUp) || label.Dryer) continue;
+                foreach (var a in n.Arrows.Take(1))
+                    if (!symbols.Any(o => Dist(o.X, o.Y, a.X, a.Y) <= profile.PointTolerance))
+                        symbols.Add(new RiserSymbol { X = a.X, Y = a.Y, Block = ArrowTip });
             }
 
             // 2. Group symbols side by side (single-link clustering).
@@ -264,9 +279,22 @@ namespace SleevesOpenings.Automation.Drawings
                     how = "text next to it";
                 }
                 if (g == null) continue;
+                // the symbol it points at (a shaft holds several ducts), else the group centre
+                var tip = n.Arrows.Count > 0 ? n.Arrows.OrderBy(a => g.Symbols.Min(o => Dist(o.X, o.Y, a.X, a.Y))).First() : (X: g.X, Y: g.Y);
+                var at = g.Symbols.OrderBy(o => Dist(o.X, o.Y, tip.X, tip.Y)).First();
+                label.X = g.Symbols.Count == 1 || n.Arrows.Count > 0 ? at.X : g.X;
+                label.Y = g.Symbols.Count == 1 || n.Arrows.Count > 0 ? at.Y : g.Y;
+                label.TextX = n.X; label.TextY = n.Y;
                 g.Labels.Add(label);
                 g.Evidence.Add($"'{label.Text}': {how}");
             }
+
+            // 6. A riser with neither tag nor label: keep the notes written next to it, so the report can say what it is.
+            foreach (var g in groups.Where(g => g.Tags.Count == 0 && g.Labels.Count == 0))
+                g.Notes = notes.Where(n => n.Arrows.Count == 0 && n.Text.Trim().Length >= 10)
+                               .Select(n => (N: n, D: g.Symbols.Min(o => Dist(o.X, o.Y, n.X, n.Y))))
+                               .Where(t => t.D <= profile.MaxNoteDistance).OrderBy(t => t.D)
+                               .Select(t => Regex.Replace(t.N.Text.Replace("\\P", " "), @"\s+", " ").Trim()).Distinct().ToList();
 
             result.Risers.AddRange(groups.OrderBy(g => g.Tag ?? "~").ThenBy(g => g.Y).ThenBy(g => g.X));
         }

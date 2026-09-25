@@ -17,6 +17,7 @@ namespace SleevesOpenings.Automation
         public double Elevation;
         public string Family;
         public string Source;      // "add-in" (stamped), "hand-placed" (matches rules.json adopt), "native opening"
+        public XYZ Point;          // plan centre (feet); null when unknown
     }
 
     public class ExistingReport
@@ -58,7 +59,7 @@ namespace SleevesOpenings.Automation
                 report.Items.Add(new ExistingItem
                 {
                     Id = o.Instance.Id, System = o.Data.System ?? "?", Level = o.Level.Name, Elevation = o.Level.Elevation,
-                    Family = o.Instance.Symbol.Family.Name, Source = o.Data.Adopted ? "adopted" : "add-in"
+                    Family = o.Instance.Symbol.Family.Name, Source = o.Data.Adopted ? "adopted" : "add-in", Point = Centre(o.Instance)
                 });
             }
 
@@ -67,7 +68,7 @@ namespace SleevesOpenings.Automation
                 report.Items.Add(new ExistingItem
                 {
                     Id = c.Instance.Id, System = c.System, Level = c.Level.Name, Elevation = c.Level.Elevation,
-                    Family = c.Instance.Symbol.Family.Name, Source = "hand-placed"
+                    Family = c.Instance.Symbol.Family.Name, Source = "hand-placed", Point = Centre(c.Instance)
                 });
             foreach (var kv in scan.UnknownSystem) report.UnknownFamilies[kv.Key] = kv.Value;
             foreach (var kv in scan.UnmatchedFamilies) report.UnknownFamilies[kv.Key] = kv.Value;
@@ -79,10 +80,17 @@ namespace SleevesOpenings.Automation
                 report.Items.Add(new ExistingItem
                 {
                     Id = op.Id, System = "Shaft/floor opening", Level = level?.Name ?? "?", Elevation = level?.Elevation ?? 0,
-                    Family = op.Category?.Name ?? "Opening", Source = "native opening"
+                    Family = op.Category?.Name ?? "Opening", Source = "native opening", Point = Centre(op)
                 });
             }
             return report;
+        }
+
+        private static XYZ Centre(Element e)
+        {
+            if (e.Location is LocationPoint lp) return lp.Point;
+            var box = e.get_BoundingBox(null);
+            return box == null ? null : (box.Min + box.Max) / 2;
         }
     }
 }

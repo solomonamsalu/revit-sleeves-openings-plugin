@@ -199,7 +199,7 @@ namespace SleevesOpenings.Commands
             using (var t = new Transaction(ctx.Doc, "Set work plane"))
             {
                 t.Start();
-                var plane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, new XYZ(0, 0, ctx.Level.Elevation));
+                var plane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, new XYZ(0, 0, ctx.Level.ProjectElevation));
                 ctx.View.SketchPlane = SketchPlane.Create(ctx.Doc, plane);
                 t.Commit();
             }

@@ -22,8 +22,9 @@ namespace SleevesOpenings.Placement
         {
             if (!symbol.IsActive) symbol.Activate();
 
-            var pt = new XYZ(point.X, point.Y, level.Elevation);
+            var pt = new XYZ(point.X, point.Y, level.ProjectElevation);
             var inst = CreateInstance(symbol, level, pt);
+            OntoLevel(inst, level);
 
             if (spec.RotationRadians != 0)
                 ElementTransformUtils.RotateElement(_doc, inst.Id, Line.CreateBound(pt, pt + XYZ.BasisZ), spec.RotationRadians);
@@ -31,7 +32,7 @@ namespace SleevesOpenings.Placement
             ApplySizes(inst, symbol, map, spec);
 
             if (!string.IsNullOrEmpty(spec.Label))
-                SetText(inst, map.NameParam, spec.Label);
+                WriteLabel(inst, map?.NameParam, spec.Label);
 
             var data = OpeningData.From(spec, level);
             data.WriteTo(inst);
@@ -55,10 +56,26 @@ namespace SleevesOpenings.Placement
 
         public void Relabel(FamilyInstance inst, FamilyMapEntry map, OpeningData data, string label)
         {
-            SetText(inst, map?.NameParam, label);
+            WriteLabel(inst, map?.NameParam, label, overwrite: true);
             data.Label = label;
             data.WriteTo(inst);
             SharedParams.Write(inst, data);
+        }
+
+        /// <summary>
+        /// The level-based NewFamilyInstance overload may take the point's Z as an offset above the level (the opening then
+        /// sits a whole level-height too high): whatever Revit did, move the instance so it sits exactly on the level.
+        /// </summary>
+        private void OntoLevel(FamilyInstance inst, Level level)
+        {
+            _doc.Regenerate();
+            if (!(inst.Location is LocationPoint lp)) return;
+            double dz = level.ProjectElevation - lp.Point.Z;
+            if (Math.Abs(dz) < 1e-4) return;
+            var offset = inst.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM) ?? inst.get_Parameter(BuiltInParameter.INSTANCE_FREE_HOST_OFFSET_PARAM);
+            if (offset != null && !offset.IsReadOnly) { offset.Set(offset.AsDouble() + dz); _doc.Regenerate(); }
+            if (inst.Location is LocationPoint again && Math.Abs(level.ProjectElevation - again.Point.Z) >= 1e-4)
+                ElementTransformUtils.MoveElement(_doc, inst.Id, new XYZ(0, 0, level.ProjectElevation - again.Point.Z));
         }
 
         // ---- instance creation per family placement type ----
@@ -84,7 +101,7 @@ namespace SleevesOpenings.Placement
                     if (floor != null && topFace != null)
                         return _doc.Create.NewFamilyInstance(topFace, pt, XYZ.BasisX, symbol);
 
-                    var plane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, new XYZ(0, 0, level.Elevation));
+                    var plane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, new XYZ(0, 0, level.ProjectElevation));
                     var sp = SketchPlane.Create(_doc, plane);
                     return _doc.Create.NewFamilyInstance(sp.GetPlaneReference(), pt, XYZ.BasisX, symbol);
                 }
@@ -106,7 +123,7 @@ namespace SleevesOpenings.Placement
             topFaceRef = null;
             var opt = new Options { ComputeReferences = true, DetailLevel = ViewDetailLevel.Coarse };
             var floors = new FilteredElementCollector(_doc).OfClass(typeof(Floor)).Cast<Floor>()
-                .Where(f => f.LevelId == level.Id || Math.Abs(ElevationOf(f) - level.Elevation) < 3.0);
+                .Where(f => f.LevelId == level.Id || Math.Abs(ElevationOf(f) - level.ProjectElevation) < 3.0);
 
             foreach (var floor in floors)
             {
@@ -128,7 +145,7 @@ namespace SleevesOpenings.Placement
         {
             var lvl = _doc.GetElement(f.LevelId) as Level;
             var off = f.get_Parameter(BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM)?.AsDouble() ?? 0;
-            return (lvl?.Elevation ?? 0) + off;
+            return (lvl?.ProjectElevation ?? 0) + off;
         }
 
         // ---- sizing ----
@@ -185,6 +202,25 @@ namespace SleevesOpenings.Placement
             // A "Radius" parameter gets half the diameter.
             double value = paramName.IndexOf("radius", StringComparison.OrdinalIgnoreCase) >= 0 ? inches / 2 : inches;
             p.Set(Units.InchesToFeet(value));
+        }
+
+        /// <summary>
+        /// Text parameters the office families show as the opening's name (the Openings family draws "Riser Number" in its
+        /// corner; empty shows "?"). Filled besides the mapped name parameter, so the name shows whatever that mapping says.
+        /// </summary>
+        public static readonly string[] LabelParams = { "Riser Number", "Name", "Label" };
+
+        /// <summary>The name on the mapped parameter (Comments when it has none), and on the family's own name/label parameter.</summary>
+        public static void WriteLabel(Element e, string paramName, string text, bool overwrite = false)
+        {
+            SetText(e, paramName, text);
+            foreach (var n in LabelParams)
+            {
+                if (string.Equals(n, paramName, StringComparison.OrdinalIgnoreCase)) continue;
+                var p = e.LookupParameter(n);
+                if (p == null || p.IsReadOnly || p.StorageType != StorageType.String) continue;
+                if (overwrite || string.IsNullOrEmpty(p.AsString())) p.Set(text);
+            }
         }
 
         private static void SetText(Element e, string paramName, string text)

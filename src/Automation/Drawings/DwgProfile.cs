@@ -30,5 +30,17 @@ namespace SleevesOpenings.Automation.Drawings
 
         /// <summary>Without a connector, a tag bubble or size text this close (inches) to a riser belongs to it.</summary>
         [JsonProperty("maxTagDistance")] public double MaxTagDistance { get; set; } = 36;
+
+        /// <summary>A note this close (inches) to a riser with no tag and no label says what it is (e.g. combustion air shafts).</summary>
+        [JsonProperty("maxNoteDistance")] public double MaxNoteDistance { get; set; } = 120;
+
+        /// <summary>Regex on layer names where duct outlines are drawn (turns rectangular openings the way the duct runs).</summary>
+        [JsonProperty("ductLayers")] public string DuctLayers { get; set; } = "DUCT";
+
+        /// <summary>Regex on folder names holding the per-floor drawings at Revit's 0,0 (office xrefs), searched next to the model.</summary>
+        [JsonProperty("referenceFolders")] public string ReferenceFolders { get; set; } = @"^XREF\s*-?\s*(ME|M|MECH|MECHANICAL|HVAC|HV)$";
+
+        /// <summary>Regex on the file name of the office grid-lines DWG (same 0,0 as the xrefs), used to prove the Revit position against the Revit grids.</summary>
+        [JsonProperty("gridFiles")] public string GridFiles { get; set; } = @"\bGRID";
     }
 }

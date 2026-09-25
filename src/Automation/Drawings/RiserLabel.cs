@@ -20,6 +20,8 @@ namespace SleevesOpenings.Automation.Drawings
     {
         public string Text;
         public DuctSize Down, Up;
+        /// <summary>The riser symbol the label points at, and where its text sits (drawing units); set by the reader.</summary>
+        public double X, Y, TextX, TextY;
         public bool GoesDown, GoesUp;
         public bool Dryer;
 
