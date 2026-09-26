@@ -12,26 +12,38 @@ namespace SleevesOpenings.Automation.Drawings
     }
 
     /// <summary>
-    /// A riser label such as "14X10 DN 18X10 UP", "12X8 DN", "16X8 UP", "12X6 DN &amp; UP", "20X10", "DRYER EXHAUST UP".
-    /// DN = the riser continues down from this floor (this floor's slab gets the DN size); UP = it continues up
-    /// (the floor above gets the UP size). A size with neither word applies to both.
+    /// A riser label such as "14X10 DN 18X10 UP", "12X8 DN", "16X8 UP", "12X6 DN &amp; UP", "20X10", "DRYER EXHAUST UP",
+    /// or a plain note such as "4" DRYER EXHAUST CONNECT TO THE DRYERS". DN = the riser continues down from this floor
+    /// (this floor's slab gets the DN size); UP = it continues up (the floor above gets the UP size). A size with neither
+    /// word applies to both. What the label means (which system) is decided from <see cref="Text"/> by the legend rules.
     /// </summary>
     public class RiserLabel
     {
         public string Text;
         public DuctSize Down, Up;
         public bool GoesDown, GoesUp;
-        public bool Dryer;
+
+        /// <summary>
+        /// A bare inch size in a note ("4" DRYER EXHAUST…"), when the text has no WxL / Ø size. Not applied to Down/Up:
+        /// it is only a size when the text names a service that gets an opening, which the caller decides.
+        /// </summary>
+        public DuctSize Nominal;
+
+        /// <summary>The text says more than sizes and UP/DN ("DRYER EXHAUST UP", not "5%%C UP"): it names what the riser is.</summary>
+        public bool Descriptive => Regex.IsMatch(Filler.Replace(Direction.Replace(Size.Replace(Text ?? "", " "), " "), " "), "[A-Z]{2,}");
+        private static readonly Regex Filler = new Regex(@"\bAND\b|%%C|\bDIA\b", RegexOptions.IgnoreCase);
 
         private static readonly Regex Size = new Regex(@"(?<w>\d{1,2}(?:\.\d+)?)\s*[X×]\s*(?<l>\d{1,2}(?:\.\d+)?)|(?<d>\d{1,2}(?:\.\d+)?)\s*(?:""|''|IN\b)?\s*(?:Ø|%%C|DIA\b)", RegexOptions.IgnoreCase);
         private static readonly Regex Direction = new Regex(@"\b(DN|DOWN|UP)\b", RegexOptions.IgnoreCase);
+        private static readonly Regex BareInches = new Regex(@"(?<![\d.'-])(?<d>\d{1,2}(?:\.\d+)?)\s*(?:""|'')(?!\s*-)");
 
-        /// <summary>Null when the text holds neither a size nor UP/DN.</summary>
+        /// <summary>Null only for empty text; any other text is kept so its words can be classified.</summary>
         public static RiserLabel Parse(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return null;
             string t = Regex.Replace(text.Replace("\\P", " ").Replace('\n', ' '), @"\s+", " ").Trim().ToUpperInvariant();
-            var label = new RiserLabel { Text = t, Dryer = t.Contains("DRYER") };
+            if (t.Length == 0) return null;
+            var label = new RiserLabel { Text = t };
 
             // Walk the text: each size is followed by the direction word(s) it belongs to.
             DuctSize pending = null;
@@ -60,7 +72,11 @@ namespace SleevesOpenings.Automation.Drawings
                 }
             }
             if (pending != null) { label.Down = label.Down ?? pending; label.Up = label.Up ?? pending; }
-            if (label.Down == null && label.Up == null && !label.GoesDown && !label.GoesUp) return null;
+            if (label.Down == null && label.Up == null)
+            {
+                var bare = BareInches.Match(t);
+                if (bare.Success) label.Nominal = new DuctSize { Diameter = Num(bare.Groups["d"].Value) };
+            }
             return label;
         }
 

@@ -26,6 +26,11 @@ namespace SleevesOpenings.Automation.Legend
         public TagCategory Category;
         public string System;         // for Opening
         public bool LabelOnHost;      // FSD/GD: no opening, tag goes on the host duct opening's label
+        public LegendCategory Rule;   // the category that decided it (null when none matched)
+        public string Matched;        // the words in the definition that matched it ("DRYER")
+
+        /// <summary>Short name of what it is: the category's name, else its system, else null.</summary>
+        public string Name => Rule == null ? null : !string.IsNullOrWhiteSpace(Rule.Name) ? Rule.Name : Rule.System;
 
         public string Describe() =>
             Category == TagCategory.Opening ? $"opening ({System})" :
@@ -88,12 +93,34 @@ namespace SleevesOpenings.Automation.Legend
             return m;
         }
 
+        /// <summary>What a drawing note says a riser is ("DRYER EXHAUST WITH WEATHER CAP"), by the same categories as tag definitions.</summary>
+        public static TagMeaning MeaningOfText(string text, LegendRules rules)
+        {
+            var m = new TagMeaning { Entry = new LegendEntry { Definition = text ?? "", Source = "leader text" } };
+            Classify(m, m.Entry.Definition, rules);
+            return m;
+        }
+
+        /// <summary>
+        /// For a riser without a tag: the label whose text gets an opening, else one that needs no opening, else null.
+        /// </summary>
+        public static (T Item, TagMeaning Meaning)? FromLabels<T>(IEnumerable<T> labels, Func<T, string> text, LegendRules rules)
+        {
+            var all = labels.Select(l => (Item: l, Meaning: MeaningOfText(text(l), rules))).ToList();
+            foreach (var wanted in new[] { TagCategory.Opening, TagCategory.Ignore })
+                foreach (var x in all)
+                    if (x.Meaning.Category == wanted) return x;
+            return null;
+        }
+
         public static void Classify(TagMeaning m, string definition, LegendRules rules)
         {
             m.Category = TagCategory.Other;
             foreach (var c in rules?.Categories ?? new List<LegendCategory>())
             {
-                if (string.IsNullOrEmpty(c.Match) || !Regex.IsMatch(definition, c.Match, RegexOptions.IgnoreCase)) continue;
+                var hit = string.IsNullOrEmpty(c.Match) ? null : Regex.Match(definition ?? "", c.Match, RegexOptions.IgnoreCase);
+                if (hit == null || !hit.Success) continue;
+                m.Rule = c; m.Matched = hit.Value;
                 if (c.Ignore) { m.Category = TagCategory.Ignore; m.LabelOnHost = c.LabelOnHost; }
                 else if (!string.IsNullOrEmpty(c.System)) { m.Category = TagCategory.Opening; m.System = c.System; }
                 return;

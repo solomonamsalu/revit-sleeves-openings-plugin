@@ -303,7 +303,9 @@ namespace SleevesOpenings.Automation.UI
             int openings = 0, missing = 0, undefined = 0, none = 0;
             foreach (var r in risers.Risers.OrderBy(r => FloorKey.Order(r.Floor)).ThenBy(r => r.Tag ?? "~"))
             {
-                string meaning, result; Color? back = null;
+                string meaning, result, tag = r.Tag, why = null; Color? back = null;
+                DuctSize nominal = null;
+                var fromLabels = r.Tag == null ? SleevesOpenings.Automation.Legend.Legend.FromLabels(r.Labels, l => l.Text, _legendRules) : null;
                 if (r.Tag != null)
                 {
                     var m = legend.Meaning(r.Tag, _legendRules);
@@ -313,13 +315,39 @@ namespace SleevesOpenings.Automation.UI
                     else if (m.Category == TagCategory.Undefined) { undefined++; back = Color.MistyRose; result = "tag not defined in the PDF - reported"; }
                     else none++;
                 }
-                else if (r.Dryer) { meaning = "DRYER EXHAUST (from the leader text)"; result = "opening (DryerExhaust)"; openings++; back = Color.Honeydew; }
-                else { meaning = "-"; result = "tag missing - reported, not placed"; missing++; back = Color.MistyRose; }
+                else if (fromLabels != null)
+                {
+                    var (from, m) = fromLabels.Value;
+                    // No bubble: the leader text says what it is, by the same legend categories as tag definitions.
+                    // Meaning shows only what the rule decided (its name) and the directions the note states; the
+                    // full note and the words that matched are under How it was read.
+                    tag = "(from label)";
+                    meaning = $"{m.Name ?? m.Matched}{Directions(from)} (note)";
+                    why = $"'{m.Matched}' in the note = {m.Name ?? m.Matched}";
+                    result = m.Describe();
+                    if (m.Category == TagCategory.Opening)
+                    {
+                        openings++; back = Color.Honeydew; nominal = from.Nominal;
+                        var systems = r.Labels.Select(l => SleevesOpenings.Automation.Legend.Legend.MeaningOfText(l.Text, _legendRules))
+                                              .Where(x => x.Category == TagCategory.Opening).Select(x => x.System).Distinct().ToList();
+                        if (systems.Count > 1) result += " - labels disagree: " + string.Join(", ", systems);
+                    }
+                    else none++;
+                }
+                else
+                {
+                    tag = "(none)";
+                    // Nothing decided: say so, without guessing from the words. The note itself is under How it was read.
+                    meaning = r.Labels.Count == 0 ? "-" : r.Labels.Any(l => l.Descriptive) ? "note not recognised" : "size only, no service named";
+                    result = "tag missing - reported, not placed"; missing++; back = Color.MistyRose;
+                }
 
                 var label = r.Label;
-                int i = _risers.Rows.Add(FloorKey.Describe(r.Floor), r.Tag ?? (r.Dryer ? "(dryer)" : "(none)"), meaning,
-                    label?.Down?.ToString() ?? (label?.GoesDown == true ? "?" : ""), label?.Up?.ToString() ?? (label?.GoesUp == true ? "?" : ""),
-                    r.Symbols.Count, $"{r.X:0}, {r.Y:0}", result, string.Join("; ", r.Evidence));
+                string down = label?.Down?.ToString() ?? (label?.GoesDown == true ? "?" : ""), up = label?.Up?.ToString() ?? (label?.GoesUp == true ? "?" : "");
+                if (nominal != null && label?.Down == null && label?.Up == null) down = up = nominal.ToString();
+                else if (down.Length == 0 && up.Length == 0 && r.Drawn != null) down = up = $"{r.Drawn} (drawn)";
+                int i = _risers.Rows.Add(FloorKey.Describe(r.Floor), tag, meaning, down, up,
+                    r.Ducts, $"{r.X:0}, {r.Y:0}", result, string.Join("; ", why == null ? r.Evidence : new[] { why }.Concat(r.Evidence)));
                 if (back.HasValue) _risers.Rows[i].DefaultCellStyle.BackColor = back.Value;
             }
             foreach (var t in risers.LooseTags)
@@ -332,6 +360,10 @@ namespace SleevesOpenings.Automation.UI
                            $"{none} need none, {missing} have no tag, {undefined} have an undefined tag; {risers.LooseTags.Count} tag bubble(s) not connected. See the Risers tab.");
             foreach (var w in risers.Warnings) msg.AppendLine("  ! " + w);
         }
+
+        /// <summary>The directions a note states, as the engineer wrote them: " DN & UP", " UP", " DN", or nothing.</summary>
+        private static string Directions(RiserLabel l) =>
+            l.GoesDown && l.GoesUp ? " DN & UP" : l.GoesUp ? " UP" : l.GoesDown ? " DN" : "";
 
         private TagMeaning Meaning(LegendEntry e)
         {

@@ -160,31 +160,38 @@
   },
 
   "legend": {
-    "_comment": "Auto Run: tag meanings are read from the engineer's PDF (ABBREVIATIONS table, SYMBOLS list, schedules). officeFixed = tags the office always uses and PDFs do not define (only KX and TX). categories are tried in order against the definition text (regex, case-insensitive); the first match wins. system = gets an opening of that system; ignore = no opening; labelOnHost = no opening, but the tag is added to the label of the duct opening it sits on (ERV-FSD). A definition matching nothing is 'not a riser'.",
+    "_comment": "Auto Run: tag meanings are read from the engineer's PDF (ABBREVIATIONS table, SYMBOLS list, schedules). officeFixed = tags the office always uses and PDFs do not define (only KX and TX). categories are tried in order against the definition text (regex, case-insensitive); the first match wins. system = gets an opening of that system; ignore = no opening; labelOnHost = no opening, but the tag is added to the label of the duct opening it sits on (ERV-FSD). A definition matching nothing is 'not a riser'. name = the short text Auto Run shows in the Meaning column when a drawing note (no tag) is classified by that category.",
     "officeFixed": { "KX": "KITCHEN EXHAUST", "TX": "TOILET EXHAUST" },
     "categories": [
-      { "match": "DIFFUSER|GRILLE|REGISTER|LOUVER", "ignore": true },
-      { "match": "\\b(EXHAUST|SUPPLY|RETURN|OUTSIDE|RELIEF|TRANSFER) AIR\\b", "ignore": true },
-      { "match": "PARKING|GARAGE", "system": "Exhaust" },
-      { "match": "MOTORI[SZ]ED DAMPER|MOTOR OPERATED DAMPER", "system": "MotorizedDamper" },
-      { "match": "ENERGY RECOVERY|\\bERV\\b", "system": "ERV" },
-      { "match": "DRYER", "system": "DryerExhaust" },
-      { "match": "CHUTE", "system": "GarbageChute" },
-      { "match": "FIRE SMOKE DAMPER|GRAVITY|BACKDRAFT", "ignore": true, "labelOnHost": true },
-      { "match": "\\bFANS?\\b|DETECTOR|ACCESS DOOR|HEATER|\\bUNIT\\b|PUMP|BOILER|DAMPER|COIL|THERMOSTAT", "ignore": true },
-      { "match": "EXHAUST", "system": "Exhaust" }
+      { "match": "DIFFUSER|GRILLE|REGISTER|LOUVER", "ignore": true, "name": "Diffuser / grille" },
+      { "match": "\\b(EXHAUST|SUPPLY|RETURN|OUTSIDE|RELIEF|TRANSFER) AIR\\b", "ignore": true, "name": "Air stream (not a duct)" },
+      { "match": "PARKING|GARAGE", "system": "Exhaust", "name": "Garage exhaust" },
+      { "match": "MOTORI[SZ]ED DAMPER|MOTOR OPERATED DAMPER", "system": "MotorizedDamper", "name": "Motorized damper" },
+      { "match": "ENERGY RECOVERY|\\bERV\\b", "system": "ERV", "name": "ERV" },
+      { "match": "DRYER", "system": "DryerExhaust", "name": "Dryer exhaust" },
+      { "match": "CHUTE", "system": "GarbageChute", "name": "Garbage chute" },
+      { "match": "FIRE SMOKE DAMPER|GRAVITY|BACKDRAFT", "ignore": true, "labelOnHost": true, "name": "Fire smoke / gravity damper" },
+      { "match": "\\bFANS?\\b|DETECTOR|ACCESS DOOR|HEATER|\\bUNIT\\b|PUMP|BOILER|DAMPER|COIL|THERMOSTAT", "ignore": true, "name": "Equipment / accessory" },
+      { "match": "EXHAUST", "system": "Exhaust", "name": "Exhaust" }
     ]
   },
 
   "dwgProfile": {
-    "_comment": "Auto Run: how the engineer draws risers in the DWG. riserBlocks = regex on the block (or dynamic-block source) name drawn at a riser's centre; tagBlocks = regex on the tag bubble block; tagAttributes = bubble attributes joined into the riser name (TX + 1 = TX1, ERV + SA = ERV-SA); connectorLayers = regex on layers of the line from bubble to riser. Distances in inches. Defaults match 24 Skillman (Precision Engineering Group).",
+    "_comment": "Auto Run: how the engineer draws risers in the DWG. riserBlocks = regex on the block (or dynamic-block source) name drawn at a riser's centre; tagBlocks = regex on the tag bubble block; tagAttributes = bubble attributes joined into the riser name (TX + 1 = TX1, ERV + SA = ERV-SA); connectorLayers = regex on layers of the line from bubble to riser. leaderTextDistance = how far from a classic LEADER's tail its note text may be when the leader is not linked to it. sectionMarkLayers = regex on layers where a riser may be drawn as a section mark (rectangle or circle crossed by a diagonal) with no centre block; marks outside sectionMarkMinSize..sectionMarkMaxSize are ignored; a centre block within outlineTolerance of a mark is the same duct. ductLinkLayers = regex on duct-run layers: a riser with no tag and no label joined by such a line (ends within ductLinkTolerance) to a tagged/labelled riser takes its tag or label. Empty regex = feature off. Distances in inches. Defaults match 24 Skillman (Precision Engineering Group).",
     "riserBlocks": "^Riser Center$",
     "tagBlocks": "^DUCT RISER$",
     "tagAttributes": [ "RISERTAG", "RISERCOUNT" ],
     "connectorLayers": "RISER",
     "groupDistance": 12,
     "pointTolerance": 15,
-    "maxTagDistance": 36
+    "maxTagDistance": 36,
+    "leaderTextDistance": 12,
+    "sectionMarkLayers": "DUCT",
+    "sectionMarkMinSize": 3,
+    "sectionMarkMaxSize": 60,
+    "outlineTolerance": 1,
+    "ductLinkLayers": "DUCT",
+    "ductLinkTolerance": 3
   },
 
   "adopt": {

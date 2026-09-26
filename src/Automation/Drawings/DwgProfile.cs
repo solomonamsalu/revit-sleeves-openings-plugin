@@ -30,5 +30,30 @@ namespace SleevesOpenings.Automation.Drawings
 
         /// <summary>Without a connector, a tag bubble or size text this close (inches) to a riser belongs to it.</summary>
         [JsonProperty("maxTagDistance")] public double MaxTagDistance { get; set; } = 36;
+
+        /// <summary>
+        /// A classic LEADER not hard-linked to its note reads the text nearest its tail (last vertex), up to this far (inches).
+        /// </summary>
+        [JsonProperty("leaderTextDistance")] public double LeaderTextDistance { get; set; } = 12;
+
+        /// <summary>
+        /// Regex on layer names where a riser may be drawn as a section mark (rectangle or circle crossed by a diagonal)
+        /// instead of a centre block. Empty = section marks are not read.
+        /// </summary>
+        [JsonProperty("sectionMarkLayers")] public string SectionMarkLayers { get; set; } = "DUCT";
+
+        /// <summary>Section marks outside this size range (inches, each side / diameter) are not risers (grilles, equipment).</summary>
+        [JsonProperty("sectionMarkMinSize")] public double SectionMarkMinSize { get; set; } = 3;
+        [JsonProperty("sectionMarkMaxSize")] public double SectionMarkMaxSize { get; set; } = 60;
+
+        /// <summary>A centre block this close (inches) to a section mark, or inside it, is the same duct.</summary>
+        [JsonProperty("outlineTolerance")] public double OutlineTolerance { get; set; } = 1;
+
+        /// <summary>
+        /// Regex on layer names of duct runs. A riser with no tag and no label, joined by such a line to a riser that has
+        /// them (both line ends within <see cref="DuctLinkTolerance"/>), takes its tag or label. Empty = not used.
+        /// </summary>
+        [JsonProperty("ductLinkLayers")] public string DuctLinkLayers { get; set; } = "DUCT";
+        [JsonProperty("ductLinkTolerance")] public double DuctLinkTolerance { get; set; } = 3;
     }
 }
