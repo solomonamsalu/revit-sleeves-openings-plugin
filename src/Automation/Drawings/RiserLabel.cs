@@ -26,7 +26,7 @@ namespace SleevesOpenings.Automation.Drawings
         public bool Dryer;
 
         private static readonly Regex Size = new Regex(@"(?<w>\d{1,2}(?:\.\d+)?)\s*[X×]\s*(?<l>\d{1,2}(?:\.\d+)?)|(?<d>\d{1,2}(?:\.\d+)?)\s*(?:""|''|IN\b)?\s*(?:Ø|%%C|DIA\b)", RegexOptions.IgnoreCase);
-        private static readonly Regex Direction = new Regex(@"\b(DN|DOWN|UP)\b", RegexOptions.IgnoreCase);
+        private static readonly Regex Direction = new Regex(@"(?<![-\w])(DN|DOWN|UP)\b", RegexOptions.IgnoreCase);   // not "MAKE-UP"
 
         /// <summary>Null when the text holds neither a size nor UP/DN.</summary>
         public static RiserLabel Parse(string text)
@@ -62,9 +62,20 @@ namespace SleevesOpenings.Automation.Drawings
                 }
             }
             if (pending != null) { label.Down = label.Down ?? pending; label.Up = label.Up ?? pending; }
-            if (label.Down == null && label.Up == null && !label.GoesDown && !label.GoesUp) return null;
+            if (label.Down == null && label.Up == null && !label.GoesDown && !label.GoesUp && !label.Dryer) return null;
             return label;
         }
+
+        /// <summary>The text says more than sizes and UP/DN ("COMBUSTION AIR … UP IN SHAFT", "8"Ø GAS METER VENT", not "5%%C UP").</summary>
+        public bool Descriptive => Regex.IsMatch(Filler.Replace(Direction.Replace(Size.Replace(Text ?? "", " "), " "), " "), "[A-Z]{2,}");
+        private static readonly Regex Filler = new Regex(@"\b(AND|DIA)\b|%%C|&", RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// A riser label proper: a dryer note (with or without UP/DN), or a size with a direction, or a bare size. A
+        /// description without a size ("COMBUSTION AIR … UP IN SHAFT") or with a size but no direction ("8"Ø GAS METER
+        /// VENT") only says what the riser is: it is kept as the riser's note, not read as a slab crossing.
+        /// </summary>
+        public bool IsCrossingLabel => Dryer || (Down != null || Up != null) && (GoesDown || GoesUp || !Descriptive);
 
         private static double Num(string s) => double.Parse(s, CultureInfo.InvariantCulture);
     }

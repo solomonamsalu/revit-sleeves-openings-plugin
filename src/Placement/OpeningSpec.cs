@@ -8,7 +8,9 @@ namespace SleevesOpenings.Placement
     public enum SystemKind
     {
         Exhaust, GarbageChute, DryerExhaust, MotorizedDamper, Refrigeration, Electrical,
-        Storm, AreaDrain, Condensate, Standpipe, Bathtub, Toilet, ERV
+        Storm, AreaDrain, Condensate, Standpipe, Bathtub, Toilet, ERV,
+        // plumbing pipes (Auto Run for the PL model; the MPI sleeve's Sanitary / Vent / Gas / water toggles)
+        Sanitary, Vent, Gas, ColdWater, HotWater, HotWaterReturn
     }
 
     /// <summary>What to place: role + size (inches) + label. Built by the commands from rules.json.</summary>

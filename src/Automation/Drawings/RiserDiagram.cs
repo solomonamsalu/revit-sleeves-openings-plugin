@@ -12,10 +12,16 @@ namespace SleevesOpenings.Automation.Drawings
     public class DiagramRiser
     {
         public string Tag;
+        /// <summary>The nearest tag at the run, shared by runs side by side (both ducts of ERV-1); null for a plain exhaust run.</summary>
+        public string Near;
         public int Page;
         public double X;                                  // PDF points (the column)
         /// <summary>Slab (FloorKey of the floor whose slab it crosses) and the duct size written there.</summary>
         public List<(string Slab, DuctSize Size)> Slabs = new List<(string, DuctSize)>();
+        /// <summary>Dampers drawn on the run (MD, FSD, GD) and the slab line they sit on.</summary>
+        public List<(string Slab, string Code)> Dampers = new List<(string, string)>();
+
+        public DuctSize SizeAt(string slab) => Slabs.FirstOrDefault(s => s.Slab == slab).Size;
 
         public string Describe() =>
             string.Join(", ", Slabs.GroupBy(s => s.Size?.ToString() ?? "?")
@@ -29,7 +35,9 @@ namespace SleevesOpenings.Automation.Drawings
     {
         public int Page;
         public List<string> Floors = new List<string>();  // floor lines found, bottom up
-        public List<DiagramRiser> Risers = new List<DiagramRiser>();
+        public List<DiagramRiser> Risers = new List<DiagramRiser>();   // runs with a wanted tag
+        /// <summary>Every run found, tagged or not (the dampers are on untagged exhaust runs too).</summary>
+        public List<DiagramRiser> Runs = new List<DiagramRiser>();
         public int Columns;                               // duct columns found (tagged or not)
         public List<string> Warnings = new List<string>();
     }
@@ -46,8 +54,14 @@ namespace SleevesOpenings.Automation.Drawings
         private static readonly Regex SizeText = new Regex(@"^(\d{1,2})\s*[X×]\s*(\d{1,2})$", RegexOptions.IgnoreCase);
         private static readonly Regex TagText = new Regex(@"^[A-Z]{1,4}-?\d{1,2}[A-Z]?$", RegexOptions.IgnoreCase);
 
+        private static readonly Regex CodeText = new Regex(@"^[A-Z]{2,4}$");
+
+        /// <summary>PDF points: a run this close to a unit's tag is one of that unit's ducts (ERV-1's two ducts under it).</summary>
+        private const double UnitWidth = 40;
+
         /// <param name="wanted">Tag text → true when the run it names should be returned.</param>
-        public static RiserDiagramResult Read(string pdfPath, PdfSheetIndex index, Func<string, bool> wanted)
+        /// <param name="damper">Code text → true when it is a damper drawn on a duct (MD, FSD, GD: the legend's "label on host").</param>
+        public static RiserDiagramResult Read(string pdfPath, PdfSheetIndex index, Func<string, bool> wanted, Func<string, bool> damper = null)
         {
             var sheet = index?.Sheets.FirstOrDefault(s => s.HasRiserDiagram);
             if (sheet == null) return null;
@@ -94,6 +108,22 @@ namespace SleevesOpenings.Automation.Drawings
                 }
                 result.Columns = runs.Count;
 
+                // every run with the slabs it crosses: the floor line just above each size
+                List<(string Slab, DuctSize Size)> SlabsOf(List<(double X, double Y, string Text)> run)
+                {
+                    var slabs = new List<(string, DuctSize)>();
+                    foreach (var s in run.OrderBy(p => p.Y))
+                    {
+                        var above = levels.Where(l => l.Value > s.Y && l.Value - s.Y <= storey).Select(l => l.Key).FirstOrDefault();
+                        if (above == null || slabs.Any(x => x.Item1 == above)) continue;
+                        var m = SizeText.Match(s.Text);
+                        slabs.Add((above, new DuctSize { Width = double.Parse(m.Groups[1].Value), Length = double.Parse(m.Groups[2].Value) }));
+                    }
+                    return slabs;
+                }
+                var all = runs.Select(run => new DiagramRiser { Page = sheet.Page, X = run.Average(p => p.X), Slabs = SlabsOf(run) }).ToList();
+                result.Runs = all.Where(r => r.Slabs.Count > 0).ToList();
+
                 // the tag of each run: the nearest wanted tag text beside or at the end of it
                 var tags = words.Where(w => TagText.IsMatch(w.Text.Trim()) && wanted(w.Text.Trim().ToUpperInvariant()))
                                 .Select(w => (Text: w.Text.Trim().ToUpperInvariant(), X: w.BoundingBox.Centroid.X, Y: w.BoundingBox.Centroid.Y)).ToList();
@@ -108,17 +138,28 @@ namespace SleevesOpenings.Automation.Drawings
                 {
                     if (takenRuns.Contains(i) || takenTags.Contains(t)) continue;
                     takenRuns.Add(i); takenTags.Add(t);
-                    var riser = new DiagramRiser { Tag = t.Text, Page = sheet.Page, X = run.Average(p => p.X) };
-                    foreach (var s in run.OrderBy(p => p.Y))
-                    {
-                        // the slab: the floor line just above the size
-                        var above = levels.Where(l => l.Value > s.Y && l.Value - s.Y <= storey).Select(l => l.Key).FirstOrDefault();
-                        if (above == null || riser.Slabs.Any(x => x.Slab == above)) continue;
-                        var m = SizeText.Match(s.Text);
-                        riser.Slabs.Add((above, new DuctSize { Width = double.Parse(m.Groups[1].Value), Length = double.Parse(m.Groups[2].Value) }));
-                    }
+                    var riser = all[i];
+                    riser.Tag = riser.Near = t.Text;
                     if (riser.Slabs.Count > 0) result.Risers.Add(riser);
                 }
+                // runs side by side under one unit share its tag (ERV-1's supply and exhaust ducts), without being named by it
+                for (int i = 0; i < all.Count; i++)
+                    if (all[i].Near == null)
+                        all[i].Near = tags.Where(t => Math.Abs(all[i].X - t.X) <= UnitWidth)
+                                          .Select(t => (t.Text, S: Score(runs[i], t.X, t.Y, storey))).Where(x => x.S < double.MaxValue)
+                                          .OrderBy(x => x.S).Select(x => x.Text).FirstOrDefault();
+
+                // dampers: the code written on a floor line beside the run that crosses that slab
+                if (damper != null)
+                    foreach (var w in words.Where(w => w.TextOrientation == TextOrientation.Horizontal && CodeText.IsMatch(w.Text.Trim()) && damper(w.Text.Trim())))
+                    {
+                        double x = w.BoundingBox.Centroid.X, y = w.BoundingBox.Centroid.Y;
+                        var line = levels.Select(l => (l.Key, D: Math.Abs(l.Value - y))).Where(l => l.D <= storey * 0.3).OrderBy(l => l.D).Select(l => l.Key).FirstOrDefault();
+                        if (line == null) continue;
+                        var run = result.Runs.Where(r => r.SizeAt(line) != null && Math.Abs(r.X - x) <= 60).OrderBy(r => Math.Abs(r.X - x)).FirstOrDefault();
+                        if (run == null) { result.Warnings.Add($"{w.Text.Trim()} on the {FloorKey.Describe(line)} line: no duct run next to it"); continue; }
+                        run.Dampers.Add((line, w.Text.Trim()));
+                    }
             }
             return result;
         }

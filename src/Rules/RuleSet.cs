@@ -27,6 +27,9 @@ namespace SleevesOpenings.Rules
         [JsonProperty("sleeveViews")] public Automation.SleeveViewRules SleeveViews { get; set; } = new Automation.SleeveViewRules();
         /// <summary>Auto Run: Final Check after placing, the riser diagram check, the S&amp;O set comparison.</summary>
         [JsonProperty("automation")] public Automation.AutomationRules Automation { get; set; } = new Automation.AutomationRules();
+        /// <summary>Auto Run for the PL model: how the plumbing engineer draws risers, which services get sleeves, sizes.</summary>
+        [JsonProperty("plumbing")] public Automation.PlumbingRules Plumbing { get; set; } = new Automation.PlumbingRules();
+        [JsonProperty("pdfOnly")] public Automation.PdfOnlyRules PdfOnly { get; set; } = new Automation.PdfOnlyRules();
 
         /// <summary>Where this rule set was loaded from (for display/debugging).</summary>
         [JsonIgnore] public string SourcePath { get; set; }
@@ -60,6 +63,8 @@ namespace SleevesOpenings.Rules
         [JsonProperty("electrical")] public string Electrical { get; set; } = "ELECTRIC";
         [JsonProperty("dryerExhaust")] public string DryerExhaust { get; set; } = "DE";
         [JsonProperty("exhaustPattern")] public string ExhaustPattern { get; set; } = "{riser}";
+        /// <summary>A damper of the riser diagram (MD, FSD, GD) written on the opening it sits in: {riser} + {damper}.</summary>
+        [JsonProperty("damperPattern")] public string DamperPattern { get; set; } = "{riser}-{damper}";
     }
 
     public class SystemRules
@@ -81,6 +86,11 @@ namespace SleevesOpenings.Rules
         [JsonProperty("clearanceEachSide")] public double ClearanceEachSide { get; set; } = 2;
         [JsonProperty("roofIncreaseTotal")] public double RoofIncreaseTotal { get; set; } = 4;
         [JsonProperty("floorPlanWinsOverRiserDiagram")] public bool FloorPlanWinsOverRiserDiagram { get; set; } = true;
+        /// <summary>
+        /// Auto Run: the first number of a duct size ("16X8") always runs east-west (Revit X), whatever way the engineer drew
+        /// the duct (office rule: width x height as labelled). false = turn the opening like the duct drawn on the plan.
+        /// </summary>
+        [JsonProperty("firstNumberEastWest")] public bool FirstNumberEastWest { get; set; } = true;
 
         /// <summary>Opening size for a duct of the given size (inches).</summary>
         public double OpeningSize(double ductSize) => ductSize + 2 * ClearanceEachSide;
@@ -100,6 +110,8 @@ namespace SleevesOpenings.Rules
         [JsonProperty("roofOpeningWidth")] public double RoofOpeningWidth { get; set; } = 6;
         [JsonProperty("roofOpeningLength")] public double RoofOpeningLength { get; set; } = 6;
         [JsonProperty("minSpacing")] public double MinSpacing { get; set; } = 8;
+        /// <summary>Auto Run: dryer ducts drawn closer than minSpacing get one Regular Opening around them all (rule 74); false = review.</summary>
+        [JsonProperty("shaftOpening")] public bool ShaftOpening { get; set; } = true;
         public double Diameter => Radius * 2;
     }
 
@@ -186,6 +198,8 @@ namespace SleevesOpenings.Rules
         [JsonProperty("roofMinFromWallOrCurb")] public double RoofMinFromWallOrCurb { get; set; } = 12;
         [JsonProperty("roofMinBetweenOpenings")] public double RoofMinBetweenOpenings { get; set; } = 24;
         [JsonProperty("ervSpacingExact")] public double ErvSpacingExact { get; set; } = 24;
+        /// <summary>Auto Run: ERV supply + exhaust openings on a floor are set this far apart, centre to centre (rule 54; the office sets draw 12").</summary>
+        [JsonProperty("ervFloorCenterToCenter")] public double ErvFloorCenterToCenter { get; set; } = 12;
         /// <summary>Farther than this from any wall inside a room = "middle of the room" (rules 20-21). 0 disables.</summary>
         [JsonProperty("midRoomDistance")] public double MidRoomDistance { get; set; } = 36;
         /// <summary>Also read columns, beams and walls from linked Revit models (the structural model is usually a link).</summary>

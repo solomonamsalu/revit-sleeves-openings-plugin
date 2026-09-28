@@ -36,7 +36,13 @@
         "DryerExhaust": "Vent",
         "Bathtub": "Sanitary",
         "Toilet": "Sanitary",
-        "Electrical": "Electrical"
+        "Electrical": "Electrical",
+        "Sanitary": "Sanitary",
+        "Vent": "Vent",
+        "Gas": "Gas",
+        "ColdWater": "Cold Water",
+        "HotWater": "Hot Water",
+        "HotWaterReturn": "Hot Water"
       },
       "sizeTogglePattern": "^(?<prefix>Cold Water|Hot Water|Condensate|Electrical|Fire|Gas|Sanitary|Storm|Vent)\\s+(?<size>\\d+(?:\\.\\d+)?)$"
     },
@@ -53,14 +59,18 @@
   "naming": {
     "electrical": "ELECTRIC",
     "dryerExhaust": "DE",
-    "exhaustPattern": "{riser}"
+    "exhaustPattern": "{riser}",
+    "_damperPattern": "Auto Run: a damper the riser diagram draws on a duct (MD, FSD, GD) is written on that duct's opening, e.g. ERV-SA-FSD. {damper} = the damper code(s).",
+    "damperPattern": "{riser}-{damper}"
   },
 
   "systems": {
     "exhaust": {
       "clearanceEachSide": 2,
       "roofIncreaseTotal": 4,
-      "floorPlanWinsOverRiserDiagram": true
+      "floorPlanWinsOverRiserDiagram": true,
+      "_firstNumberEastWest": "Auto Run: true = the first number of a duct size (16X8 -> 16) always runs east-west (Revit X), as labelled on the plan (office rule, 2026-09-27). false = turn the opening the way the engineer drew the duct (outline or riser block shape).",
+      "firstNumberEastWest": true
     },
     "garbageChute": {
       "fixedWidth": 28.5,
@@ -72,7 +82,9 @@
       "radius": 2,
       "roofOpeningWidth": 6,
       "roofOpeningLength": 6,
-      "minSpacing": 8
+      "minSpacing": 8,
+      "_shaftOpening": "Auto Run: dryer ducts drawn closer than minSpacing (a dryer shaft) get one Regular Opening around them all, 2\" clear each side, named DE (rule 74, as the office sets draw it). Roof shafts stay for review (rule 78: 6\"x6\" per duct). false = every dryer shaft goes to review.",
+      "shaftOpening": true
     },
     "motorizedDamper": {
       "clearanceEachSide": 2
@@ -122,6 +134,8 @@
     "roofMinFromWallOrCurb": 12,
     "roofMinBetweenOpenings": 24,
     "ervSpacingExact": 24,
+    "_ervFloorComment": "Auto Run: the ERV supply and exhaust openings on a floor are grouped this far apart, centre to centre (rule 54; the office's S&O sets draw them 12\" c-c). On the roof they are ervSpacingExact apart, edge to edge (rule 55).",
+    "ervFloorCenterToCenter": 12,
     "midRoomDistance": 36,
     "_linkedComment": "Columns, beams and walls are also read from linked Revit models (the structural model is usually a link). linkedModelMatch = regex on the link name, empty = all links.",
     "includeLinkedModels": true,
@@ -167,7 +181,7 @@
       { "match": "DIFFUSER|GRILLE|REGISTER|LOUVER", "ignore": true },
       { "match": "\\b(EXHAUST|SUPPLY|RETURN|OUTSIDE|RELIEF|TRANSFER) AIR\\b", "ignore": true },
       { "match": "PARKING|GARAGE", "system": "Exhaust" },
-      { "match": "MOTORI[SZ]ED DAMPER|MOTOR OPERATED DAMPER", "system": "MotorizedDamper" },
+      { "match": "MOTORI[SZ]ED DAMPER|MOTOR OPERATED DAMPER", "ignore": true, "labelOnHost": true },
       { "match": "ENERGY RECOVERY|\\bERV\\b", "system": "ERV" },
       { "match": "DRYER", "system": "DryerExhaust" },
       { "match": "CHUTE", "system": "GarbageChute" },
@@ -187,8 +201,14 @@
     "pointTolerance": 15,
     "maxTagDistance": 36,
     "maxNoteDistance": 120,
+    "_leaderTextDistance": "A classic LEADER (not a multileader) that is not linked to its text reads the text nearest its tail, up to this far (inches).",
+    "leaderTextDistance": 12,
     "_ductLayers": "Regex on layers holding the duct outlines (rectangles / the X in a riser): a rectangular opening is turned the way its duct is drawn.",
     "ductLayers": "DUCT",
+    "_sectionMark": "A riser drawn on a duct layer as a section mark (rectangle or circle crossed by a diagonal) is its own riser, even beside a shaft of riser symbols (TX1 next to the dryer ducts). Marks outside sectionMarkMinSize..sectionMarkMaxSize (inches) are ignored; a riser symbol within outlineTolerance of a mark is the same duct.",
+    "sectionMarkMinSize": 3,
+    "sectionMarkMaxSize": 60,
+    "outlineTolerance": 1,
     "_referenceFolders": "Regex on folder names (searched next to the model) holding the per-floor drawings at Revit's 0,0 (office xrefs). Used to line the DWG up with Revit for floors that have no DWG imported/linked in the model.",
     "referenceFolders": "^XREF\\s*-?\\s*(ME|M|MECH|MECHANICAL|HVAC|HV)$",
     "_gridFiles": "Regex on the file name of the office grid-lines DWG (same 0,0 as the xrefs), searched in and next to the xref folder. Its grids must land on the Revit grids (this model's, or a Revit link's) within 1\", or nothing is placed.",
@@ -220,6 +240,76 @@
       "sizeTolerance": 1,
       "gridTolerance": 6
     }
+  },
+
+  "pdfOnly": {
+    "_comment": "Auto Run with the PDF only (plumbing model, DWG field left empty). The PDF must be a vector plot from CAD that keeps its layers: pipe circles, leaders and tag bubbles are read by layer as in the DWG (plumbing.dwgProfile), the service text next to each bubble, and the columns of the architectural background (columnLayers, rectangles columnMinSize..columnMaxSize). Each floor page is lined up with Revit by matching its columns to the model's columns (host and loaded links): at least minColumns within columnTolerance, spread minSpread feet each way, fitting the printed scale within scaleTolerance, and clearly better than any other placement. A page with too few columns follows the floor next to it when minStacked pipes land within stackTolerance. The tag numbers inside the bubbles are strokes, not text: stacks are numbered 1, 2, 3... (same number on every floor). placeWhenPassed = false sends every PDF-only sleeve to review. Inches unless noted.",
+    "enabled": true,
+    "columnLayers": "COL+UMN|\\bS-COL",
+    "columnMinSize": 6,
+    "columnMaxSize": 48,
+    "bubbleMinRadius": 6,
+    "bubbleMaxRadius": 30,
+    "defaultScale": 48,
+    "columnTolerance": 2,
+    "searchTolerance": 3,
+    "minColumns": 4,
+    "minSpread": 10,
+    "scaleTolerance": 0.005,
+    "minStacked": 4,
+    "stackTolerance": 1,
+    "placeWhenPassed": true
+  },
+
+  "plumbing": {
+    "_comment": "Auto Run in the PL model (model name matching modelMatch). The plumbing engineer draws every pipe through a slab as a small circle on its system's layer, groups them in a chase with a tag bubble (P1, P2...) joined by a leader, and writes the services next to the bubble, one per line: 'S UP & DN', 'V RISE & DN', 'ST DN', 'V THRU ROOF'. UP = the slab above, DN / THRU = this floor's slab. Each sleeved service becomes a round MPI sleeve named '{service}-{riser}' (S-P3), pipe + sleeveOverPipe rounded up to the next of sleeveSizes (storm/standpipe rule: pipe + 2\"). Plans carry no pipe sizes: services.*.pipe is used and the row says so. The pipes of a group are drawn 5\" apart: their sleeves are set in a row sleeveGap apart. Lowest level = slab on grade: no sleeves (skipLowestSlab). Fixtures named on the plans (WC, LAV, BT...) are listed for review at the text (fixtureSleeves 'review' | 'off'): the text is next to the fixture, not on its drain. Water is not sleeved (the office S&O sets show sanitary, vent, storm and gas only). Inches.",
+    "modelMatch": "(\\bPL(\\b|_)|\\bPLUMB)",
+    "dwgProfile": {
+      "riserBlocks": null,
+      "riserCircleLayers": "^P-(SANITARY|VENT|STORM|GAS|COLD WATER|HOT WATER|HOT WATER RETURN)(-N)?$",
+      "riserCircleMinRadius": 1,
+      "riserCircleMaxRadius": 4,
+      "tagBlocks": "^P4-CIRCL$",
+      "tagAttributes": [ "SP", "1" ],
+      "connectorLayers": "LEADER",
+      "leadersAsConnectors": true,
+      "tagTextDistance": 48,
+      "fixtureText": "^(WC|LAV|BT|SH|KS|LS|W/D|WD|FD|UR|MS|DW|SK)$",
+      "ductLayers": null,
+      "groupDistance": 12,
+      "pointTolerance": 15,
+      "referenceFolders": "^XREF\\s*-?\\s*(PL|P|PLUMB|PLUMBING)$",
+      "gridFiles": "\\bGRID"
+    },
+    "services": {
+      "S": { "system": "Sanitary", "layer": "SANITARY", "sleeve": true, "pipe": 4 },
+      "V": { "system": "Vent", "layer": "VENT", "sleeve": true, "pipe": 4 },
+      "ST": { "system": "Storm", "layer": "STORM", "sleeve": true, "pipe": 4 },
+      "G": { "system": "Gas", "layer": "GAS", "sleeve": true, "pipe": 1 },
+      "CW": { "system": "ColdWater", "layer": "COLD WATER", "sleeve": false, "pipe": 2 },
+      "HW": { "system": "HotWater", "layer": "HOT WATER(?! RETURN)", "sleeve": false, "pipe": 1.5 },
+      "HWR": { "system": "HotWaterReturn", "layer": "HOT WATER RETURN", "sleeve": false, "pipe": 1 }
+    },
+    "upWords": [ "UP", "RISE", "RISER" ],
+    "downWords": [ "DN", "DOWN", "DROP" ],
+    "throughWords": [ "THRU", "THROUGH" ],
+    "fixtures": {
+      "WC": { "name": "toilet", "pipe": 4 },
+      "LAV": { "name": "lavatory", "pipe": 1.5 },
+      "BT": { "name": "bathtub", "pipe": 4, "count": 2, "spacing": 6 },
+      "SH": { "name": "shower", "pipe": 2 },
+      "KS": { "name": "kitchen sink", "pipe": 2 },
+      "LS": { "name": "laundry sink", "pipe": 2 },
+      "W/D": { "name": "washer", "pipe": 2 },
+      "WD": { "name": "washer", "pipe": 2 },
+      "FD": { "name": "floor drain", "pipe": 2 }
+    },
+    "fixtureSleeves": "review",
+    "sleeveOverPipe": 2,
+    "sleeveSizes": [ 3, 4, 5, 6, 8, 10, 12 ],
+    "sleeveGap": 1,
+    "skipLowestSlab": true,
+    "namePattern": "{service}-{riser}"
   },
 
   "adopt": {

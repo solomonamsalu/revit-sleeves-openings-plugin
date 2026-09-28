@@ -316,7 +316,9 @@ namespace SleevesOpenings.Audit
                         r.System == "GarbageChute" ? "Rule 42-43" : "Rule 22-23",
                         $"Riser {r.Riser} offsets {offsets} time(s) between floors", top, others);
 
-                if (r.Sizes.Count() > 1 && r.System != "DryerExhaust" && r.System != "Electrical" && r.System != "Refrigeration"
+                // exhaust risers start small and grow toward the roof fan (rule 3): only a size that gets smaller going up is flagged
+                bool grows = (r.System == "Exhaust" || r.System == "ERV" || r.System == "MotorizedDamper") && r.GrowsUpward;
+                if (r.Sizes.Count() > 1 && !grows && r.System != "DryerExhaust" && r.System != "Electrical" && r.System != "Refrigeration"
                     && !(IsRoofLevel(top.Level) && r.Openings.Count(o => !IsRoofLevel(o.Level)) > 0 && r.Openings.Where(o => !IsRoofLevel(o.Level)).Select(o => o.SizeText).Distinct().Count() == 1))
                     Add(r.System == "GarbageChute" ? Severity.Error : Severity.Warning, "Rule 24 / 49",
                         $"Riser {r.Riser} changes size: {string.Join(", ", r.Sizes)}", top, others);

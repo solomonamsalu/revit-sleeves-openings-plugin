@@ -3,3 +3,6 @@ obj/
 *.user
 *.suo
 .vs/
+
+# Notes and plans: kept locally only
+*.md

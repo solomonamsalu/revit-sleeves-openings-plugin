@@ -35,7 +35,15 @@ namespace SleevesOpenings.Automation.UI
         private readonly double _dryerSpacing;
         private readonly AutomationRules _automation;
         private readonly Func<Crossing, (double W, double L)?> _openingSize;
+        private readonly Action<RiserAssembly> _layout;              // openings next to each other (ERV pairs, dryers on other openings)
+        private readonly string _discipline;                         // AutomationInputs.Mechanical / Plumbing
+        private readonly PlumbingRules _plumbing;                    // set for the PL model: pipe groups instead of ducts
+        private readonly RevitColumns _columns;                      // PDF only: the model's columns, to line the plans up
+        private readonly PdfOnlyRules _pdfOnly;
         private List<ReferenceDrawing> _lastRefs = new List<ReferenceDrawing>();
+
+        private bool Plumbing => _plumbing != null;
+        private string DisciplineWord => Plumbing ? "plumbing" : "mechanical";
 
         private RadioButton _keep, _update;
         private TextBox _pdf, _dwg, _xrefs, _soSet, _messages;
@@ -43,7 +51,13 @@ namespace SleevesOpenings.Automation.UI
         private TabPage _tagsPage, _floorsPage, _risersPage, _alignPage, _openingsPage, _soPage;
         private Button _check, _ok;
         private Label _status, _alignSummary;
-        private CheckBox _mark, _place;
+        private CheckBox _mark, _place, _details;
+        private TabControl _tabs;
+        private TabPage _found;
+        private string _fullMessages = "";
+
+        /// <summary>Remembered between runs: the user last chose to see every extraction tab (off = results only).</summary>
+        private static readonly string DetailsFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SleevesOpenings", "autorun-details.txt");
 
         /// <summary>Results of the last successful check (for the next steps).</summary>
         public PdfSheetIndex Pdf { get; private set; }
@@ -57,6 +71,8 @@ namespace SleevesOpenings.Automation.UI
         /// <summary>Phase 8: the office's S&amp;O set and how the openings compare with it (null when none was chosen).</summary>
         public SoSetResult SoSet { get; private set; }
         public SoCompareResult SoCompare { get; private set; }
+        /// <summary>PDF-only mode (no DWG): the plans read from the PDF's CAD layers; null when the DWG was used.</summary>
+        public PdfPlanResult PdfPlans { get; private set; }
         /// <summary>The user wants the anchor risers marked in the model after Save.</summary>
         public bool MarkAnchors => _mark.Checked && Alignment?.Anchors.Count > 0;
         /// <summary>Phase 6: place the "place" openings after Save (only when the Revit position check passed).</summary>
@@ -64,8 +80,15 @@ namespace SleevesOpenings.Automation.UI
 
         public AutoRunForm(ExistingReport existing, AutomationInputs inputs, LevelMap levels, LegendRules legendRules, DwgProfile profile,
                            IList<ReferenceDrawing> modelRefs, GridInputs revitGrids, string modelPath, double dryerSpacing = 8,
-                           AutomationRules automation = null, Func<Crossing, (double W, double L)?> openingSize = null)
+                           AutomationRules automation = null, Func<Crossing, (double W, double L)?> openingSize = null,
+                           Action<RiserAssembly> layout = null, string discipline = AutomationInputs.Mechanical, PlumbingRules plumbing = null,
+                           RevitColumns columns = null, PdfOnlyRules pdfOnly = null)
         {
+            _columns = columns ?? new RevitColumns();
+            _pdfOnly = pdfOnly ?? new PdfOnlyRules();
+            _layout = layout ?? (a => { });
+            _discipline = discipline ?? AutomationInputs.Mechanical;
+            _plumbing = plumbing;
             _dryerSpacing = dryerSpacing;
             _automation = automation ?? new AutomationRules();
             _openingSize = openingSize ?? (c => null);
@@ -79,7 +102,7 @@ namespace SleevesOpenings.Automation.UI
 
         private void Build()
         {
-            Text = "Sleeves & Openings — Auto Run";
+            Text = "Sleeves & Openings — Auto Run" + (Plumbing ? " (plumbing)" : "");
             var screen = Screen.PrimaryScreen.WorkingArea;
             Width = Math.Min(1100, screen.Width - 40); Height = Math.Min(1000, screen.Height - 40);
             StartPosition = FormStartPosition.CenterScreen;
@@ -105,12 +128,17 @@ namespace SleevesOpenings.Automation.UI
             root.Controls.Add(exBox, 0, 0);
 
             // ---- 2. Drawings
-            var inBox = new GroupBox { Text = "2. Engineer drawings — Mechanical (plumbing and sprinkler come in a later phase)", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(8) };
+            var inBox = new GroupBox
+            {
+                Text = Plumbing ? "2. Engineer drawings — Plumbing (PL model: pipe sleeves; the model name decides, rules.json plumbing.modelMatch)"
+                                : "2. Engineer drawings — Mechanical (HV model; a PL model gets the plumbing drawings)",
+                Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(8)
+            };
             var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, AutoSize = true };
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
-            var files = _inputs.For(AutomationInputs.Mechanical);
+            var files = _inputs.For(_discipline);
             _pdf = FileRow(grid, 0, "PDF", files.Pdf, "PDF drawing set (*.pdf)|*.pdf");
             _dwg = FileRow(grid, 1, "DWG", files.Dwg, "AutoCAD drawing (*.dwg)|*.dwg");
             _xrefs = FolderRow(grid, 2, "Xrefs", files.Xrefs ?? ReferenceFiles.FindFolder(_modelPath, _profile.ReferenceFolders));
@@ -127,7 +155,12 @@ namespace SleevesOpenings.Automation.UI
             _check = new Button { Text = "Check drawings", AutoSize = true };
             _check.Click += async (s, e) => await CheckAsync();
             _status = new Label { AutoSize = true, Padding = new Padding(6, 6, 0, 0) };
+            _details = new CheckBox { Text = "Show extraction details", AutoSize = true, Checked = LoadDetails(), Padding = new Padding(12, 4, 0, 0) };
+            new ToolTip().SetToolTip(_details, "On: every tab (floors, tags, risers, Revit position, openings) and every message.\n" +
+                                               "Off: only the result (openings, and floors or Revit position when they need attention).");
+            _details.CheckedChanged += (s, e) => { SaveDetails(_details.Checked); ApplyView(); };
             checkRow.Controls.Add(_check);
+            checkRow.Controls.Add(_details);
             checkRow.Controls.Add(_status);
             grid.Controls.Add(checkRow, 1, _soSet != null ? 4 : 3);
             inBox.Controls.Add(grid);
@@ -166,9 +199,12 @@ namespace SleevesOpenings.Automation.UI
                 Dock = DockStyle.Fill, AllowUserToAddRows = false, AllowUserToDeleteRows = false, RowHeadersVisible = false, ReadOnly = true,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, SelectionMode = DataGridViewSelectionMode.FullRowSelect
             };
-            foreach (var (h, w) in new[] { ("Floor", 45), ("Tag", 40), ("Meaning", 90), ("Size down (DN)", 55), ("Size up (UP)", 55), ("Ducts", 25), ("DWG position (in)", 60), ("Result", 90), ("How it was read", 120) })
+            var riserColumns = Plumbing
+                ? new[] { ("Floor", 45), ("Group", 40), ("Services (text at the bubble)", 120), ("Down (this slab)", 50), ("Up (slab above)", 50), ("Pipes drawn", 30), ("DWG position (in)", 60), ("Result", 90), ("How it was read", 120) }
+                : new[] { ("Floor", 45), ("Tag", 40), ("Meaning", 90), ("Size down (DN)", 55), ("Size up (UP)", 55), ("Ducts", 25), ("DWG position (in)", 60), ("Result", 90), ("How it was read", 120) };
+            foreach (var (h, w) in riserColumns)
                 _risers.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = h, FillWeight = w });
-            _risersPage = new TabPage("Risers (DWG)");
+            _risersPage = new TabPage(Plumbing ? "Pipe groups (DWG)" : "Risers (DWG)");
             _risersPage.Controls.Add(_risers);
 
             _align = Grid();
@@ -197,8 +233,8 @@ namespace SleevesOpenings.Automation.UI
                 _so.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = h, FillWeight = w });
             _soPage = new TabPage("S&O set");
             _soPage.Controls.Add(_so);
-            var tabs = new TabControl { Dock = DockStyle.Fill };
-            var found = new TabPage("What was found");
+            var tabs = _tabs = new TabControl { Dock = DockStyle.Fill };
+            var found = _found = new TabPage("What was found");
             found.Controls.Add(_messages);
             _tagsPage = new TabPage("Tag meanings");
             _tagsPage.Controls.Add(_tags);
@@ -210,6 +246,7 @@ namespace SleevesOpenings.Automation.UI
             if (_automation.ReferenceSet.Enabled) tabs.TabPages.Add(_soPage);
             tabs.TabPages.Add(found);
             root.Controls.Add(tabs, 0, 2);
+            ApplyView();
 
             // ---- Buttons
             var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, AutoSize = true };
@@ -218,6 +255,10 @@ namespace SleevesOpenings.Automation.UI
             _ok.Click += (s, e) => { if (Save()) { DialogResult = DialogResult.OK; Close(); } };
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(_ok);
+            var export = new Button { Text = "Copy extraction", AutoSize = true };
+            new ToolTip().SetToolTip(export, "Saves everything read from the drawings (all tabs + the raw DWG risers) to a text file and copies it, to paste for review.");
+            export.Click += (s, e) => ExportExtraction();
+            buttons.Controls.Add(export);
             _mark = new CheckBox { Text = "Mark the check risers in the model (model lines; undo removes them)", AutoSize = true, Checked = true, Padding = new Padding(0, 4, 12, 0) };
             buttons.Controls.Add(_mark);
             _place = new CheckBox { Text = "Place the openings now (green rows; one undo)", AutoSize = true, Checked = true, Padding = new Padding(0, 4, 12, 0) };
@@ -227,6 +268,145 @@ namespace SleevesOpenings.Automation.UI
 
             Shown += async (s, e) => { if (File.Exists(_pdf.Text) || File.Exists(_dwg.Text)) await CheckAsync(); };
         }
+
+        /// <summary>
+        /// Everything the drawings gave, as plain tab-separated text: every tab of this window plus the raw DWG risers
+        /// (symbols, labels with their arrow points, notes). Saved under %LOCALAPPDATA%\SleevesOpenings\extraction and
+        /// copied to the clipboard, so it can be pasted for review.
+        /// </summary>
+        private void ExportExtraction()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("# Sleeves & Openings - extraction");
+            sb.AppendLine($"Model\t{_modelPath}");
+            sb.AppendLine($"PDF\t{_pdf.Text}");
+            sb.AppendLine($"DWG\t{_dwg.Text}");
+            sb.AppendLine($"Xrefs\t{_xrefs.Text}");
+            sb.AppendLine($"Saved\t{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            sb.AppendLine();
+
+            void Section(string title, DataGridView grid)
+            {
+                sb.AppendLine($"## {title} ({grid.Rows.Count} rows)");
+                var cols = grid.Columns.Cast<DataGridViewColumn>().Where(c => c.Visible).OrderBy(c => c.DisplayIndex).ToList();
+                sb.AppendLine(string.Join("\t", cols.Select(c => c.HeaderText)));
+                foreach (DataGridViewRow row in grid.Rows)
+                    sb.AppendLine(string.Join("\t", cols.Select(c => Clean(row.Cells[c.Index].FormattedValue?.ToString()))));
+                sb.AppendLine();
+            }
+            Section("Floors -> Revit levels", _floors);
+            Section("Tag meanings", _tags);
+            Section("Risers (DWG)", _risers);
+            Section("Revit position", _align);
+            Section("Check risers", _anchors);
+            Section("Openings", _openings);
+
+            // The raw reader output: what each riser is made of, before any merging across floors.
+            if (Risers != null)
+            {
+                sb.AppendLine($"## Raw DWG risers ({Risers.Risers.Count}); positions in drawing units (inches)");
+                sb.AppendLine("Floor\tTags\tX\tY\tDucts\tSymbols (block @ x,y)\tLabels (text @ arrow x,y)\tText at the bubble\tNotes\tEvidence");
+                foreach (var r in Risers.Risers.OrderBy(r => FloorKey.Order(r.Floor)).ThenBy(r => r.Tag ?? "~").ThenBy(r => r.Y))
+                    sb.AppendLine(string.Join("\t",
+                        FloorKey.Describe(r.Floor), string.Join(" ", r.Tags), $"{r.X:0.0}", $"{r.Y:0.0}", r.Ducts,
+                        string.Join("; ", r.Symbols.Select(s => $"{s.Block}{(s.Layer != null && s.Block == DwgRiserReader.PipeCircle ? " " + s.Layer : "")}{(s.Outline ? " " + s.Size : "")}{(s.InOutline ? " (inside outline)" : "")} @ {s.X:0.0},{s.Y:0.0}")),
+                        string.Join("; ", r.Labels.Select(l => $"'{Clean(l.Text)}' @ {l.X:0.0},{l.Y:0.0}")),
+                        Clean(string.Join(" | ", r.TagTexts.Select(t => t.Replace("\n", " / ")))),
+                        Clean(string.Join("; ", r.Notes)), Clean(string.Join("; ", r.Evidence))));
+                sb.AppendLine();
+                if (Risers.Fixtures.Count > 0)
+                {
+                    sb.AppendLine($"## Fixtures named on the plans ({Risers.Fixtures.Count})");
+                    foreach (var x in Risers.Fixtures.OrderBy(x => FloorKey.Order(x.Floor)).ThenBy(x => x.Code)) sb.AppendLine($"{FloorKey.Describe(x.Floor)}\t{x.Code}\t{x.X:0.0}\t{x.Y:0.0}");
+                    sb.AppendLine();
+                }
+                sb.AppendLine($"## Loose tags ({Risers.LooseTags.Count}): bubbles not tied to any riser");
+                foreach (var t in Risers.LooseTags) sb.AppendLine($"{FloorKey.Describe(t.Floor)}\t{t.Tag}\t{t.X:0.0}\t{t.Y:0.0}");
+                sb.AppendLine();
+                if (Risers.Warnings.Count > 0)
+                {
+                    sb.AppendLine("## Reader warnings");
+                    foreach (var w in Risers.Warnings) sb.AppendLine(w);
+                    sb.AppendLine();
+                }
+            }
+            sb.AppendLine("## What was found");
+            sb.AppendLine(_fullMessages);
+
+            string text = sb.ToString(), path = null;
+            try
+            {
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SleevesOpenings", "extraction");
+                Directory.CreateDirectory(dir);
+                string name = string.Concat((Path.GetFileNameWithoutExtension(_modelPath) ?? "model").Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+                path = Path.Combine(dir, $"{name} {DateTime.Now:yyyyMMdd-HHmmss}.txt");
+                File.WriteAllText(path, text, Encoding.UTF8);
+            }
+            catch (Exception ex) { App.Log("AutoRun: extraction not saved: " + ex); }
+
+            bool copied = false;
+            try { Clipboard.SetText(text); copied = true; } catch (Exception ex) { App.Log("AutoRun: extraction not copied: " + ex); }
+            App.Log($"AutoRun: extraction exported ({text.Length} chars) to {path ?? "(not saved)"}");
+            MessageBox.Show(this,
+                (copied ? "The extraction is copied: paste it where you need it.\n\n" : "") +
+                (path != null ? $"Saved to:\n{path}" : "Could not save the file (see the log)."),
+                "Copy extraction", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (path != null && !copied) System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{path}\"");
+        }
+
+        /// <summary>
+        /// Details on: every tab and message. Off: the result only - the openings (and the S&amp;O set when compared), the
+        /// floors / Revit position tabs only when something there needs attention, and the top-level messages.
+        /// </summary>
+        private void ApplyView()
+        {
+            bool all = _details.Checked;
+            bool floorsNeedLook = _floors.Rows.Cast<DataGridViewRow>().Any(r => r.DefaultCellStyle.BackColor == Color.MistyRose || r.DefaultCellStyle.BackColor == Color.LightYellow);
+            bool alignNeedsLook = Alignment != null && !Alignment.Passed;
+            var pages = new List<TabPage>();
+            if (all || floorsNeedLook) pages.Add(_floorsPage);
+            if (all) { pages.Add(_tagsPage); pages.Add(_risersPage); }
+            if (all || alignNeedsLook) pages.Add(_alignPage);
+            pages.Add(_openingsPage);
+            if (_automation.ReferenceSet.Enabled) pages.Add(_soPage);
+            pages.Add(_found);
+
+            var selected = _tabs.SelectedTab;
+            if (!pages.SequenceEqual(_tabs.TabPages.Cast<TabPage>()))
+            {
+                _tabs.SuspendLayout();
+                _tabs.TabPages.Clear();
+                foreach (var p in pages) _tabs.TabPages.Add(p);
+                _tabs.ResumeLayout();
+            }
+            if (selected != null && pages.Contains(selected)) _tabs.SelectedTab = selected;
+            else if (!all && Assembly != null) _tabs.SelectedTab = _openingsPage;
+
+            if (all) { _found.Text = "What was found"; _messages.Text = _fullMessages; return; }
+            // Results only: drop the extraction lines (what each file / tag / riser gave) and the indented details.
+            string[] extraction = { "PDF:", "DWG:", "Tags:", "Services:", "Risers in the DWG", "Pipe groups in the DWG" };
+            var lines = _fullMessages.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            var kept = lines.Where(l => l.Length > 0 && !char.IsWhiteSpace(l[0]) && !extraction.Any(x => l.StartsWith(x, StringComparison.Ordinal))).ToList();
+            int hidden = lines.Count(l => l.TrimStart().StartsWith("!", StringComparison.Ordinal));
+            if (hidden > 0) kept.Add($"({hidden} warning(s) from reading the drawings are hidden - tick Show extraction details to see them.)");
+            _found.Text = "Summary";
+            _messages.Text = string.Join(Environment.NewLine, kept);
+        }
+
+        private static bool LoadDetails()
+        {
+            try { return !File.Exists(DetailsFile) || File.ReadAllText(DetailsFile).Trim() != "off"; }
+            catch { return true; }
+        }
+
+        private static void SaveDetails(bool on)
+        {
+            try { Directory.CreateDirectory(Path.GetDirectoryName(DetailsFile)); File.WriteAllText(DetailsFile, on ? "on" : "off"); }
+            catch (Exception ex) { App.Log("AutoRun: view choice not saved: " + ex.Message); }
+        }
+
+        /// <summary>One line, no tabs: safe inside a tab-separated row.</summary>
+        private static string Clean(string s) => string.IsNullOrEmpty(s) ? "" : System.Text.RegularExpressions.Regex.Replace(s.Replace("\\P", " "), @"[\t\r\n]+", " ").Trim();
 
         private static DataGridView Grid() => new DataGridView
         {
@@ -243,7 +423,8 @@ namespace SleevesOpenings.Automation.UI
             var browse = new Button { Text = "Browse…", AutoSize = true };
             browse.Click += (s, e) =>
             {
-                using (var dlg = new FolderBrowserDialog { Description = "Folder of the per-floor mechanical xrefs at Revit's 0,0 (e.g. Xref\\Xref ME)" })
+                using (var dlg = new FolderBrowserDialog { Description = Plumbing ? "Folder of the per-floor plumbing xrefs at Revit's 0,0 (e.g. Xref\\Xref PL)"
+                                                                                  : "Folder of the per-floor mechanical xrefs at Revit's 0,0 (e.g. Xref\\Xref ME)" })
                 {
                     if (Directory.Exists(box.Text)) dlg.SelectedPath = box.Text;
                     if (dlg.ShowDialog(this) == DialogResult.OK) box.Text = dlg.SelectedPath;
@@ -264,7 +445,7 @@ namespace SleevesOpenings.Automation.UI
             var browse = new Button { Text = "Browse…", AutoSize = true };
             browse.Click += (s, e) =>
             {
-                using (var dlg = new OpenFileDialog { Filter = filter, Title = title ?? "Select the mechanical " + label })
+                using (var dlg = new OpenFileDialog { Filter = filter, Title = title ?? $"Select the {DisciplineWord} {label}" })
                 {
                     if (File.Exists(box.Text)) dlg.InitialDirectory = Path.GetDirectoryName(box.Text);
                     if (dlg.ShowDialog(this) == DialogResult.OK) box.Text = dlg.FileName;
@@ -279,7 +460,7 @@ namespace SleevesOpenings.Automation.UI
         {
             string pdfPath = _pdf.Text.Trim(), dwgPath = _dwg.Text.Trim(), xrefPath = _xrefs.Text.Trim(), soPath = _soSet?.Text.Trim() ?? "";
             var msg = new StringBuilder();
-            if (pdfPath.Length == 0 && dwgPath.Length == 0) { _messages.Text = "Select the mechanical PDF and DWG."; return; }
+            if (pdfPath.Length == 0 && dwgPath.Length == 0) { _fullMessages = $"Select the {DisciplineWord} PDF and DWG."; ApplyView(); return; }
             // Not found next to the model (a copy saved elsewhere): look around the engineer DWG's project folder.
             if (xrefPath.Length == 0 && dwgPath.Length > 0)
             {
@@ -304,8 +485,23 @@ namespace SleevesOpenings.Automation.UI
                 try { pdf = await tp; } catch (Exception ex) { msg.AppendLine($"PDF could not be read: {ex.Message}"); App.Log("AutoRun PDF read failed: " + ex); }
                 try { (cad, dwg, risers) = await td; } catch (Exception ex) { msg.AppendLine($"DWG could not be read: {ex.Message}"); App.Log("AutoRun DWG read failed: " + ex); }
 
-                Pdf = pdf; Dwg = dwg; Risers = risers; Alignment = null; Assembly = null; Diagram = null; SoSet = null; SoCompare = null;
-                Describe(pdf, dwg, pdfPath, dwgPath, msg);
+                // PDF only (no DWG): the plans are read from the PDF's CAD layers and lined up by their columns
+                PdfPlanResult plans = null;
+                if (dwgPath.Length == 0 && pdf != null && _pdfOnly.Enabled)
+                {
+                    if (!Plumbing) msg.AppendLine("PDF only: built for the plumbing (PL) model for now; the mechanical model needs the DWG.");
+                    else
+                    {
+                        _status.Text = "Reading the plans from the PDF (PDF only)…";
+                        var pdfOnly = _pdfOnly;
+                        try { plans = await Task.Run(() => PdfPlanReader.Read(pdfPath, pdf, profile, pdfOnly)); dwg = plans.Index; risers = plans.Risers; }
+                        catch (Exception ex) { msg.AppendLine($"The PDF plans could not be read: {ex.Message}"); App.Log("AutoRun PDF-only read failed: " + ex); }
+                    }
+                }
+
+                Pdf = pdf; Dwg = dwg; Risers = risers; PdfPlans = plans; Alignment = null; Assembly = null; Diagram = null; SoSet = null; SoCompare = null;
+                Describe(pdf, plans == null ? dwg : null, pdfPath, plans == null ? dwgPath : "-", msg, Plumbing ? "P" : "M", DisciplineWord);
+                if (plans != null) DescribePdfOnly(plans, msg);
                 FillFloors(pdf, dwg);
                 FillTags(pdf, msg);
                 FillRisers(pdf, risers, msg);
@@ -323,14 +519,33 @@ namespace SleevesOpenings.Automation.UI
                     try { Alignment = await Task.Run(() => FloorAligner.Run(cad, dwg, risers, profile, refs, floorLevels, existingPoints, grids)); }
                     catch (Exception ex) { msg.AppendLine($"Lining up with Revit failed: {ex.Message}"); App.Log("AutoRun alignment failed: " + ex); }
                 }
+                else if (plans != null)
+                {
+                    _status.Text = "Lining the PDF plans up with Revit by their columns…";
+                    var floorLevels = FloorLevels(); var columns = _columns; var pdfOnly = _pdfOnly;
+                    try { Alignment = await Task.Run(() => ColumnAligner.Run(plans, columns, floorLevels, pdfOnly)); }
+                    catch (Exception ex) { msg.AppendLine($"Lining up with Revit failed: {ex.Message}"); App.Log("AutoRun PDF-only alignment failed: " + ex); }
+                }
                 FillAlignment(msg);
 
-                if (dwg != null && risers != null && Alignment != null)
+                if (dwg != null && risers != null && Alignment != null && Plumbing)
+                {
+                    // PL model: pipe groups -> sleeves; no duct label check, riser diagram or duct outlines
+                    _status.Text = "Merging the floors (pipe groups)…";
+                    var floorLevels = FloorLevels(); var alignment = Alignment; var rules = _plumbing;
+                    try { Assembly = await Task.Run(() => PipeAssembler.Run(dwg, risers, alignment, floorLevels, rules)); }
+                    catch (Exception ex) { msg.AppendLine($"Merging the floors failed: {ex.Message}"); App.Log("AutoRun plumbing assembly failed: " + ex); }
+                    if (Assembly != null && plans != null) MarkPdfOnly(Assembly, plans);
+                    if (pdf != null)
+                        msg.AppendLine("  Plumbing: sizes are not on the plans; each sleeve uses rules.json plumbing.services pipe sizes (check the riser diagram" +
+                                       (pdf.Sheets.Any(s => s.HasRiserDiagram) ? $", page {string.Join(", ", pdf.Sheets.Where(s => s.HasRiserDiagram).Select(s => s.Page))}" : "") + ").");
+                }
+                else if (dwg != null && risers != null && Alignment != null)
                 {
                     _status.Text = "Merging the floors and checking the labels against the PDF…";
                     var floorLevels = FloorLevels();
                     var legend = pdf?.Legend ?? new SleevesOpenings.Automation.Legend.Legend();
-                    var rules = _legendRules; var alignment = Alignment; var profile2 = _profile; var dryerSpacing = _dryerSpacing;
+                    var rules = _legendRules; var alignment = Alignment; var profile2 = _profile; var dryerSpacing = _dryerSpacing; var layout = _layout;
                     var warnings = new List<string>();
                     bool readDiagram = _automation.RiserDiagram;
                     RiserDiagramResult diagram = null;
@@ -352,11 +567,12 @@ namespace SleevesOpenings.Automation.UI
                                     {
                                         var m = legend.Meaning(t, rules);
                                         return m.Category == TagCategory.Opening || m.Category == TagCategory.Undefined;
-                                    });
+                                    }, t => legend.Meaning(t, rules).LabelOnHost);
                                     DiagramCheck.Apply(assembly, diagram, legend, rules);
                                     if (diagram != null) warnings.AddRange(diagram.Warnings.Select(w => "riser diagram: " + w));
                                 }
                                 catch (Exception ex) { App.Log("AutoRun riser diagram failed: " + ex); warnings.Add("riser diagram not read: " + ex.Message); }
+                            layout(assembly);
                             return assembly;
                         });
                         Diagram = diagram;
@@ -392,17 +608,18 @@ namespace SleevesOpenings.Automation.UI
                 _check.Enabled = true;
                 _status.Text = "";
             }
-            _messages.Text = msg.ToString().TrimEnd();
+            _fullMessages = msg.ToString().TrimEnd();
+            ApplyView();
             _ok.Enabled = (pdf != null || dwg != null) && _floors.Rows.Count > 0;
         }
 
-        private static void Describe(PdfSheetIndex pdf, DwgSheetIndex dwg, string pdfPath, string dwgPath, StringBuilder msg)
+        private static void Describe(PdfSheetIndex pdf, DwgSheetIndex dwg, string pdfPath, string dwgPath, StringBuilder msg, string letter, string word)
         {
             if (pdf != null)
             {
                 msg.AppendLine($"PDF: {Path.GetFileName(pdfPath)} — {pdf.PageCount} pages, {pdf.FloorPlans.Count()} floor plan(s).");
-                if (pdf.Discipline != null && !pdf.Discipline.Equals("M", StringComparison.OrdinalIgnoreCase))
-                    msg.AppendLine($"  ! Sheet numbers start with '{pdf.Discipline}-' — this does not look like the mechanical set.");
+                if (pdf.Discipline != null && !pdf.Discipline.Equals(letter, StringComparison.OrdinalIgnoreCase))
+                    msg.AppendLine($"  ! Sheet numbers start with '{pdf.Discipline}-' — this does not look like the {word} set.");
                 Pages(msg, "Abbreviations / symbols", pdf.Sheets.Where(s => s.HasAbbreviations || s.HasSymbols));
                 Pages(msg, "Riser diagram", pdf.Sheets.Where(s => s.HasRiserDiagram));
                 Pages(msg, "Schedules", pdf.Sheets.Where(s => s.HasSchedule && s.Floor == null));
@@ -420,6 +637,7 @@ namespace SleevesOpenings.Automation.UI
                 foreach (var w in dwg.Warnings) msg.AppendLine("  ! " + w);
             }
             else if (dwgPath.Length == 0) msg.AppendLine("DWG: not selected — locations will come from the PDF only (less exact).");
+            if (dwgPath == "-") return;                  // PDF only: described on its own
 
             if (pdf != null && dwg != null)
             {
@@ -427,6 +645,36 @@ namespace SleevesOpenings.Automation.UI
                 var onlyDwg = dwg.Floors.Select(f => f.Floor).Except(pdf.FloorPlans.Select(s => s.Floor)).ToList();
                 if (onlyPdf.Count > 0) msg.AppendLine("  ! Only in the PDF: " + string.Join(", ", onlyPdf.Select(FloorKey.Describe)));
                 if (onlyDwg.Count > 0) msg.AppendLine("  ! Only in the DWG: " + string.Join(", ", onlyDwg.Select(FloorKey.Describe)));
+            }
+        }
+
+        /// <summary>PDF only: what was read from each plan page.</summary>
+        private void DescribePdfOnly(PdfPlanResult plans, StringBuilder msg)
+        {
+            var read = plans.Plans.Where(p => p.Problem == null).ToList();
+            msg.AppendLine($"DWG: none — PDF only: {read.Count} of {plans.Plans.Count} floor plan(s) read from the PDF's CAD layers" +
+                           (read.Count == 0 ? "." : $" ({string.Join(", ", read.GroupBy(p => p.ScaleText ?? PdfPlanReader.Ratio(p.Scale)).Select(g => g.Key))}); " +
+                                                    $"columns drawn: {string.Join(", ", read.Select(p => $"{FloorKey.Describe(p.Floor)} {p.Columns.Count}"))}."));
+            msg.AppendLine($"  Model columns to line the plans up with: {_columns.Columns.Count} ({_columns.Source ?? "none"}).");
+            if (_columns.Columns.Count == 0) msg.AppendLine("  ! The model has no columns: load the structural link (Manage Links) and check again.");
+            foreach (var w in plans.Warnings) msg.AppendLine("  ! " + w);
+        }
+
+        /// <summary>PDF only: every sleeve says where its position came from; with placeWhenPassed off, none is placed without review.</summary>
+        private void MarkPdfOnly(RiserAssembly assembly, PdfPlanResult plans)
+        {
+            foreach (var c in assembly.Crossings)
+            {
+                var fa = Alignment?.For(c.Floor);
+                string how = fa?.Status == FloorAlignment.Confirmed ? "lined up by its columns"
+                           : fa?.Usable == true ? "lined up by the pipes stacked on the floor next to it" : "not lined up";
+                c.Pdf = "PDF only";
+                c.Notes.Add($"position from the PDF only (page {plans.For(c.Floor)?.Page}, {how})");
+                if (!_pdfOnly.PlaceWhenPassed && c.Status == Crossing.Place)
+                {
+                    c.Status = Crossing.Review;
+                    c.Notes.Add("PDF-only sleeves go to review (rules.json pdfOnly.placeWhenPassed = false)");
+                }
             }
         }
 
@@ -461,6 +709,7 @@ namespace SleevesOpenings.Automation.UI
         private void FillTags(PdfSheetIndex pdf, StringBuilder msg)
         {
             _tags.Rows.Clear();
+            if (Plumbing) { FillPlumbingTags(pdf, msg); return; }
             var entries = new List<LegendEntry>();
             foreach (var kv in _legendRules?.OfficeFixed ?? new Dictionary<string, string>())
                 entries.Add(new LegendEntry { Tag = kv.Key, Definition = kv.Value, Source = "office" });
@@ -482,11 +731,81 @@ namespace SleevesOpenings.Automation.UI
                                $"{ignored} need no opening, {rows.Count - openings - ignored} are not risers. See the Tag meanings tab.");
         }
 
+        /// <summary>
+        /// PL model: the service letters written next to the pipe groups and the fixtures named on the plans, what the
+        /// office does with each (rules.json plumbing), and whether the PDF's legend defines the letters.
+        /// </summary>
+        private void FillPlumbingTags(PdfSheetIndex pdf, StringBuilder msg)
+        {
+            string Pdf(string code)
+            {
+                var e = pdf?.Legend.Entries.FirstOrDefault(x => string.Equals(x.Tag, code, StringComparison.OrdinalIgnoreCase));
+                return e == null ? "" : $" — PDF: {e.Definition} (p{e.Page})";
+            }
+            foreach (var kv in _plumbing.Services.OrderBy(kv => kv.Value.Sleeve ? 0 : 1).ThenBy(kv => kv.Key))
+            {
+                var s = kv.Value;
+                int i = _tags.Rows.Add(kv.Key, s.System + Pdf(kv.Key), "rules.json plumbing.services",
+                                       s.Sleeve ? $"sleeve {Units.FormatInches(_plumbing.SleeveFor(s.Pipe))} (pipe {Units.FormatInches(s.Pipe)} + {Units.FormatInches(_plumbing.SleeveOverPipe)})" : "no sleeve");
+                if (s.Sleeve) _tags.Rows[i].DefaultCellStyle.BackColor = Color.Honeydew;
+                else _tags.Rows[i].DefaultCellStyle.ForeColor = SystemColors.GrayText;
+            }
+            bool review = !string.Equals(_plumbing.FixtureSleeves, "off", StringComparison.OrdinalIgnoreCase);
+            foreach (var kv in _plumbing.Fixtures.OrderBy(kv => kv.Key))
+            {
+                var f = kv.Value;
+                int i = _tags.Rows.Add(kv.Key, f.Name + Pdf(kv.Key), "rules.json plumbing.fixtures",
+                                       review ? $"fixture sleeve {(f.Count > 1 ? f.Count + " x " : "")}{Units.FormatInches(_plumbing.SleeveFor(f.Pipe))}: for review" : "not listed");
+                if (review) _tags.Rows[i].DefaultCellStyle.BackColor = Color.LightYellow;
+            }
+            int sleeved = _plumbing.Services.Count(kv => kv.Value.Sleeve);
+            _tagsPage.Text = $"Tag meanings ({_plumbing.Services.Count} services, {sleeved} get a sleeve)";
+            msg.AppendLine($"Services: {string.Join(", ", _plumbing.Services.Where(kv => kv.Value.Sleeve).Select(kv => kv.Key))} get sleeves; " +
+                           $"{string.Join(", ", _plumbing.Services.Where(kv => !kv.Value.Sleeve).Select(kv => kv.Key))} do not (rules.json plumbing.services).");
+        }
+
+        /// <summary>PL model: one row per pipe group (P1, P2...) and what it becomes.</summary>
+        private void FillPipeGroups(DwgRiserResult risers, StringBuilder msg)
+        {
+            int tagged = 0, listed = 0, bare = 0;
+            foreach (var r in risers.Risers.OrderBy(r => FloorKey.Order(r.Floor)).ThenBy(r => r.Tag ?? "~"))
+            {
+                var lines = PipeAssembler.Parse(r.TagTexts, _plumbing);
+                var drawn = r.Symbols.Where(s => s.Block == DwgRiserReader.PipeCircle).Select(s => _plumbing.ServiceForLayer(s.Layer) ?? "?").ToList();
+                string down = string.Join(", ", lines.Where(l => l.Down || l.Through).Select(l => l.Service));
+                string up = string.Join(", ", lines.Where(l => l.Up).Select(l => l.Service));
+                var sleeves = lines.Where(l => _plumbing.Services[l.Service].Sleeve).Select(l => l.Service).ToList();
+                string result; Color back;
+                if (r.Tag != null) tagged++;
+                if (lines.Count > 0)
+                {
+                    listed++;
+                    result = sleeves.Count > 0 ? $"sleeves: {string.Join(", ", sleeves.Select(s => _plumbing.Name(s, r.Tag)))}" : "no sleeved service";
+                    back = sleeves.Count > 0 ? Color.Honeydew : SystemColors.Window;
+                }
+                else { bare++; result = r.Tag == null ? "no tag and no UP/DN list - reported" : "no UP/DN list next to the bubble - reported"; back = Color.MistyRose; }
+                int i = _risers.Rows.Add(FloorKey.Describe(r.Floor), r.Tag ?? "(none)",
+                                         lines.Count > 0 ? string.Join(" / ", lines.Select(l => l.Text)) : $"pipes drawn: {string.Join(", ", drawn)}",
+                                         down, up, drawn.Count, $"{r.X:0}, {r.Y:0}", result, string.Join("; ", r.Evidence));
+                _risers.Rows[i].DefaultCellStyle.BackColor = back;
+            }
+            foreach (var t in risers.LooseTags)
+            {
+                int i = _risers.Rows.Add(FloorKey.Describe(t.Floor), t.Tag, "", "", "", 0, $"{t.X:0}, {t.Y:0}", "bubble with no leader to a pipe group - reported", "");
+                _risers.Rows[i].DefaultCellStyle.BackColor = Color.LightYellow;
+            }
+            _risersPage.Text = $"Pipe groups (DWG) ({risers.Risers.Count}, {listed} with services)";
+            msg.AppendLine($"Pipe groups in the DWG: {risers.Risers.Count} on {risers.Risers.Select(r => r.Floor).Distinct().Count()} floor(s) - {tagged} tagged, {listed} with a service list, " +
+                           $"{bare} drawn without one (reported); {risers.LooseTags.Count} bubble(s) not connected; {risers.Fixtures.Count} fixture(s) named on the plans. See the Pipe groups tab.");
+            foreach (var w in risers.Warnings) msg.AppendLine("  ! " + w);
+        }
+
         /// <summary>What each riser found in the DWG will become: an opening, nothing, or a report item.</summary>
         private void FillRisers(PdfSheetIndex pdf, DwgRiserResult risers, StringBuilder msg)
         {
             _risers.Rows.Clear();
-            if (risers == null) { _risersPage.Text = "Risers (DWG)"; return; }
+            if (risers == null) { _risersPage.Text = Plumbing ? "Pipe groups (DWG)" : "Risers (DWG)"; return; }
+            if (Plumbing) { FillPipeGroups(risers, msg); return; }
             var legend = pdf?.Legend ?? new SleevesOpenings.Automation.Legend.Legend();
             int openings = 0, missing = 0, undefined = 0, none = 0;
             foreach (var r in risers.Risers.OrderBy(r => FloorKey.Order(r.Floor)).ThenBy(r => r.Tag ?? "~"))
@@ -507,7 +826,7 @@ namespace SleevesOpenings.Automation.UI
                 var label = r.Label;
                 int i = _risers.Rows.Add(FloorKey.Describe(r.Floor), r.Tag ?? (r.Dryer ? "(dryer)" : "(none)"), meaning,
                     label?.Down?.ToString() ?? (label?.GoesDown == true ? "?" : ""), label?.Up?.ToString() ?? (label?.GoesUp == true ? "?" : ""),
-                    r.Symbols.Count, $"{r.X:0}, {r.Y:0}", result, string.Join("; ", r.Evidence));
+                    r.Ducts, $"{r.X:0}, {r.Y:0}", result, string.Join("; ", r.Evidence));
                 if (back.HasValue) _risers.Rows[i].DefaultCellStyle.BackColor = back.Value;
             }
             foreach (var t in risers.LooseTags)
@@ -565,7 +884,8 @@ namespace SleevesOpenings.Automation.UI
             foreach (var f in a.Floors.OrderBy(f => FloorKey.Order(f.Floor)))
             {
                 string with = f.Reference == null ? "—" : $"{f.Reference.Name} ({f.Reference.Method})";
-                string shift = f.Shift == null ? "" : $"{f.Shift.Dx:0.##}, {f.Shift.Dy:0.##}";
+                string shift = f.Shift == null ? "" : PdfPlans != null ? (f.Map == null ? "" : $"turned {Math.Atan2(f.Map.Sin, f.Map.Cos) * 180 / Math.PI:0.##}°")
+                             : $"{f.Shift.Dx:0.##}, {f.Shift.Dy:0.##}";
                 string blocks = f.Shift == null ? "" : $"{f.Shift.Support} of {f.Shift.Comparable}";
                 string onRef = f.RisersChecked == 0 ? "" : $"{f.RisersOnReference} of {f.RisersChecked}" + (f.RisersOnExisting > 0 ? $" ({f.RisersOnExisting} on existing openings)" : "");
                 string stacked = f.StackedOn == null ? "" : $"{f.StackedTags.Count} on {FloorKey.Describe(f.StackedOn)}" + (f.StackedTags.Count > 0 ? $": {string.Join(", ", f.StackedTags)}" : "");
@@ -595,8 +915,8 @@ namespace SleevesOpenings.Automation.UI
             if (a == null) { _openingsPage.Text = "Openings"; return; }
             foreach (var c in a.Crossings)
             {
-                int i = _openings.Rows.Add(FloorKey.Describe(c.Floor), c.Level ?? "(not used)", c.Tag ?? (c.System == "DryerExhaust" ? "(dryer)" : "-"), c.System,
-                                           c.Size?.ToString() ?? (c.System == "DryerExhaust" ? "by rules" : "?"), c.Ducts,
+                int i = _openings.Rows.Add(FloorKey.Describe(c.Floor), c.Level ?? "(not used)", c.Tag == null ? (c.System == "DryerExhaust" ? "(dryer)" : "-") : c.Tag + c.DamperSuffix, c.System,
+                                           c.Size?.ToString() ?? (c.SizedByRules ? "by rules" : "?"), c.Ducts,
                                            c.Status == Crossing.Place ? "place" : c.Status == Crossing.Review ? "review" : "not placed",
                                            c.Rotation.HasValue ? $"{c.Rotation.Value * 180 / Math.PI:0}°" : "-",
                                            c.Confidence, c.Pdf ?? "-", SoFor(c), string.Join(" + ", c.From), string.Join("; ", c.Notes));
@@ -651,7 +971,7 @@ namespace SleevesOpenings.Automation.UI
         private bool Save()
         {
             _floors.EndEdit();
-            var files = _inputs.For(AutomationInputs.Mechanical);
+            var files = _inputs.For(_discipline);
             files.Pdf = _pdf.Text.Trim().Length == 0 ? null : _pdf.Text.Trim();
             files.Dwg = _dwg.Text.Trim().Length == 0 ? null : _dwg.Text.Trim();
             files.Xrefs = _xrefs.Text.Trim().Length == 0 ? null : _xrefs.Text.Trim();

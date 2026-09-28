@@ -115,8 +115,8 @@ namespace SleevesOpenings.Automation
                     var level = levels.FirstOrDefault(l => l.Name == c.Level);
                     if (level == null) { outcome.Result = PlacementOutcome.Skipped; outcome.Detail = $"level '{c.Level}' not found"; continue; }
 
-                    // one point per opening; a dryer shaft that passed the spacing check gets one sleeve per duct
-                    var points = c.System == "DryerExhaust" && c.Points.Count > 1
+                    // one point per opening; dryer ducts that passed the spacing check get one sleeve each, a shaft one box
+                    var points = c.System == "DryerExhaust" && c.Points.Count > 1 && !c.Shaft
                         ? c.Points.Select(p => new XYZ(p[0], p[1], 0)).ToList()
                         : new List<XYZ> { new XYZ(c.X, c.Y, 0) };
                     var spec0 = Spec(c, points.Count);
@@ -188,7 +188,7 @@ namespace SleevesOpenings.Automation
         /// </summary>
         public static (double W, double L)? OpeningSize(RuleSet rules, Crossing c)
         {
-            if (c.Size == null && c.System != "DryerExhaust") return null;
+            if (c.Size == null && !c.SizedByRules) return null;
             var spec = SpecFor(rules, c);
             double w = spec.Width ?? spec.Diameter ?? 0, l = spec.Length ?? spec.Diameter ?? 0;
             return Math.Abs(Math.Sin(spec.RotationRadians)) > 0.7 ? (l, w) : (w, l);
@@ -200,6 +200,20 @@ namespace SleevesOpenings.Automation
             var s = _rules.Systems;
             double roof = c.Roof ? s.Exhaust.RoofIncreaseTotal : 0;
             OpeningSpec spec;
+            if (_rules.Plumbing != null && _rules.Plumbing.IsPipeSystem(c.System) && c.Size?.Diameter != null)
+            {
+                // plumbing (PL model): a round MPI sleeve, pipe + 2" rounded up to the next sleeve size; named "S-P3"
+                var pipeKind = Enum.TryParse(c.System, out SystemKind pk) ? pk : SystemKind.Sanitary;
+                spec = OpeningSpec.Round(pipeKind, _rules.Plumbing.SleeveFor(c.Size.Diameter.Value), c.Tag);
+                spec.Riser = c.Tag;
+                return spec;
+            }
+            if (c.System == "DryerExhaust" && c.Shaft && c.Points.Count > 1 && !c.Roof)
+            {
+                // dryer shaft (rule 74): one Regular Opening around every duct, clearance each side as for exhaust ducts
+                var box = ShaftBox(c, s.DryerExhaust.Diameter + 2 * s.Exhaust.ClearanceEachSide);
+                return OpeningSpec.Rect(SystemKind.DryerExhaust, FamilyRole.RegularOpening, box.W, box.L, _rules.Naming.DryerExhaust);
+            }
             if (c.System == "DryerExhaust")
             {
                 spec = c.Roof
@@ -207,16 +221,35 @@ namespace SleevesOpenings.Automation
                     : OpeningSpec.Round(SystemKind.DryerExhaust, s.DryerExhaust.Diameter, _rules.Naming.DryerExhaust);
                 return spec;
             }
-            var kind = Enum.TryParse(c.System, out SystemKind k) ? k : SystemKind.Exhaust;
+            if (c.System == "GarbageChute")      // rules 34-44: always the fixed size, whatever the drawing says; same as the Place button
+            {
+                double extra = c.Roof ? s.GarbageChute.RoofClearance : 0;
+                spec = OpeningSpec.Rect(SystemKind.GarbageChute, FamilyRole.RegularOpening, s.GarbageChute.FixedWidth + extra, s.GarbageChute.FixedLength + extra, "GARBAGE CHUTE");
+                spec.Riser = c.Tag;
+                return spec;
+            }
+            var kind =Enum.TryParse(c.System, out SystemKind k) ? k : SystemKind.Exhaust;
             double w, l;
             if (c.Size?.Diameter != null) w = l = c.Size.Diameter.Value;                      // round duct: square opening around it
             else { w = c.Size?.Width ?? 0; l = c.Size?.Length ?? 0; }
             var clear = kind == SystemKind.MotorizedDamper ? s.MotorizedDamper.ClearanceEachSide : s.Exhaust.ClearanceEachSide;
             string label = c.Tag == null ? c.System.ToUpperInvariant() : _rules.Naming.ExhaustPattern.Replace("{riser}", c.Tag);
+            if (c.Dampers.Count > 0) label = _rules.Naming.DamperPattern.Replace("{riser}", label).Replace("{damper}", string.Join("-", c.Dampers));
             spec = OpeningSpec.Rect(kind, FamilyRole.RegularOpening, w + 2 * clear + roof, l + 2 * clear + roof, label);
             spec.Riser = c.Tag;
             spec.RotationRadians = c.Rotation ?? 0;
             return spec;
+        }
+
+        /// <summary>
+        /// A dryer shaft's opening (inches across X, along Y): the ducts' centres plus <paramref name="extra"/> (a duct and
+        /// its clearances), rounded up to whole even inches like the office's opening sizes.
+        /// </summary>
+        internal static (double W, double L) ShaftBox(Crossing c, double extra)
+        {
+            double Even(double v) => Math.Ceiling(Math.Round(v, 2) / 2) * 2;
+            return (Even((c.Points.Max(p => p[0]) - c.Points.Min(p => p[0])) * 12 + extra),
+                    Even((c.Points.Max(p => p[1]) - c.Points.Min(p => p[1])) * 12 + extra));
         }
 
         /// <summary>Update choice: an add-in opening whose size differs from the drawings is resized (never moved or deleted).</summary>

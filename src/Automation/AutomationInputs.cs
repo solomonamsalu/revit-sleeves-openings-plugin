@@ -24,6 +24,7 @@ namespace SleevesOpenings.Automation
     public class AutomationInputs
     {
         public const string Mechanical = "Mechanical";
+        public const string Plumbing = "Plumbing";
 
         /// <summary>Saved as a floor's level when the user chose not to use that drawing floor.</summary>
         public const string NotUsed = "(not used)";

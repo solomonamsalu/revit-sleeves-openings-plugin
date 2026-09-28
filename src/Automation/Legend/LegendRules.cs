@@ -24,7 +24,7 @@ namespace SleevesOpenings.Automation.Legend
             new LegendCategory { Match = @"DIFFUSER|GRILLE|REGISTER|LOUVER", Ignore = true },
             new LegendCategory { Match = @"\b(EXHAUST|SUPPLY|RETURN|OUTSIDE|RELIEF|TRANSFER) AIR\b", Ignore = true },
             new LegendCategory { Match = @"PARKING|GARAGE", System = "Exhaust" },
-            new LegendCategory { Match = @"MOTORI[SZ]ED DAMPER|MOTOR OPERATED DAMPER", System = "MotorizedDamper" },
+            new LegendCategory { Match = @"MOTORI[SZ]ED DAMPER|MOTOR OPERATED DAMPER", Ignore = true, LabelOnHost = true },   // on the duct opening (ERV-MD); set system "MotorizedDamper" for an opening of its own
             new LegendCategory { Match = @"ENERGY RECOVERY|\bERV\b", System = "ERV" },
             new LegendCategory { Match = @"DRYER", System = "DryerExhaust" },
             new LegendCategory { Match = @"CHUTE", System = "GarbageChute" },

@@ -43,23 +43,43 @@ namespace SleevesOpenings.Automation
                 var existing = ExistingCheck.Run(doc, rules, state);
                 App.Log($"AutoRun: existing — {existing.Items.Count} item(s), {existing.UnknownFamilies.Values.Sum()} unrecognised");
 
-                var saved = state.Automation.For(AutomationInputs.Mechanical);
-                var modelRefs = CadReferences.Collect(doc, new[] { saved.Xrefs, ReferenceFiles.FindFolder(doc.PathName, rules.DwgProfile.ReferenceFolders) });
+                // HV model: mechanical drawings, duct openings. PL model: plumbing drawings, pipe sleeves (rules.json "plumbing").
+                string discipline = Discipline(doc, rules);
+                bool plumbing = discipline == AutomationInputs.Plumbing;
+                var profile = plumbing ? rules.Plumbing.Profile : rules.DwgProfile;
+                App.Log($"AutoRun: discipline {discipline} (model '{doc.Title}')");
+
+                var saved = state.Automation.For(discipline);
+                var modelRefs = CadReferences.Collect(doc, new[] { saved.Xrefs, ReferenceFiles.FindFolder(doc.PathName, profile.ReferenceFolders) });
                 App.Log($"AutoRun: {modelRefs.Count} DWG(s) imported/linked in the model: " +
                         string.Join(", ", modelRefs.Select(r => $"{r.Name} [{r.Method}, level {r.Level ?? "-"}, {(r.Path != null ? "file found" : r.Problem)}]")));
 
                 var revitGrids = RevitGrids.Collect(doc);
                 App.Log($"AutoRun: {revitGrids.Revit.Count} straight grid(s) from {revitGrids.RevitSource}: {string.Join(", ", revitGrids.Revit.Select(g => g.Name))}");
 
-                PdfSheetIndex pdf; DwgSheetIndex dwg; int risersFound; AlignmentResult alignment; RiserAssembly assembly; bool mark, place;
+                // PDF only (plumbing, no DWG): the plans are lined up by their columns against the model's columns
+                RevitColumns columns = null;
+                if (plumbing && rules.PdfOnly.Enabled)
+                {
+                    columns = RevitColumnCollector.Collect(doc, rules, levels);
+                    App.Log($"AutoRun: {columns.Columns.Count} column(s) in the model for PDF-only alignment ({columns.Source})");
+                }
+
+                PdfSheetIndex pdf; DwgSheetIndex dwg; int risersFound; PdfPlanResult pdfPlans; AlignmentResult alignment; RiserAssembly assembly; bool mark, place;
                 RiserDiagramResult diagram; SoCompareResult soCompare; SoSetResult soSet;
-                using (var form = new AutoRunForm(existing, state.Automation, levels, rules.Legend, rules.DwgProfile, modelRefs, revitGrids, doc.PathName,
-                                                  rules.Systems.DryerExhaust.MinSpacing, rules.Automation, c => AutoPlacer.OpeningSize(rules, c)))
+                using (var form = new AutoRunForm(existing, state.Automation, levels, rules.Legend, profile, modelRefs, revitGrids, doc.PathName,
+                                                  rules.Systems.DryerExhaust.MinSpacing, rules.Automation, c => AutoPlacer.OpeningSize(rules, c),
+                                                  plumbing ? (Action<RiserAssembly>)null
+                                                  : a => OpeningLayout.Apply(a, c => AutoPlacer.OpeningSize(rules, c), rules.Clearances.ErvFloorCenterToCenter,
+                                                                           rules.Clearances.ErvSpacingExact, rules.Systems.DryerExhaust.Diameter,
+                                                                           rules.Systems.DryerExhaust.ShaftOpening,
+                                                                           firstNumberEastWest: rules.Systems.Exhaust.FirstNumberEastWest),
+                                                  discipline, plumbing ? rules.Plumbing : null, columns, rules.PdfOnly))
                 {
                     if (form.ShowDialog(SleevesOpenings.UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
                     pdf = form.Pdf; dwg = form.Dwg; risersFound = form.Risers?.Risers.Count ?? 0;
                     alignment = form.Alignment; assembly = form.Assembly; mark = form.MarkAnchors; place = form.PlaceNow;
-                    diagram = form.Diagram; soCompare = form.SoCompare; soSet = form.SoSet;
+                    diagram = form.Diagram; soCompare = form.SoCompare; soSet = form.SoSet; pdfPlans = form.PdfPlans;
                 }
 
                 using (var t = new Transaction(doc, "Sleeves & Openings: Auto Run inputs"))
@@ -69,7 +89,10 @@ namespace SleevesOpenings.Automation
                     t.Commit();
                 }
 
-                var files = state.Automation.For(AutomationInputs.Mechanical);
+                var files = state.Automation.For(discipline);
+                if (pdfPlans != null)
+                    foreach (var p in pdfPlans.Plans)
+                        App.Log($"AutoRun: PDF only p{p.Page} {p.Floor}: scale {p.ScaleText ?? PdfPlanReader.Ratio(p.Scale)}, {p.Layers} layer(s), {p.Columns.Count} column(s){(p.Problem != null ? ": " + p.Problem : "")}");
                 App.Log($"AutoRun: inputs saved — PDF '{files.Pdf}', DWG '{files.Dwg}', xrefs '{files.Xrefs}', S&O set '{files.Reference}', existing = {state.Automation.Existing}, " +
                         $"PDF floors {pdf?.FloorPlans.Count() ?? 0}, DWG floors {dwg?.Floors.Count ?? 0}");
                 if (alignment != null)
@@ -183,8 +206,11 @@ namespace SleevesOpenings.Automation
 
                 string summary =
                         $"PDF: {(pdf == null ? "none" : $"{pdf.FloorPlans.Count()} floor plan(s)")}\n" +
-                        $"DWG: {(dwg == null ? "none" : $"{dwg.Floors.Count} floor plan(s)")}\n" +
-                        $"Risers found in the DWG: {risersFound}\n" +
+                        (pdfPlans != null
+                            ? $"DWG: none (PDF only: {pdfPlans.Plans.Count(p => p.Problem == null)} floor plan(s) read from the PDF's CAD layers, lined up by their columns)\n" +
+                              $"Pipe groups found in the PDF: {risersFound}\n"
+                            : $"DWG: {(dwg == null ? "none" : $"{dwg.Floors.Count} floor plan(s)")}\n" +
+                              $"Risers found in the DWG: {risersFound}\n") +
                         $"Tags defined in the PDF: {pdf?.Legend.Entries.Select(e => e.Tag).Distinct().Count() ?? 0}\n" +
                         $"Existing sleeves/openings: {existing.Items.Count} ({(state.Automation.Existing == ExistingPolicy.Update ? "update" : "keep and add missing")})\n\n" +
                         AlignmentText(alignment, marks.Count > 0) +
@@ -219,6 +245,16 @@ namespace SleevesOpenings.Automation
                 App.Log("AutoRun failed: " + ex);
                 return Result.Failed;
             }
+        }
+
+        /// <summary>Plumbing when the model's name matches rules.json plumbing.modelMatch ("24 Skillman PL"), else mechanical.</summary>
+        internal static string Discipline(Document doc, RuleSet rules)
+        {
+            string pattern = rules.Plumbing?.ModelMatch;
+            string name = System.IO.Path.GetFileNameWithoutExtension(doc.PathName ?? "");
+            if (string.IsNullOrEmpty(name)) name = doc.Title ?? "";
+            return !string.IsNullOrEmpty(pattern) && System.Text.RegularExpressions.Regex.IsMatch(name, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+                ? AutomationInputs.Plumbing : AutomationInputs.Mechanical;
         }
 
         /// <summary>Final Check on the openings one run placed (issues touching them); safe fixes (size, name, riser id) applied once, then checked again.</summary>

@@ -133,7 +133,7 @@ namespace SleevesOpenings.Automation.Alignment
                                           IList<ExistingPoint> existing, GridInputs grids = null, double riserTolerance = 6)
         {
             var result = new AlignmentResult();
-            var blocks = DwgAlignment.Blocks(engineer);
+            var blocks = Points(engineer, profile);
             double? engineerFeet = PlanMap.FeetPerUnit(index.Units);
             var cache = new Dictionary<string, Loaded>(StringComparer.OrdinalIgnoreCase);
 
@@ -144,12 +144,30 @@ namespace SleevesOpenings.Automation.Alignment
                     var cad = DwgSheetIndex.Open(path);
                     cache[path] = l = new Loaded
                     {
-                        Blocks = DwgAlignment.Blocks(cad), Risers = DwgRiserReader.Symbols(cad, profile), Extents = DwgAlignment.Extents(cad),
+                        Blocks = Points(cad, profile), Risers = DwgRiserReader.Symbols(cad, profile), Extents = DwgAlignment.Extents(cad),
                         Units = cad.Header.InsUnits.ToString()
                     };
                     l.FeetPerUnit = PlanMap.FeetPerUnit(l.Units);
                 }
                 return l;
+            }
+
+            // Where the building is in Revit (feet): the Revit grids, else the office grid drawing at 0,0. A reference whose
+            // match puts the floor's risers far outside it is not at Revit's 0,0 (e.g. a copy of the whole engineer set left
+            // in the xref folder): it matches the engineer DWG perfectly and would send every opening miles away.
+            var site = SiteBox(grids);
+            bool OnSite(PlanMap map, FloorShift shift, string floor, out string where)
+            {
+                where = null;
+                if (site == null) return true;
+                var pts = risers.Risers.Where(r => r.Floor == floor).Select(r => map.Apply(r.X + shift.Dx, r.Y + shift.Dy)).ToList();
+                if (pts.Count == 0) return true;
+                var s = site.Value;
+                int inside = pts.Count(p => p.X >= s.MinX - SiteMargin && p.X <= s.MaxX + SiteMargin && p.Y >= s.MinY - SiteMargin && p.Y <= s.MaxY + SiteMargin);
+                if (inside * 5 >= pts.Count * 4) return true;
+                var mid = (X: pts.Average(p => p.X), Y: pts.Average(p => p.Y));
+                where = $"{Math.Sqrt(Math.Pow(mid.X - (s.MinX + s.MaxX) / 2, 2) + Math.Pow(mid.Y - (s.MinY + s.MaxY) / 2, 2)):0} ft from the grid lines";
+                return false;
             }
 
             // ---- 1. each floor on its own
@@ -185,6 +203,12 @@ namespace SleevesOpenings.Automation.Alignment
                     var map = MapFor(r, l, problems);
                     if (map == null) continue;
                     var shift = DwgAlignment.Shift(mine, l.Blocks);
+                    if (shift.Found && !OnSite(map, shift, floor.Floor, out var where))
+                    {
+                        problems.Add($"{r.Name} ({r.Method}): it matches the engineer DWG, but puts this floor's risers {where}; it is not at Revit's 0,0 and is not used");
+                        fa.Notes.Add($"{r.Name} not used: not at Revit's 0,0 (the risers land {where})");
+                        continue;
+                    }
                     refOptions.Add((r, map, l));
                     // model drawings before the xref folder; a better match replaces a weak one (e.g. an architectural
                     // background linked on the same level shares few blocks with the mechanical plan)
@@ -263,6 +287,29 @@ namespace SleevesOpenings.Automation.Alignment
                 }
             }
 
+            // ---- 2a. a floor with no drawing at Revit's position at all (no per-floor xref, nothing linked): risers stack,
+            //      so its tagged risers drawn on the same tags of a lined-up floor next to it give its position. At least
+            //      three different tags must agree within the anchor tolerance, twice as many as any other shift.
+            for (bool grew = true; grew;)
+            {
+                grew = false;
+                foreach (var fa in result.Floors.Where(f => f.Reference == null && f.Shift == null).OrderBy(f => FloorKey.Order(f.Floor)))
+                {
+                    foreach (var n in Neighbours(result, fa).Where(n => n.Usable && n.Map != null && n.Shift != null))
+                    {
+                        var shift = StackShift(risers, fa.Floor, n, tagged: true) ?? StackShift(risers, fa.Floor, n, tagged: false);
+                        if (shift == null) continue;
+                        fa.Reference = n.Reference; fa.Map = n.Map; fa.Shift = shift; fa.Status = FloorAlignment.AgreesWithOthers;
+                        fa.Notes.RemoveAll(x => x.StartsWith("no imported/linked DWG or xref"));
+                        fa.Notes.Add($"no drawing of its own at Revit's position; lined up by {shift.Support} risers " +
+                                     (shift.Tags.Count > 0 ? $"({string.Join(", ", shift.Tags)}) " : "(untagged) ") +
+                                     $"drawn on the same risers of the {FloorKey.Describe(n.Floor)} (within {AlignmentResult.AnchorTolerance:0.#}\")");
+                        grew = true;
+                        break;
+                    }
+                }
+            }
+
             // ---- 2b. risers run through floors: a floor whose tagged risers sit on the same tags of a lined-up
             //      floor next to it is confirmed by them (the roof plan often has too few blocks of its own).
             bool changed = true;
@@ -289,7 +336,8 @@ namespace SleevesOpenings.Automation.Alignment
             var candidatesAnchors = new List<(AnchorRiser A, int Rank)>();
             foreach (var fa in result.Floors.Where(f => f.Map != null && f.Shift != null))
             {
-                var refRisers = loadedFor[fa].Risers;
+                // a floor lined up by the risers of the floor next to it has no drawing of its own to check against
+                var refRisers = loadedFor.TryGetValue(fa, out var own) ? own.Risers : new List<RiserSymbol>();
                 var here = existing?.Where(e => fa.Level != null && e.Level == fa.Level).ToList() ?? new List<ExistingPoint>();
                 foreach (var r in risers.Risers.Where(x => x.Floor == fa.Floor))
                 {
@@ -357,6 +405,40 @@ namespace SleevesOpenings.Automation.Alignment
             return result;
         }
 
+        /// <summary>Feet a floor's risers may lie outside the grid lines' extent (balconies, a cellar beyond the grid).</summary>
+        private const double SiteMargin = 30;
+
+        /// <summary>The building's extent in Revit feet: the Revit grids, else the office grid drawing (same 0,0 as the xrefs). Null when neither.</summary>
+        private static (double MinX, double MinY, double MaxX, double MaxY)? SiteBox(GridInputs grids)
+        {
+            if (grids?.Revit != null && grids.Revit.Count >= 2)
+                return (grids.Revit.Min(g => Math.Min(g.X1, g.X2)), grids.Revit.Min(g => Math.Min(g.Y1, g.Y2)),
+                        grids.Revit.Max(g => Math.Max(g.X1, g.X2)), grids.Revit.Max(g => Math.Max(g.Y1, g.Y2)));
+            if (grids?.DwgPath == null || !File.Exists(grids.DwgPath)) return null;
+            try
+            {
+                var cad = DwgSheetIndex.Open(grids.DwgPath);
+                var e = DwgAlignment.Extents(cad);
+                var feet = PlanMap.FeetPerUnit(cad.Header.InsUnits.ToString());
+                if (e == null || feet == null) return null;
+                return (e.Value.MinX * feet.Value, e.Value.MinY * feet.Value, e.Value.MaxX * feet.Value, e.Value.MaxY * feet.Value);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// What two drawings of a floor are matched on: the named blocks, plus (plumbing profile) every pipe circle named by
+        /// its layer. A plumbing plan has few named blocks, but its circles are drawn the same in the per-floor xref.
+        /// </summary>
+        private static List<BlockPoint> Points(CadDocument cad, DwgProfile profile)
+        {
+            var list = DwgAlignment.Blocks(cad);
+            if (!string.IsNullOrEmpty(profile?.RiserCircleLayers))
+                list.AddRange(DwgRiserReader.Symbols(cad, profile).Where(s => s.Block == DwgRiserReader.PipeCircle)
+                                            .Select(s => new BlockPoint { Name = "circle on " + s.Layer, X = s.X, Y = s.Y }));
+            return list;
+        }
+
         /// <summary>Reference drawing -> Revit. From the model: the instance placement with the units that make it cover the instance's extent in Revit.</summary>
         private static PlanMap MapFor(ReferenceDrawing r, Loaded l, List<string> notes)
         {
@@ -422,7 +504,9 @@ namespace SleevesOpenings.Automation.Alignment
                 foreach (var g in usable.GroupBy(f => $"{f.Map.Cos:0.######}|{f.Map.Sin:0.######}|{f.Map.Ox:0.####}|{f.Map.Oy:0.####}"))
                 {
                     var m = g.First().Map;
-                    double refFeet = loadedFor[g.First()].FeetPerUnit.Value;
+                    var withDrawing = g.FirstOrDefault(loadedFor.ContainsKey);
+                    if (withDrawing == null) continue;               // floors lined up by their neighbours' risers only: proven with that neighbour
+                    double refFeet = loadedFor[withDrawing].FeetPerUnit.Value;
                     var gm = new PlanMap { Scale = m.Scale / refFeet * gridFeet.Value, Cos = m.Cos, Sin = m.Sin, Ox = m.Ox, Oy = m.Oy };
                     var check = GridCheck.Compare(dwgGrids, gm, grids.Revit, AlignmentResult.AnchorTolerance);
                     check.File = Path.GetFileName(grids.DwgPath);
@@ -444,6 +528,50 @@ namespace SleevesOpenings.Automation.Alignment
                 result.RevitSummary = why + "; the floor drawings are assumed to be at Revit's position";
             else
                 result.RevitSummary = $"{result.Grids[0].File} vs the Revit grids ({grids.RevitSource}): " + string.Join("; ", result.Grids.Where(x => !x.Passed).Select(x => x.Summary));
+        }
+
+        /// <summary>
+        /// The shift that puts <paramref name="floor"/>'s tagged risers on the same risers of the lined-up floor
+        /// <paramref name="n"/> (drawing units, in n's reference terms): every pair of same-kind symbols (same block, or
+        /// pipe circles on the same layer) of two risers with one tag votes; the shift at least three tags agree on within
+        /// the anchor tolerance, and twice as many as any other, wins. Null when the risers do not stack.
+        /// </summary>
+        /// <param name="tagged">false: untagged risers vote too, each one on its own (a roof plan often tags nothing); four must agree.</param>
+        private static FloorShift StackShift(DwgRiserResult risers, string floor, FloorAlignment n, bool tagged)
+        {
+            bool Same(RiserSymbol a, RiserSymbol b) => a.Block == b.Block && (a.Block != DwgRiserReader.PipeCircle || a.Layer == b.Layer);
+            var mine = risers.Risers.Where(r => r.Floor == floor && (!tagged || r.Tag != null)).ToList();
+            var theirs = risers.Risers.Where(r => r.Floor == n.Floor && (!tagged || r.Tag != null)).ToList();
+            var votes = new List<(double Dx, double Dy, string Tag)>();
+            for (int i = 0; i < mine.Count; i++)
+            {
+                var r = mine[i];
+                string key = r.Tag ?? $"#{i}";
+                foreach (var q in theirs.Where(q => tagged ? q.Tag == r.Tag : (q.Tag == null || r.Tag == null || q.Tag == r.Tag)))
+                    foreach (var s in r.Symbols.Where(DwgRiserReader.Drawn))
+                        foreach (var u in q.Symbols.Where(DwgRiserReader.Drawn).Where(u => Same(s, u)))
+                            votes.Add((u.X + n.Shift.Dx - s.X, u.Y + n.Shift.Dy - s.Y, key));
+            }
+            if (votes.Count == 0) return null;
+            int need = tagged ? AlignmentResult.AnchorCount : AlignmentResult.AnchorCount + 1;
+
+            double tol = AlignmentResult.AnchorTolerance;
+            List<(double Dx, double Dy, string Tag)> Around((double Dx, double Dy) c) =>
+                votes.Where(v => Math.Abs(v.Dx - c.Dx) <= tol && Math.Abs(v.Dy - c.Dy) <= tol).ToList();
+            var scored = votes.Select(v => (C: (v.Dx, v.Dy), Tags: Around((v.Dx, v.Dy)).Select(x => x.Tag).Distinct().Count()))
+                              .OrderByDescending(x => x.Tags).ToList();
+            var best = scored[0];
+            int runner = scored.Where(x => Math.Abs(x.C.Item1 - best.C.Item1) > 12 || Math.Abs(x.C.Item2 - best.C.Item2) > 12).Select(x => x.Tags).DefaultIfEmpty(0).Max();
+            if (best.Tags < need || best.Tags < 2 * runner) return null;
+
+            var fit = Around(best.C);
+            return new FloorShift
+            {
+                Dx = fit.Average(v => v.Dx), Dy = fit.Average(v => v.Dy), Support = best.Tags, Names = best.Tags, RunnerUp = runner,
+                Comparable = votes.Select(v => v.Tag).Distinct().Count(),
+                Tags = fit.Select(v => v.Tag).Where(t => !t.StartsWith("#")).Distinct().OrderBy(t => t).ToList(),
+                Residual = Math.Sqrt(fit.Average(v => Math.Pow(v.Dx - fit.Average(x => x.Dx), 2) + Math.Pow(v.Dy - fit.Average(x => x.Dy), 2)))
+            };
         }
 
         /// <summary>The floors directly below and above (in drawing order).</summary>

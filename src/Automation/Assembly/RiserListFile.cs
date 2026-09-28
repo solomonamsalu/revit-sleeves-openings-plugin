@@ -57,7 +57,7 @@ namespace SleevesOpenings.Automation.Assembly
                     floor = c.Floor, level = c.Level, x = Math.Round(c.X, 4), y = Math.Round(c.Y, 4),       // feet, Revit internal coordinates
                     tag = c.Tag, system = c.System, size = c.Size?.ToString(),
                     width = c.Size?.Width, length = c.Size?.Length, diameter = c.Size?.Diameter,
-                    ducts = c.Ducts, roof = c.Roof, status = c.Status, confidence = c.Confidence, pdf = c.Pdf,
+                    ducts = c.Ducts, shaft = c.Shaft, roof = c.Roof, status = c.Status, check = c.Check, confidence = c.Confidence, pdf = c.Pdf,
                     from = c.From, notes = c.Notes
                 }),
                 issues = assembly.Issues.Select(i => new

@@ -28,6 +28,8 @@ namespace SleevesOpenings.Automation.Drawings
         public int Names;
         public bool Found => Support >= MinSupport && Names >= 2 && Support >= 2 * RunnerUp;
         public const int MinSupport = 3;
+        /// <summary>Riser tags the shift was measured on, when a floor is lined up by the risers of the floor next to it.</summary>
+        public List<string> Tags = new List<string>();
     }
 
     /// <summary>

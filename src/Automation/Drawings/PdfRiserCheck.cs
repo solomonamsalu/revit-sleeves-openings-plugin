@@ -116,7 +116,9 @@ namespace SleevesOpenings.Automation.Drawings
             double tol = scale * 3;                                  // 3 drawing inches, in points
             var best = shifts.Select(s => (S: s, N: shifts.Count(o => Math.Abs(o.X - s.X) <= tol && Math.Abs(o.Y - s.Y) <= tol)))
                              .OrderByDescending(t => t.N).FirstOrDefault();
-            if (best.N < 3) { fit.Problem += $"; no shift agreed by 3 labels (best {best.N})"; return; }
+            // 3 labels must agree; a plan with fewer labels (the roof: two dryer caps) needs all of them to
+            int need = Math.Min(3, Math.Max(2, dwg.Count));
+            if (best.N < need) { fit.Problem += $"; no shift agreed by {need} labels (best {best.N})"; return; }
             var agree = shifts.Where(o => Math.Abs(o.X - best.S.X) <= tol && Math.Abs(o.Y - best.S.Y) <= tol).ToList();
             fit.Scale = scale; fit.Tx = agree.Average(o => o.X); fit.Ty = agree.Average(o => o.Y);
             fit.Anchors = best.N; fit.Residual = agree.Max(o => Dist(o.X, o.Y, fit.Tx, fit.Ty)) / scale;

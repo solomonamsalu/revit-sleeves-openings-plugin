@@ -31,6 +31,19 @@ namespace SleevesOpenings.Risers
         public OpeningRecord Bottom => Openings.OrderBy(o => o.Level.Elevation).First();
         public IEnumerable<string> Sizes => Openings.Select(o => o.SizeText).Distinct();
 
+        /// <summary>No opening is smaller than the one below it (exhaust risers grow toward the roof fan, rule 3).</summary>
+        public bool GrowsUpward
+        {
+            get
+            {
+                var areas = Openings.OrderBy(o => o.Level.Elevation).Select(o => o.Data.Diameter.HasValue
+                    ? o.Data.Diameter.Value * o.Data.Diameter.Value : (o.Data.Width ?? 0) * (o.Data.Length ?? 0)).ToList();
+                for (int i = 1; i < areas.Count; i++)
+                    if (areas[i] < areas[i - 1] - 0.01) return false;
+                return true;
+            }
+        }
+
         /// <summary>Openings whose XY differs from the one above by more than 1" (manual: avoid offsets).</summary>
         public int OffsetCount
         {
@@ -44,14 +57,23 @@ namespace SleevesOpenings.Risers
             }
         }
 
-        /// <summary>Levels between top and bottom (in the given map) that have no opening for this riser.</summary>
+        /// <summary>
+        /// Levels between top and bottom (in the given map) that have no opening for this riser. Levels with the same
+        /// floor name ("06.6-TH FLOOR" and "06.6 TH FLOOR NEW") are one floor: an opening on either one covers both.
+        /// </summary>
         public List<Level> Gaps(LevelMap levels)
         {
-            double lo = Bottom.Level.Elevation, hi = Top.Level.Elevation;
+            double lo = Bottom.Level.ProjectElevation, hi = Top.Level.ProjectElevation;   // same elevation as ClassifiedLevel.Elevation
             var present = new HashSet<ElementId>(Openings.Select(o => o.Level.Id));
-            return levels.All.Where(l => l.Elevation > lo && l.Elevation < hi && !present.Contains(l.Level.Id))
+            var floorsPresent = new HashSet<string>(levels.All.Where(l => present.Contains(l.Level.Id)).Select(FloorOf).Where(k => k != null));
+            return levels.All.Where(l => l.Elevation > lo && l.Elevation < hi && !present.Contains(l.Level.Id)
+                                         && !(FloorOf(l) is string k && floorsPresent.Contains(k)))
                              .Select(l => l.Level).ToList();
         }
+
+        /// <summary>Floor a level's name stands for (F6, CELLAR…); null for roof/bulkhead levels or names that name no single floor.</summary>
+        private static string FloorOf(ClassifiedLevel l) =>
+            l.Role == LevelRole.Roof || l.Role == LevelRole.Bulkhead ? null : Automation.Drawings.FloorKey.FromLevelName(l.Name);
 
         public static double Dist(XYZ a, XYZ b) => new XYZ(a.X - b.X, a.Y - b.Y, 0).GetLength();
     }
@@ -118,6 +140,12 @@ namespace SleevesOpenings.Risers
                 case "Standpipe": return "SP";
                 case "Bathtub": return "TUB";
                 case "Toilet": return "WC";
+                case "Sanitary": return "S";
+                case "Vent": return "V";
+                case "Gas": return "G";
+                case "ColdWater": return "CW";
+                case "HotWater": return "HW";
+                case "HotWaterReturn": return "HWR";
                 // adopted systems outside the manual (Sanitary, Vent, ColdWater...): first three letters
                 default: return string.IsNullOrEmpty(system) ? "R" : system.Substring(0, Math.Min(3, system.Length)).ToUpperInvariant();
             }

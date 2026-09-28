@@ -58,15 +58,15 @@ namespace SleevesOpenings.Automation.Report
                               : c.Status == Crossing.Review ? "review" : c.Status == Crossing.Skip ? "not placed" : "to place (not placed this run)";
                 report.Rows.Add(new ReportRow
                 {
-                    Floor = c.Floor, Level = c.Level, Tag = c.Name, System = c.System,
-                    DuctSize = c.Size?.ToString() ?? (c.System == "DryerExhaust" ? $"dryer x{c.Ducts}" : null),
+                    Floor = c.Floor, Level = c.Level, Tag = c.Name + c.DamperSuffix, System = c.System,
+                    DuctSize = c.Size?.ToString() ?? (c.System == "DryerExhaust" ? $"dryer x{c.Ducts}" : c.System == "GarbageChute" ? "chute (fixed)" : null),
                     OpeningSize = size, Result = result, Confidence = c.Confidence, Pdf = c.Pdf,
                     SoSet = m == null ? null : m.Status + (string.IsNullOrEmpty(m.Detail) ? "" : ": " + m.Detail),
                     Source = string.Join(" + ", c.From), Notes = string.Join("; ", notes),
                     X = c.HasPosition ? c.X : (double?)null, Y = c.HasPosition ? c.Y : (double?)null,
                     Ids = o?.Ids.Select(i => i.Value).ToList() ?? new List<long>(),
-                    Attention = o == null ? c.Status != Crossing.Place
-                              : o.Result == PlacementOutcome.Skipped || o.Result == PlacementOutcome.Failed || o.Warnings.Count > 0
+                    Attention = c.Check || (o == null ? c.Status != Crossing.Place
+                              : o.Result == PlacementOutcome.Skipped || o.Result == PlacementOutcome.Failed || o.Warnings.Count > 0)
                 });
             }
 

@@ -106,6 +106,7 @@ namespace SleevesOpenings.Automation
                         if (view.ViewTemplateId == ElementId.InvalidElementId)
                             try { ProjectSetup.ApplyViewRange(view, rules, levels); } catch (Exception ex) { result.Problems.Add($"{view.Name}: view range not set ({ex.Message})"); }
 
+                        OnlyThisLevel(doc, view, level, openings, result);
                         Name(byLevel[level.Id], result);
                         if (cfg.Tag) Tag(doc, view, byLevel[level.Id], result);
                         else Untag(doc, view, byLevel[level.Id], result);
@@ -121,10 +122,45 @@ namespace SleevesOpenings.Automation
             return result;
         }
 
+        private static readonly BuiltInParameter[] LevelParams =
+            { BuiltInParameter.FAMILY_LEVEL_PARAM, BuiltInParameter.INSTANCE_SCHEDULE_ONLY_LEVEL_PARAM, BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM };
+
         /// <summary>
-        /// Tags each opening not yet tagged in the view, beside the opening (the category's default tag), then makes sure
-        /// every tag shows the opening's name (see <see cref="Label"/>).
+        /// The view range reaches the level above (rule 1), so the openings placed on the floor above (same riser, same
+        /// spot, a bigger size) are drawn too: every riser shows twice. A view filter hides the opening categories' elements
+        /// of every other level ("S&amp;O - not &lt;level&gt;"); when a view template controls the filters, or no level
+        /// parameter can be filtered, the other levels' openings seen in the view are hidden one by one.
         /// </summary>
+        private static void OnlyThisLevel(Document doc, ViewPlan view, Level level, List<OpeningRecord> all, SleeveViewResult result)
+        {
+            var categories = all.Select(o => o.Instance.Category?.Id).Where(c => c != null).Distinct().ToList();
+            if (categories.Count == 0) return;
+            try
+            {
+                var filterable = ParameterFilterUtilities.GetFilterableParametersInCommon(doc, categories);
+                var param = LevelParams.Select(p => new ElementId(p)).FirstOrDefault(filterable.Contains);
+                bool templateFilters = view.ViewTemplateId != ElementId.InvalidElementId &&
+                                       (doc.GetElement(view.ViewTemplateId) as View)?.GetNonControlledTemplateParameterIds()
+                                           .Contains(new ElementId(BuiltInParameter.VIS_GRAPHICS_FILTERS)) == false;
+                if (param != null && !templateFilters)
+                {
+                    string name = $"S&O - not {level.Name}";
+                    var filter = new FilteredElementCollector(doc).OfClass(typeof(ParameterFilterElement)).Cast<ParameterFilterElement>().FirstOrDefault(f => f.Name == name);
+                    var rule = new ElementParameterFilter(ParameterFilterRuleFactory.CreateNotEqualsRule(param, level.Id));
+                    if (filter == null) filter = ParameterFilterElement.Create(doc, name, categories, rule);
+                    else { filter.SetCategories(categories); filter.SetElementFilter(rule); }
+                    if (!view.GetFilters().Contains(filter.Id)) view.AddFilter(filter.Id);
+                    view.SetFilterVisibility(filter.Id, false);
+                    return;
+                }
+            }
+            catch (Exception ex) { App.Log($"AutoRun: level filter for {view.Name} not set ({ex.Message}); hiding other levels' openings instead"); }
+
+            var visible = new HashSet<ElementId>(new FilteredElementCollector(doc, view.Id).WhereElementIsNotElementType().ToElementIds());
+            var others = all.Where(o => o.Level.Id != level.Id && visible.Contains(o.Instance.Id) && o.Instance.CanBeHidden(view)).Select(o => o.Instance.Id).ToList();
+            if (others.Count > 0) view.HideElements(others);
+        }
+
         /// <summary>Openings placed before their family's own name parameter was filled show "?" in their corner: fill it.</summary>
         private static void Name(List<OpeningRecord> openings, SleeveViewResult result)
         {
@@ -159,6 +195,10 @@ namespace SleevesOpenings.Automation
             }
         }
 
+        /// <summary>
+        /// Tags each opening not yet tagged in the view, beside the opening (the category's default tag), then makes sure
+        /// every tag shows the opening's name (see <see cref="Label"/>).
+        /// </summary>
         private static void Tag(Document doc, ViewPlan view, List<OpeningRecord> openings, SleeveViewResult result)
         {
             var tags = new FilteredElementCollector(doc, view.Id).OfClass(typeof(IndependentTag)).Cast<IndependentTag>().ToList();
