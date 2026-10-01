@@ -74,7 +74,8 @@ namespace SleevesOpenings.Automation
                                                                            rules.Clearances.ErvSpacingExact, rules.Systems.DryerExhaust.Diameter,
                                                                            rules.Systems.DryerExhaust.ShaftOpening,
                                                                            firstNumberEastWest: rules.Systems.Exhaust.FirstNumberEastWest),
-                                                  discipline, plumbing ? rules.Plumbing : null, columns, rules.PdfOnly))
+                                                  discipline, plumbing ? rules.Plumbing : null, columns, rules.PdfOnly,
+                                                  plumbing ? a => FixtureSleeveLocator.Apply(doc, a, rules.Plumbing) : null))
                 {
                     if (form.ShowDialog(SleevesOpenings.UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
                     pdf = form.Pdf; dwg = form.Dwg; risersFound = form.Risers?.Risers.Count ?? 0;
@@ -164,12 +165,16 @@ namespace SleevesOpenings.Automation
                 {
                     try { views = SleeveViews.Ensure(doc, rules, levels, rules.SleeveViews); App.Log("AutoRun: " + views); }
                     catch (Exception ex) { App.Log("AutoRun: sleeve views failed: " + ex); }
-                    // the name drawn inside the opening families: no white box behind it
+                    // the name drawn inside the opening families: no white box behind it. Only the families this run
+                    // placed: reloading an unrelated family (e.g. Ref pipes opening at Down Height 0) can fail to regenerate
                     if (rules.SleeveViews?.TransparentLabels != false)
                         try
                         {
-                            var fams = FamilyText.MakeTransparent(doc, rules.Families.Values.Select(f => f?.Family)
-                                .Concat(state.FamilyMap?.Values.Select(m => m?.FamilyName) ?? Enumerable.Empty<string>()));
+                            var used = (outcomes ?? new List<PlacementOutcome>())
+                                .Where(o => o.Result == PlacementOutcome.Placed || o.Result == PlacementOutcome.Resized)
+                                .SelectMany(o => o.Ids).Select(id => (doc.GetElement(id) as FamilyInstance)?.Symbol?.Family?.Name)
+                                .Where(n => n != null).Distinct().ToList();
+                            var fams = used.Count > 0 ? FamilyText.MakeTransparent(doc, used) : new List<string>();
                             if (fams.Count > 0) App.Log("AutoRun: text made transparent in " + string.Join(", ", fams));
                         }
                         catch (Exception ex) { App.Log("AutoRun: transparent family text failed: " + ex); }
@@ -227,6 +232,7 @@ namespace SleevesOpenings.Automation
                 {
                     report = ReportBuilder.Build(doc.Title, files, alignment, assembly, outcomes, soCompare, final, rules,
                                                  summary.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith("List saved")));
+                    report.Summary = summary;
                     (html, _) = report.Write(folder);
                     App.Log("AutoRun: report saved to " + html);
                 }

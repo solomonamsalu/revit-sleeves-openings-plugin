@@ -141,7 +141,12 @@ namespace SleevesOpenings.Automation.UI
             var doc = _uidoc.Document;
             try
             {
-                var ids = r.Ids.Select(i => new ElementId(i)).Where(id => doc.GetElement(id) != null).ToList();
+                // only this model's own elements: a Final Check row can name a column/beam of a linked model, whose id
+                // means something else (or nothing) here
+                var elements = r.Ids.Select(i => doc.GetElement(new ElementId(i)))
+                                    .Where(e => e != null && !(e is ElementType) && e.Category?.CategoryType == CategoryType.Model && e.get_BoundingBox(null) != null)
+                                    .ToList();
+                var ids = elements.Select(e => e.Id).ToList();
                 var level = _levels.All.FirstOrDefault(l => l.Name == r.Level)?.Level;
                 var view = level == null ? null : ViewFor(doc, level);
                 if (view != null && _uidoc.ActiveView?.Id != view.Id)
@@ -152,7 +157,15 @@ namespace SleevesOpenings.Automation.UI
                 if (ids.Count > 0)
                 {
                     _uidoc.Selection.SetElementIds(ids);
-                    _uidoc.ShowElements(ids);
+                    // zoom in the floor's view ourselves: ShowElements asks to search every closed view when the
+                    // active one does not show them
+                    var open = _uidoc.GetOpenUIViews().FirstOrDefault(v => v.ViewId == _uidoc.ActiveView.Id);
+                    if (open == null) { _uidoc.ShowElements(ids); return; }
+                    var boxes = elements.Select(e => e.get_BoundingBox(null)).ToList();
+                    var min = new XYZ(boxes.Min(b => b.Min.X), boxes.Min(b => b.Min.Y), 0);
+                    var max = new XYZ(boxes.Max(b => b.Max.X), boxes.Max(b => b.Max.Y), 0);
+                    var pad = new XYZ(4, 4, 0);
+                    open.ZoomAndCenterRectangle(min - pad, max + pad);
                     return;
                 }
                 if (!r.X.HasValue || level == null)

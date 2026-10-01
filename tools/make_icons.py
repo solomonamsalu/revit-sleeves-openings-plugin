@@ -127,6 +127,16 @@ def auto_run():
     return im
 icons['AutoRun'] = auto_run
 
+def last_report():
+    # report sheet with a tick list
+    im, d = base(COL['plan'])
+    d.rectangle((30, 20, 98, 108), outline=W, width=8)
+    for y in (46, 66, 86):
+        line(d, [(42, y), (48, y + 6), (58, y - 6)], 6)
+        line(d, [(66, y), (86, y)], 6)
+    return im
+icons['LastReport'] = last_report
+
 # ---------------- Place – Mechanical
 def exhaust():
     im, d = base(COL['mech'])

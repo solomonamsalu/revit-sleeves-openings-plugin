@@ -107,6 +107,8 @@ namespace SleevesOpenings
             var auto = app.CreateRibbonPanel(TabName, "Automate");
             auto.AddItem(Button("AutoRun", "Auto\nRun", asm, typeof(Automation.AutoRunCommand),
                 "Place sleeves and openings from the engineer's PDF + DWG. Checks what is already in the model, reads the drawings and matches their floors to the Revit levels."));
+            auto.AddItem(Button("LastReport", "Last\nReport", asm, typeof(Automation.LastReportCommand),
+                "Reopen the results of this model's latest Auto Run (placed, review, Final Check) without running it again. Double-click a row to zoom to it."));
 
             // Place: one button per manual section. Click a plan, enter the engineer's size, click locations, Esc.
             var mech = app.CreateRibbonPanel(TabName, "Place – Mechanical");

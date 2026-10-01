@@ -28,7 +28,7 @@ namespace SleevesOpenings.Automation.Report
         /// <summary>Someone has to look at it: not placed, placed with a warning, a Final Check error…</summary>
         public bool Attention;
 
-        public string Where => Floor == null ? Level ?? "-" : FloorKey.Describe(Floor) + (Level != null && !string.Equals(Level, FloorKey.Describe(Floor), StringComparison.OrdinalIgnoreCase) ? $" ({Level})" : "");
+        [Newtonsoft.Json.JsonIgnore] public string Where => Floor == null ? Level ?? "-" : FloorKey.Describe(Floor) + (Level != null && !string.Equals(Level, FloorKey.Describe(Floor), StringComparison.OrdinalIgnoreCase) ? $" ({Level})" : "");
     }
 
     /// <summary>
@@ -42,8 +42,12 @@ namespace SleevesOpenings.Automation.Report
         public List<string> Lines = new List<string>();                   // the summary (alignment, counts, views…)
         public List<(string Label, int Count, string Tone)> Tiles = new List<(string, int, string)>();
         public List<ReportRow> Rows = new List<ReportRow>();
+        /// <summary>The Auto Run's end-of-run summary, shown again when the review list is reopened (Last Report).</summary>
+        public string Summary;
 
-        public IEnumerable<ReportRow> Attention => Rows.Where(r => r.Attention);
+        [Newtonsoft.Json.JsonIgnore] public IEnumerable<ReportRow> Attention => Rows.Where(r => r.Attention);
+
+        public const string JsonFile = "report.json";
 
         public (string Html, string Csv) Write(string folder)
         {
@@ -51,7 +55,15 @@ namespace SleevesOpenings.Automation.Report
             string html = Path.Combine(folder, "report.html"), csv = Path.Combine(folder, "report.csv");
             File.WriteAllText(html, Html(), Encoding.UTF8);
             File.WriteAllText(csv, Csv(), new UTF8Encoding(true));
+            File.WriteAllText(Path.Combine(folder, JsonFile), Newtonsoft.Json.JsonConvert.SerializeObject(this), Encoding.UTF8);
             return (html, csv);
+        }
+
+        /// <summary>The report saved by <see cref="Write"/> (report.json), or null when the folder has none.</summary>
+        public static RunReport Read(string folder)
+        {
+            string path = Path.Combine(folder, JsonFile);
+            return File.Exists(path) ? Newtonsoft.Json.JsonConvert.DeserializeObject<RunReport>(File.ReadAllText(path, Encoding.UTF8)) : null;
         }
 
         // ---------------------------------------------------------------- CSV

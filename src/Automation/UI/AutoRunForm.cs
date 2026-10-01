@@ -40,6 +40,7 @@ namespace SleevesOpenings.Automation.UI
         private readonly PlumbingRules _plumbing;                    // set for the PL model: pipe groups instead of ducts
         private readonly RevitColumns _columns;                      // PDF only: the model's columns, to line the plans up
         private readonly PdfOnlyRules _pdfOnly;
+        private readonly Func<RiserAssembly, List<string>> _resolveFixtureSleeves;
         private List<ReferenceDrawing> _lastRefs = new List<ReferenceDrawing>();
 
         private bool Plumbing => _plumbing != null;
@@ -82,10 +83,11 @@ namespace SleevesOpenings.Automation.UI
                            IList<ReferenceDrawing> modelRefs, GridInputs revitGrids, string modelPath, double dryerSpacing = 8,
                            AutomationRules automation = null, Func<Crossing, (double W, double L)?> openingSize = null,
                            Action<RiserAssembly> layout = null, string discipline = AutomationInputs.Mechanical, PlumbingRules plumbing = null,
-                           RevitColumns columns = null, PdfOnlyRules pdfOnly = null)
+                           RevitColumns columns = null, PdfOnlyRules pdfOnly = null, Func<RiserAssembly, List<string>> resolveFixtureSleeves = null)
         {
             _columns = columns ?? new RevitColumns();
             _pdfOnly = pdfOnly ?? new PdfOnlyRules();
+            _resolveFixtureSleeves = resolveFixtureSleeves;
             _layout = layout ?? (a => { });
             _discipline = discipline ?? AutomationInputs.Mechanical;
             _plumbing = plumbing;
@@ -106,18 +108,29 @@ namespace SleevesOpenings.Automation.UI
             var screen = Screen.PrimaryScreen.WorkingArea;
             Width = Math.Min(1100, screen.Width - 40); Height = Math.Min(1000, screen.Height - 40);
             StartPosition = FormStartPosition.CenterScreen;
+            MinimumSize = new Size(800, 600);
             Font = new Font("Segoe UI", 9f);
 
             var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(10) };
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            // A long existing-model report used to expand this row until the result tabs and
+            // the bottom actions were squeezed out of the window.  Keep the report in a
+            // predictable area instead; its panel has its own vertical scrollbar.
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 150));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             Controls.Add(root);
 
             // ---- 1. Existing sleeves/openings
-            var exBox = new GroupBox { Text = "1. Sleeves and openings already in this model", Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(8) };
-            var exPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false };
+            var exBox = new GroupBox { Text = "1. Sleeves and openings already in this model", Dock = DockStyle.Fill, Padding = new Padding(8) };
+            var exPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoScroll = true,
+                Padding = new Padding(0, 0, SystemInformation.VerticalScrollBarWidth, 0)
+            };
             exPanel.Controls.Add(new Label { Text = _existing.Summary(), AutoSize = true, MaximumSize = new Size(800, 0) });
             _keep = new RadioButton { Text = "Keep them and add only what is missing", AutoSize = true, Checked = _inputs.Existing != ExistingPolicy.Update };
             _update = new RadioButton { Text = "Update them (fix sizes that changed, add what is missing; moved ones are reported, nothing is deleted)", AutoSize = true, Checked = _inputs.Existing == ExistingPolicy.Update };
@@ -132,9 +145,10 @@ namespace SleevesOpenings.Automation.UI
             {
                 Text = Plumbing ? "2. Engineer drawings — Plumbing (PL model: pipe sleeves; the model name decides, rules.json plumbing.modelMatch)"
                                 : "2. Engineer drawings — Mechanical (HV model; a PL model gets the plumbing drawings)",
-                Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(8)
+                Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(8)
             };
-            var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, AutoSize = true };
+            // GrowAndShrink: a long status line while reading must not leave the box tall afterwards
+            var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
@@ -151,7 +165,7 @@ namespace SleevesOpenings.Automation.UI
                 new ToolTip().SetToolTip(_soSet, "Testing: a finished Sleeves & Openings set (PDF) of this building. Its HVAC openings are compared with the ones " +
                                                  "from the engineer drawings, floor by floor (S&O set tab). Leave empty to skip.");
             }
-            var checkRow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+            var checkRow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Fill };
             _check = new Button { Text = "Check drawings", AutoSize = true };
             _check.Click += async (s, e) => await CheckAsync();
             _status = new Label { AutoSize = true, Padding = new Padding(6, 6, 0, 0) };
@@ -216,6 +230,8 @@ namespace SleevesOpenings.Automation.UI
                 _anchors.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = h, FillWeight = w });
             _alignSummary = new Label { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(4), MaximumSize = new Size(1000, 0) };
             var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
+            // floors on top get about two thirds; the check risers below keep a few rows visible
+            split.SizeChanged += (s, e) => { if (split.Height > 120) split.SplitterDistance = Math.Max(60, split.Height * 3 / 5); };
             split.Panel1.Controls.Add(_align);
             split.Panel2.Controls.Add(_anchors);
             _alignPage = new TabPage("Revit position");
@@ -249,7 +265,12 @@ namespace SleevesOpenings.Automation.UI
             ApplyView();
 
             // ---- Buttons
-            var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, AutoSize = true };
+            // one line: options on the left, buttons on the right (they used to wrap onto two lines and squeeze the tabs)
+            var bottom = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            var options = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+            var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false };
             var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
             _ok = new Button { Text = "Save and continue", AutoSize = true, Enabled = false };
             _ok.Click += (s, e) => { if (Save()) { DialogResult = DialogResult.OK; Close(); } };
@@ -259,11 +280,15 @@ namespace SleevesOpenings.Automation.UI
             new ToolTip().SetToolTip(export, "Saves everything read from the drawings (all tabs + the raw DWG risers) to a text file and copies it, to paste for review.");
             export.Click += (s, e) => ExportExtraction();
             buttons.Controls.Add(export);
-            _mark = new CheckBox { Text = "Mark the check risers in the model (model lines; undo removes them)", AutoSize = true, Checked = true, Padding = new Padding(0, 4, 12, 0) };
-            buttons.Controls.Add(_mark);
-            _place = new CheckBox { Text = "Place the openings now (green rows; one undo)", AutoSize = true, Checked = true, Padding = new Padding(0, 4, 12, 0) };
-            buttons.Controls.Add(_place);
-            root.Controls.Add(buttons, 0, 3);
+            _place = new CheckBox { Text = "Place the openings now (one undo)", AutoSize = true, Checked = true, Padding = new Padding(0, 4, 12, 0) };
+            new ToolTip().SetToolTip(_place, "Places the green rows of the Openings tab. One undo removes them all.");
+            options.Controls.Add(_place);
+            _mark = new CheckBox { Text = "Mark the check risers in the model", AutoSize = true, Checked = true, Padding = new Padding(0, 4, 12, 0) };
+            new ToolTip().SetToolTip(_mark, "Draws model lines (circle + cross) at the check risers to confirm the position by eye; undo removes them.");
+            options.Controls.Add(_mark);
+            bottom.Controls.Add(options, 0, 0);
+            bottom.Controls.Add(buttons, 1, 0);
+            root.Controls.Add(bottom, 0, 3);
             CancelButton = cancel;
 
             Shown += async (s, e) => { if (File.Exists(_pdf.Text) || File.Exists(_dwg.Text)) await CheckAsync(); };
@@ -535,6 +560,11 @@ namespace SleevesOpenings.Automation.UI
                     var floorLevels = FloorLevels(); var alignment = Alignment; var rules = _plumbing;
                     try { Assembly = await Task.Run(() => PipeAssembler.Run(dwg, risers, alignment, floorLevels, rules)); }
                     catch (Exception ex) { msg.AppendLine($"Merging the floors failed: {ex.Message}"); App.Log("AutoRun plumbing assembly failed: " + ex); }
+                    if (Assembly != null && _resolveFixtureSleeves != null)
+                    {
+                        try { foreach (var line in _resolveFixtureSleeves(Assembly)) msg.AppendLine("  " + line); }
+                        catch (Exception ex) { msg.AppendLine("  ! Fixture connector lookup failed; fixture sleeves remain review: " + ex.Message); App.Log("AutoRun fixture connector lookup failed: " + ex); }
+                    }
                     if (Assembly != null && plans != null) MarkPdfOnly(Assembly, plans);
                     if (pdf != null)
                         msg.AppendLine("  Plumbing: sizes are not on the plans; each sleeve uses rules.json plumbing.services pipe sizes (check the riser diagram" +
@@ -754,8 +784,12 @@ namespace SleevesOpenings.Automation.UI
             foreach (var kv in _plumbing.Fixtures.OrderBy(kv => kv.Key))
             {
                 var f = kv.Value;
+                string fixtureResult = !review ? "not listed"
+                    : string.Equals(_plumbing.FixtureSleeves, "model", StringComparison.OrdinalIgnoreCase)
+                        ? "Revit sanitary connector when uniquely matched; otherwise review"
+                        : "for review";
                 int i = _tags.Rows.Add(kv.Key, f.Name + Pdf(kv.Key), "rules.json plumbing.fixtures",
-                                       review ? $"fixture sleeve {(f.Count > 1 ? f.Count + " x " : "")}{Units.FormatInches(_plumbing.SleeveFor(f.Pipe))}: for review" : "not listed");
+                                       $"fixture sleeve {(f.Count > 1 ? f.Count + " x " : "")}{Units.FormatInches(_plumbing.SleeveFor(f.Pipe))}: {fixtureResult}");
                 if (review) _tags.Rows[i].DefaultCellStyle.BackColor = Color.LightYellow;
             }
             int sleeved = _plumbing.Services.Count(kv => kv.Value.Sleeve);

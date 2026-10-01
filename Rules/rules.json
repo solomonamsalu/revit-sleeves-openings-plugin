@@ -262,7 +262,7 @@
   },
 
   "plumbing": {
-    "_comment": "Auto Run in the PL model (model name matching modelMatch). The plumbing engineer draws every pipe through a slab as a small circle on its system's layer, groups them in a chase with a tag bubble (P1, P2...) joined by a leader, and writes the services next to the bubble, one per line: 'S UP & DN', 'V RISE & DN', 'ST DN', 'V THRU ROOF'. UP = the slab above, DN / THRU = this floor's slab. Each sleeved service becomes a round MPI sleeve named '{service}-{riser}' (S-P3), pipe + sleeveOverPipe rounded up to the next of sleeveSizes (storm/standpipe rule: pipe + 2\"). Plans carry no pipe sizes: services.*.pipe is used and the row says so. The pipes of a group are drawn 5\" apart: their sleeves are set in a row sleeveGap apart. Lowest level = slab on grade: no sleeves (skipLowestSlab). Fixtures named on the plans (WC, LAV, BT...) are listed for review at the text (fixtureSleeves 'review' | 'off'): the text is next to the fixture, not on its drain. Water is not sleeved (the office S&O sets show sanitary, vent, storm and gas only). Inches.",
+    "_comment": "Auto Run in the PL model (model name matching modelMatch). The plumbing engineer draws every pipe through a slab as a small circle on its system's layer, groups them in a chase with a tag bubble (P1, P2...) joined by a leader, and writes the services next to the bubble, one per line: 'S UP & DN', 'V RISE & DN', 'ST DN', 'V THRU ROOF'. UP = the slab above, DN / THRU = this floor's slab. Each sleeved service becomes a round MPI sleeve named '{service}-{riser}' (S-P3), pipe + sleeveOverPipe rounded up to the next of sleeveSizes (storm/standpipe rule: pipe + 2\"). Plans carry no pipe sizes: services.*.pipe is used and the row says so. The pipes of a group are drawn 5\" apart: their sleeves are set in a row sleeveGap apart. Lowest level = slab on grade: no sleeves (skipLowestSlab). Fixture labels (WC, LAV, BT...) use fixtureSleeves 'model': the nearby matching Revit fixture's sanitary connector is used; ambiguous or connector-less fixtures remain review. Water is not sleeved (the office S&O sets show sanitary, vent, storm and gas only). Inches.",
     "modelMatch": "(\\bPL(\\b|_)|\\bPLUMB)",
     "dwgProfile": {
       "riserBlocks": null,
@@ -304,7 +304,7 @@
       "WD": { "name": "washer", "pipe": 2 },
       "FD": { "name": "floor drain", "pipe": 2 }
     },
-    "fixtureSleeves": "review",
+    "fixtureSleeves": "model",
     "sleeveOverPipe": 2,
     "sleeveSizes": [ 3, 4, 5, 6, 8, 10, 12 ],
     "sleeveGap": 1,

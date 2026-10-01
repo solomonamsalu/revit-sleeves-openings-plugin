@@ -61,10 +61,10 @@ namespace SleevesOpenings.Automation
         };
 
         /// <summary>
-        /// What happens to fixture sleeves: "review" = listed for review at the fixture text (the text sits next to the fixture,
-        /// not on its drain, so they are laid out by hand from the manual's toilet page); "off" = not listed.
+        /// What happens to fixture sleeves: "model" = resolve the nearby matching Revit fixture and its sanitary connector
+        /// (ambiguous or connector-less fixtures stay in review); "review" = list at the plan text; "off" = not listed.
         /// </summary>
-        [JsonProperty("fixtureSleeves")] public string FixtureSleeves { get; set; } = "review";
+        [JsonProperty("fixtureSleeves")] public string FixtureSleeves { get; set; } = "model";
 
         /// <summary>Sleeve = pipe + this (inches), rounded up to the next size in <see cref="SleeveSizes"/> (storm and standpipe rule).</summary>
         [JsonProperty("sleeveOverPipe")] public double SleeveOverPipe { get; set; } = 2;
