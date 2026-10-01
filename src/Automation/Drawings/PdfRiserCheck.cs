@@ -86,15 +86,18 @@ namespace SleevesOpenings.Automation.Drawings
                     if (!fit.Ok) { Mark(result, dwgLabels, PdfLabelCheck.NotChecked); result.Warnings.Add($"{FloorKey.Describe(floor)}: PDF page {sheet.Page} not lined up with the DWG ({fit.Problem})."); continue; }
 
                     foreach (var p in pdfLabels) (p.DwgX, p.DwgY) = fit.ToDwg(p.X, p.Y);
+                    // one label with leaders to two risers is two DWG labels from one text: both match its PDF label
+                    var matchedAt = new Dictionary<PdfLabel, (double X, double Y)>();
                     foreach (var l in dwgLabels)
                     {
+                        bool Free(PdfLabel p) => !p.Matched || (matchedAt.TryGetValue(p, out var at) && Math.Abs(at.X - l.TextX) < 1e-6 && Math.Abs(at.Y - l.TextY) < 1e-6);
                         var near = pdfLabels.Select(p => (P: p, D: Dist(p.DwgX, p.DwgY, l.TextX, l.TextY))).Where(t => t.D <= radius).OrderBy(t => t.D).ToList();
-                        var same = near.FirstOrDefault(t => !t.P.Matched && Equal(t.P.Parsed, l));
+                        var same = near.FirstOrDefault(t => Free(t.P) && Equal(t.P.Parsed, l));
                         // a leader's text may be anchored at its right end in the DWG and read from its left end in the PDF
                         if (same.P == null)
-                            same = pdfLabels.Where(p => !p.Matched && Equal(p.Parsed, l) && Math.Abs(p.DwgY - l.TextY) <= radius / 2 && Math.Abs(p.DwgX - l.TextX) <= Width(l.Text) + radius)
+                            same = pdfLabels.Where(p => Free(p) && Equal(p.Parsed, l) && Math.Abs(p.DwgY - l.TextY) <= radius / 2 && Math.Abs(p.DwgX - l.TextX) <= Width(l.Text) + radius)
                                             .Select(p => (P: p, D: Dist(p.DwgX, p.DwgY, l.TextX, l.TextY))).OrderBy(t => t.D).FirstOrDefault();
-                        if (same.P != null) { same.P.Matched = true; result.Labels[l] = new PdfLabelCheck { Status = PdfLabelCheck.Same, Pdf = same.P }; continue; }
+                        if (same.P != null) { same.P.Matched = true; matchedAt[same.P] = (l.TextX, l.TextY); result.Labels[l] = new PdfLabelCheck { Status = PdfLabelCheck.Same, Pdf = same.P }; continue; }
                         var other = near.FirstOrDefault(t => !t.P.Matched && t.P.Parsed.Dryer == l.Dryer);
                         if (other.P != null) { other.P.Matched = true; result.Labels[l] = new PdfLabelCheck { Status = PdfLabelCheck.Differs, Pdf = other.P }; continue; }
                         result.Labels[l] = new PdfLabelCheck { Status = PdfLabelCheck.Missing };

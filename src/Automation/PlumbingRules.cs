@@ -14,6 +14,9 @@ namespace SleevesOpenings.Automation
     /// </summary>
     public class PlumbingRules
     {
+        /// <summary>sprinkler only: false = the PL model's Auto Run does not offer sprinkler / standpipe sleeves.</summary>
+        [JsonProperty("enabled")] public bool Enabled { get; set; } = true;
+
         /// <summary>Regex on the model name: a model matching it gets plumbing Auto Run ("24 Skillman PL.rvt").</summary>
         [JsonProperty("modelMatch")] public string ModelMatch { get; set; } = @"(\bPL(\b|_)|\bPLUMB)";
 
@@ -44,6 +47,12 @@ namespace SleevesOpenings.Automation
         [JsonProperty("upWords", ObjectCreationHandling = ObjectCreationHandling.Replace)] public List<string> UpWords { get; set; } = new List<string> { "UP", "RISE", "RISER" };
         [JsonProperty("downWords", ObjectCreationHandling = ObjectCreationHandling.Replace)] public List<string> DownWords { get; set; } = new List<string> { "DN", "DOWN", "DROP" };
         [JsonProperty("throughWords", ObjectCreationHandling = ObjectCreationHandling.Replace)] public List<string> ThroughWords { get; set; } = new List<string> { "THRU", "THROUGH" };
+
+        /// <summary>
+        /// A label with no UP, DN or THRU: null = reported, nothing placed (plumbing); "DN" = the pipe ends on this floor and
+        /// goes through its slab (sprinkler: the roof plan's '3" SPRINKLER RISER W/ INSPECTOR TEST TEE').
+        /// </summary>
+        [JsonProperty("unmarked")] public string Unmarked { get; set; }
 
         /// <summary>Fixtures named on the plans: the drain sleeve under each (pipe size, how many sleeves, their spacing).</summary>
         [JsonProperty("fixtures", ObjectCreationHandling = ObjectCreationHandling.Replace)]
@@ -99,6 +108,45 @@ namespace SleevesOpenings.Automation
             return null;
         }
 
+        /// <summary>
+        /// rules.json "sprinkler": Auto Run for sprinkler / standpipe sleeves, run from the PL model (no FP model in the
+        /// office's projects) or a model matching its own modelMatch. Same pipeline as plumbing, read by
+        /// <see cref="SprinklerReader"/>: the risers are labelled in words with their size ('3" SPRINKLER RISER UP/DN').
+        /// </summary>
+        public static PlumbingRules SprinklerDefaults() => new PlumbingRules
+        {
+            ModelMatch = @"(\bFP(\b|_)|\bSP(\b|_)|SPRINK|FIRE\s*PROT)",
+            Profile = new DwgProfile
+            {
+                RiserBlocks = null, TagBlocks = null, TagAttributes = new List<string>(), ConnectorLayers = @"^SPR$|LEADER", DuctLayers = null,
+                RiserCircleLayers = null, FixtureText = null, LeaderTextDistance = 12, PointTolerance = 6,
+                ReferenceFolders = @"^XREF\s*-?\s*(SPR|SP|FP|SPRINK\w*|FIRE\w*)$"
+            },
+            Services = new Dictionary<string, PipeService>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["CHUTE"] = new PipeService { System = "Standpipe", Match = @"CHUTE\s+RISER|SPRINKLER\s+CHUTE", Sleeve = false, Pipe = 1,
+                                              Note = "sprinkler riser inside the trash chute: it goes through the chute opening, no sleeve" },
+                ["SP"] = new PipeService { System = "Standpipe", Match = @"(SPRINKLER|STANDPIPE|COMBINED|COMBINATION)\s+(&\s+STANDPIPE\s+)?RISER|\bSTANDPIPE\b", Sleeve = true, Pipe = 3 },
+                ["FDC"] = new PipeService { System = "Standpipe", Match = @"\bFDC\b", Sleeve = true, Pipe = 4 }
+            },
+            Fixtures = new Dictionary<string, FixtureSleeve>(StringComparer.OrdinalIgnoreCase),
+            FixtureSleeves = "off", Unmarked = "DN", SleeveSizes = new List<double> { 3, 4, 5, 6, 8, 10 }
+        };
+
+        /// <summary>The service a label written in words stands for ('3" SPRINKLER RISER UP/DN' -> SP); null when none matches.</summary>
+        public string ServiceForLabel(string text, out Match match)
+        {
+            match = null;
+            if (string.IsNullOrEmpty(text)) return null;
+            foreach (var kv in Services)
+            {
+                if (string.IsNullOrEmpty(kv.Value.Match)) continue;
+                var m = Regex.Match(text, kv.Value.Match, RegexOptions.IgnoreCase);
+                if (m.Success) { match = m; return kv.Key; }
+            }
+            return null;
+        }
+
         public string Name(string service, string riser) =>
             (NamePattern ?? "{service}-{riser}").Replace("{service}", service ?? "?").Replace("{riser}", riser ?? "?");
     }
@@ -109,9 +157,16 @@ namespace SleevesOpenings.Automation
         [JsonProperty("system")] public string System { get; set; }
         /// <summary>Regex on the DWG layer of this service's circles.</summary>
         [JsonProperty("layer")] public string Layer { get; set; }
+        /// <summary>
+        /// Regex on a label written in words instead of a service letter (sprinkler: 'SPRINKLER\s+RISER' for
+        /// '3" SPRINKLER RISER UP/DN'). A size written in the label ('3"') is used instead of <see cref="Pipe"/>.
+        /// </summary>
+        [JsonProperty("match")] public string Match { get; set; }
+        /// <summary>Why this service gets no sleeve, written in the report (sprinkler chute riser: inside the chute opening).</summary>
+        [JsonProperty("note")] public string Note { get; set; }
         /// <summary>Gets a sleeve where it goes through a slab (the office sets sleeve sanitary, vent, storm and gas; not water).</summary>
         [JsonProperty("sleeve")] public bool Sleeve { get; set; }
-        /// <summary>Pipe size (inches) used when the drawings give none (plans carry no sizes; the riser diagram is not read yet).</summary>
+        /// <summary>Pipe size (inches) used when the drawings give none (plumbing plans carry no sizes; the riser diagram is not read yet).</summary>
         [JsonProperty("pipe")] public double Pipe { get; set; }
     }
 

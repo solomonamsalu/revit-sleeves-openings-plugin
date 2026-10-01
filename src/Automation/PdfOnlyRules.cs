@@ -13,6 +13,15 @@ namespace SleevesOpenings.Automation
         /// <summary>Leave the DWG empty to run from the PDF only (plumbing models).</summary>
         [JsonProperty("enabled")] public bool Enabled { get; set; } = true;
 
+        /// <summary>Mechanical: layers of the size labels' leaders (a line with a filled arrowhead pointing at the riser).</summary>
+        [JsonProperty("leaderLayers")] public string LeaderLayers { get; set; } = "LEADER|LEDR";
+
+        /// <summary>
+        /// Mechanical: a crossed circle up to this diameter (inches) is a small round duct (dryer, vent) that the DWG draws
+        /// as a centre block: it groups with its neighbours into one riser instead of being a section mark of its own.
+        /// </summary>
+        [JsonProperty("roundRiserMaxSize")] public double RoundRiserMaxSize { get; set; } = 6;
+
         /// <summary>Regex on the PDF layers holding the columns ("...|A-Collumns", "S-COLS").</summary>
         [JsonProperty("columnLayers")] public string ColumnLayers { get; set; } = @"COL+UMN|\bS-COL";
         /// <summary>Column rectangles outside this size range (each side) are not columns (a wall or beam drawn on the layer).</summary>

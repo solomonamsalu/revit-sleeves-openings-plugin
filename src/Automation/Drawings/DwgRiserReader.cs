@@ -224,14 +224,62 @@ namespace SleevesOpenings.Automation.Drawings
         /// </summary>
         public static void ReadFloor(string floor, List<RiserSymbol> symbols, IEnumerable<(string Tag, double X, double Y, double Radius)> bubbles,
                                      IEnumerable<List<(double X, double Y)>> connectors, IEnumerable<(string Text, double X, double Y)> texts,
-                                     DwgProfile profile, DwgRiserResult result)
+                                     DwgProfile profile, DwgRiserResult result,
+                                     IEnumerable<(string Text, double X, double Y, List<(double X, double Y)> Arrows)> leaderNotes = null)
         {
+            var notes = texts.Select(t => new Note { Text = t.Text, Raw = t.Text, X = t.X, Y = t.Y, FreeText = true }).ToList();
+            // a label with a leader (mechanical size labels "12X8 DN 12X10 UP"): the arrow says which riser it is about
+            foreach (var l in leaderNotes ?? Enumerable.Empty<(string, double, double, List<(double, double)>)>())
+            {
+                var n = new Note { Text = l.Text, Raw = l.Text, X = l.X, Y = l.Y };
+                n.Arrows.AddRange(l.Arrows);
+                notes.Add(n);
+            }
             BuildFloor(floor, symbols,
                        bubbles.Select(b => new Bubble { Tag = b.Tag, X = b.X, Y = b.Y, Radius = b.Radius }).ToList(),
                        connectors.Where(c => c.Count >= 2).Select(c => new Segment { Points = c.ToList() }).ToList(),
-                       texts.Select(t => new Note { Text = t.Text, Raw = t.Text, X = t.X, Y = t.Y, FreeText = true }).ToList(),
-                       profile, result);
+                       notes, profile, result);
         }
+
+        /// <summary>
+        /// Section marks from shapes read off a PDF page (real inches): rectangles and circles on a duct layer crossed by a
+        /// diagonal, as the DWG's. A crossed circle smaller than a section mark (a 4" dryer duct) is a plain riser symbol,
+        /// as the DWG draws it with a centre block, so the dryer ducts of a shaft group together.
+        /// </summary>
+        public static List<RiserSymbol> SectionMarks(IEnumerable<((double X, double Y)[] Corners, string Layer)> rects,
+                                                     IEnumerable<((double X, double Y) A, (double X, double Y) B)> diagonals,
+                                                     IEnumerable<(double X, double Y, double R, string Layer)> circles, DwgProfile profile,
+                                                     double centreUpTo = 0)
+        {
+            var f = new Found { Section = new Regex(".") };
+            f.Rects.AddRange(rects);
+            f.Diagonals.AddRange(diagonals.Select(d => new Segment { Points = new List<(double X, double Y)> { d.A, d.B } }));
+            var all = circles.ToList();
+            double small = Math.Max(profile.SectionMarkMinSize, centreUpTo);
+            f.Circles.AddRange(all.Where(c => 2 * c.R > small));
+            SectionMarks(f, profile);
+            // a PDF has no blocks: equipment and grilles drawn with an X inside their block come through too. Ducts are
+            // sized in whole inches (16X8, 8"Ø); an outline that is not (22X38.4, 26.1X54.2) is not a duct riser.
+            bool Whole(double? v) => v == null || Math.Abs(v.Value - Math.Round(v.Value)) <= 0.15;
+            f.Symbols.RemoveAll(m => m.Outline && !(Whole(m.Size?.Width) && Whole(m.Size?.Length) && Whole(m.Size?.Diameter)));
+            // small crossed circles (dryer, vent ducts the DWG draws as centre blocks): centre symbols, grouped side by side
+            foreach (var (x, y, r, layer) in all)
+            {
+                if (2 * r > small || 2 * r < 1.5) continue;
+                bool crossed = f.Diagonals.Any(d =>
+                {
+                    var a = d.Points[0]; var b = d.Points[1];
+                    double len = Dist(a.X, a.Y, b.X, b.Y);
+                    return len >= 1.6 * r && len <= 2.4 * r && ToSegment((x, y), a, b) <= 0.2 * r;
+                });
+                if (crossed && !f.Symbols.Any(o => Dist(o.X, o.Y, x, y) < 0.5))
+                    f.Symbols.Add(new RiserSymbol { X = x, Y = y, Layer = layer, Block = PdfRiserCircle });
+            }
+            return f.Symbols;
+        }
+
+        /// <summary>Block name given to a small round riser read from a PDF (a dryer duct, crossed circle under a section mark's size).</summary>
+        public const string PdfRiserCircle = "(PDF riser circle)";
 
         // ------------------------------------------------------------------ collection (with block transforms)
 
@@ -558,31 +606,36 @@ namespace SleevesOpenings.Automation.Drawings
                 var label = RiserLabel.Parse(n.Text);
                 bool crossing = label != null && label.IsCrossingLabel;
                 if (!crossing && n.Arrows.Count == 0) continue;           // free text: only UP/DN labels attach by distance
-                DwgRiser g = null;
-                foreach (var a in n.Arrows) if ((g = At(groups, a.X, a.Y, profile.PointTolerance)) != null) break;
-                string how = "leader";
-                if (g == null && n.Arrows.Count == 0 && (label.GoesDown || label.GoesUp))
+                // every riser its arrows point at: one label with leaders to two ducts side by side ("6X6 DN" to KX2 and
+                // TX3) says the same of both
+                var hit = n.Arrows.Select(a => At(groups, a.X, a.Y, profile.PointTolerance)).Where(x => x != null).Distinct().ToList();
+                string how = hit.Count > 1 ? $"leader (one label, leaders to {hit.Count} risers)" : "leader";
+                if (hit.Count == 0 && n.Arrows.Count == 0 && (label.GoesDown || label.GoesUp))
                 {
-                    g = At(groups, n.X, n.Y, profile.MaxTagDistance);
+                    var near = At(groups, n.X, n.Y, profile.MaxTagDistance);
+                    if (near != null) hit.Add(near);
                     how = "text next to it";
                 }
-                if (g == null) continue;
-                if (!crossing)
+                foreach (var g in hit)
                 {
-                    string text = Flat(n.Text);
-                    if (!pointed.TryGetValue(g, out var list)) pointed[g] = list = new List<string>();
-                    if (!list.Contains(text)) list.Add(text);
-                    g.Evidence.Add($"note '{text}': {how}");
-                    continue;
+                    if (!crossing)
+                    {
+                        string text = Flat(n.Text);
+                        if (!pointed.TryGetValue(g, out var list)) pointed[g] = list = new List<string>();
+                        if (!list.Contains(text)) list.Add(text);
+                        g.Evidence.Add($"note '{text}': {how}");
+                        continue;
+                    }
+                    var lab = g == hit[0] ? label : RiserLabel.Parse(n.Text);
+                    // the symbol it points at (a shaft holds several ducts), else the group centre
+                    var tip = n.Arrows.Count > 0 ? n.Arrows.OrderBy(a => g.Symbols.Min(o => o.DistanceTo(a.X, a.Y))).First() : (X: g.X, Y: g.Y);
+                    var at = g.Symbols.OrderBy(o => o.DistanceTo(tip.X, tip.Y)).First();
+                    lab.X = g.Symbols.Count == 1 || n.Arrows.Count > 0 ? at.X : g.X;
+                    lab.Y = g.Symbols.Count == 1 || n.Arrows.Count > 0 ? at.Y : g.Y;
+                    lab.TextX = n.X; lab.TextY = n.Y;
+                    g.Labels.Add(lab);
+                    g.Evidence.Add($"'{lab.Text}': {how}");
                 }
-                // the symbol it points at (a shaft holds several ducts), else the group centre
-                var tip = n.Arrows.Count > 0 ? n.Arrows.OrderBy(a => g.Symbols.Min(o => o.DistanceTo(a.X, a.Y))).First() : (X: g.X, Y: g.Y);
-                var at = g.Symbols.OrderBy(o => o.DistanceTo(tip.X, tip.Y)).First();
-                label.X = g.Symbols.Count == 1 || n.Arrows.Count > 0 ? at.X : g.X;
-                label.Y = g.Symbols.Count == 1 || n.Arrows.Count > 0 ? at.Y : g.Y;
-                label.TextX = n.X; label.TextY = n.Y;
-                g.Labels.Add(label);
-                g.Evidence.Add($"'{label.Text}': {how}");
             }
 
             // 5b. Dryer ducts drawn next to another duct (TX1 beside two dryer ducts): a group with both a dryer label and a

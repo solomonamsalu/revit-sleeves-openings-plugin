@@ -27,7 +27,8 @@ namespace SleevesOpenings.Automation.UI
         private readonly AutomationInputs _inputs;
         private readonly LevelMap _levels;
         private readonly LegendRules _legendRules;
-        private readonly DwgProfile _profile;
+        private DwgProfile _profile;
+        private readonly DwgProfile _mechanicalProfile;
         private readonly IList<ReferenceDrawing> _modelRefs;
         private readonly IList<ExistingPoint> _existingPoints;
         private readonly string _modelPath;
@@ -36,15 +37,22 @@ namespace SleevesOpenings.Automation.UI
         private readonly AutomationRules _automation;
         private readonly Func<Crossing, (double W, double L)?> _openingSize;
         private readonly Action<RiserAssembly> _layout;              // openings next to each other (ERV pairs, dryers on other openings)
-        private readonly string _discipline;                         // AutomationInputs.Mechanical / Plumbing
-        private readonly PlumbingRules _plumbing;                    // set for the PL model: pipe groups instead of ducts
+        private string _discipline;                                  // AutomationInputs.Mechanical / Plumbing / Sprinkler: set by the drawings picked
+        private PlumbingRules _plumbing;                             // plumbing or sprinkler: pipe groups instead of ducts
+        /// <summary>The pipe disciplines this model can run (PL model: plumbing and sprinkler), with their rules; empty for the HV model.</summary>
+        private readonly IDictionary<string, PlumbingRules> _pipeOptions;
         private readonly RevitColumns _columns;                      // PDF only: the model's columns, to line the plans up
         private readonly PdfOnlyRules _pdfOnly;
         private readonly Func<RiserAssembly, List<string>> _resolveFixtureSleeves;
         private List<ReferenceDrawing> _lastRefs = new List<ReferenceDrawing>();
 
         private bool Plumbing => _plumbing != null;
-        private string DisciplineWord => Plumbing ? "plumbing" : "mechanical";
+        /// <summary>Sprinkler / standpipe sleeves (rules.json "sprinkler"): the pipe path, read by <see cref="SprinklerReader"/>.</summary>
+        private bool Sprinkler => _discipline == AutomationInputs.Sprinkler;
+        private string DisciplineWord => Sprinkler ? "sprinkler" : Plumbing ? "plumbing" : "mechanical";
+        /// <summary>The discipline the drawings turned out to be (sheet numbers P-, SP-, M-): the files are remembered under it.</summary>
+        public string Discipline => _discipline;
+        private GroupBox _inBox;
 
         private RadioButton _keep, _update;
         private TextBox _pdf, _dwg, _xrefs, _soSet, _messages;
@@ -56,6 +64,15 @@ namespace SleevesOpenings.Automation.UI
         private TabControl _tabs;
         private TabPage _found;
         private string _fullMessages = "";
+        /// <summary>
+        /// Details off: the window is not shown. The remembered drawings are checked and saved on their own; the window
+        /// appears only when something needs the user (and why). Shift held while clicking Auto Run always shows it.
+        /// </summary>
+        private bool _quiet;
+        /// <summary>Compact view (details off): no tabs, only the messages that need the user, the window cut to its content.</summary>
+        private TableLayoutPanel _root, _bottom;
+        private TextBox _compact;
+        private const int ExistingRowHeight = 150, CompactMessageHeight = 130;
 
         /// <summary>Remembered between runs: the user last chose to see every extraction tab (off = results only).</summary>
         private static readonly string DetailsFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SleevesOpenings", "autorun-details.txt");
@@ -83,8 +100,10 @@ namespace SleevesOpenings.Automation.UI
                            IList<ReferenceDrawing> modelRefs, GridInputs revitGrids, string modelPath, double dryerSpacing = 8,
                            AutomationRules automation = null, Func<Crossing, (double W, double L)?> openingSize = null,
                            Action<RiserAssembly> layout = null, string discipline = AutomationInputs.Mechanical, PlumbingRules plumbing = null,
-                           RevitColumns columns = null, PdfOnlyRules pdfOnly = null, Func<RiserAssembly, List<string>> resolveFixtureSleeves = null)
+                           RevitColumns columns = null, PdfOnlyRules pdfOnly = null, Func<RiserAssembly, List<string>> resolveFixtureSleeves = null,
+                           IDictionary<string, PlumbingRules> pipeOptions = null)
         {
+            _pipeOptions = pipeOptions ?? new Dictionary<string, PlumbingRules>();
             _columns = columns ?? new RevitColumns();
             _pdfOnly = pdfOnly ?? new PdfOnlyRules();
             _resolveFixtureSleeves = resolveFixtureSleeves;
@@ -95,6 +114,7 @@ namespace SleevesOpenings.Automation.UI
             _automation = automation ?? new AutomationRules();
             _openingSize = openingSize ?? (c => null);
             _existing = existing; _inputs = inputs; _levels = levels; _legendRules = legendRules; _profile = profile ?? new DwgProfile();
+            _mechanicalProfile = plumbing == null ? _profile : new DwgProfile();
             _modelRefs = modelRefs ?? new List<ReferenceDrawing>(); _modelPath = modelPath;
             _revitGrids = revitGrids ?? new GridInputs();
             _existingPoints = existing.Items.Where(i => i.Point != null)
@@ -104,18 +124,18 @@ namespace SleevesOpenings.Automation.UI
 
         private void Build()
         {
-            Text = "Sleeves & Openings — Auto Run" + (Plumbing ? " (plumbing)" : "");
+            Text = "Sleeves & Openings — Auto Run" + (Plumbing ? $" ({DisciplineWord})" : "");
             var screen = Screen.PrimaryScreen.WorkingArea;
             Width = Math.Min(1100, screen.Width - 40); Height = Math.Min(1000, screen.Height - 40);
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(800, 600);
             Font = new Font("Segoe UI", 9f);
 
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(10) };
+            var root = _root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(10) };
             // A long existing-model report used to expand this row until the result tabs and
             // the bottom actions were squeezed out of the window.  Keep the report in a
             // predictable area instead; its panel has its own vertical scrollbar.
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 150));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, ExistingRowHeight));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -141,10 +161,9 @@ namespace SleevesOpenings.Automation.UI
             root.Controls.Add(exBox, 0, 0);
 
             // ---- 2. Drawings
-            var inBox = new GroupBox
+            var inBox = _inBox = new GroupBox
             {
-                Text = Plumbing ? "2. Engineer drawings — Plumbing (PL model: pipe sleeves; the model name decides, rules.json plumbing.modelMatch)"
-                                : "2. Engineer drawings — Mechanical (HV model; a PL model gets the plumbing drawings)",
+                Text = DrawingsTitle(),
                 Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(8)
             };
             // GrowAndShrink: a long status line while reading must not leave the box tall afterwards
@@ -169,9 +188,10 @@ namespace SleevesOpenings.Automation.UI
             _check = new Button { Text = "Check drawings", AutoSize = true };
             _check.Click += async (s, e) => await CheckAsync();
             _status = new Label { AutoSize = true, Padding = new Padding(6, 6, 0, 0) };
-            _details = new CheckBox { Text = "Show extraction details", AutoSize = true, Checked = LoadDetails(), Padding = new Padding(12, 4, 0, 0) };
-            new ToolTip().SetToolTip(_details, "On: every tab (floors, tags, risers, Revit position, openings) and every message.\n" +
-                                               "Off: only the result (openings, and floors or Revit position when they need attention).");
+            _details = new CheckBox { Text = "Show this window (extraction details)", AutoSize = true, Checked = LoadDetails(), Padding = new Padding(12, 4, 0, 0) };
+            new ToolTip().SetToolTip(_details, "On: this window with every tab (floors, tags, risers, Revit position, openings) and every message.\n" +
+                                               "Off: Auto Run does not show this window: it checks the drawings used last time and saves and continues on its own.\n" +
+                                               "The window still opens when something needs you (and says why). Hold Shift while clicking Auto Run to see it anyway.");
             _details.CheckedChanged += (s, e) => { SaveDetails(_details.Checked); ApplyView(); };
             checkRow.Controls.Add(_check);
             checkRow.Controls.Add(_details);
@@ -261,7 +281,12 @@ namespace SleevesOpenings.Automation.UI
             tabs.TabPages.Add(_openingsPage);
             if (_automation.ReferenceSet.Enabled) tabs.TabPages.Add(_soPage);
             tabs.TabPages.Add(found);
-            root.Controls.Add(tabs, 0, 2);
+            // details off: the tabs give way to a short message box (only what needs the user)
+            _compact = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = SystemColors.Window, Visible = false };
+            var resultsHost = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
+            resultsHost.Controls.Add(tabs);
+            resultsHost.Controls.Add(_compact);
+            root.Controls.Add(resultsHost, 0, 2);
             ApplyView();
 
             // ---- Buttons
@@ -289,9 +314,37 @@ namespace SleevesOpenings.Automation.UI
             bottom.Controls.Add(options, 0, 0);
             bottom.Controls.Add(buttons, 1, 0);
             root.Controls.Add(bottom, 0, 3);
+            _bottom = bottom;
             CancelButton = cancel;
 
-            Shown += async (s, e) => { if (File.Exists(_pdf.Text) || File.Exists(_dwg.Text)) await CheckAsync(); };
+            // Details off: nothing to see unless something needs the user. Checked behind an invisible window, then saved.
+            bool remembered = File.Exists(_pdf.Text) || File.Exists(_dwg.Text);
+            _quiet = !_details.Checked && remembered && (Control.ModifierKeys & Keys.Shift) == 0;
+            if (_quiet) { Opacity = 0; ShowInTaskbar = false; _mark.Checked = false; }
+            Load += (s, e) => ApplyView();         // sizes are known once the window exists: fit it (compact when details are off)
+            Shown += async (s, e) =>
+            {
+                if (remembered) await CheckAsync();
+                if (!_quiet) return;
+                string why = NeedsYou();
+                if (why == null && Save()) { App.Log("AutoRun: details off - checked and saved without showing the window"); DialogResult = DialogResult.OK; Close(); return; }
+                _quiet = false;
+                _fullMessages = $"Shown because {why ?? "the inputs could not be saved"} (\"Show this window\" is off: it opens only when something needs you).\n\n" + _fullMessages;
+                ApplyView();
+                ShowInTaskbar = true; Opacity = 1; Activate();
+            };
+        }
+
+        /// <summary>Why the window must be shown after a quiet check; null when everything checked out.</summary>
+        private string NeedsYou()
+        {
+            if (Assembly == null) return "the drawings could not be read or merged";
+            if (Alignment?.Passed != true) return "the Revit position check did not pass (nothing would be placed)";
+            var unmatched = _floors.Rows.Cast<DataGridViewRow>().Where(r => (string)r.Cells["Level"].Value == AutomationInputs.NotUsed)
+                                   .Select(r => FloorKey.Describe((string)r.Cells["Key"].Value)).ToList();
+            if (unmatched.Count > 0) return $"{string.Join(", ", unmatched)} {(unmatched.Count == 1 ? "is" : "are")} not matched to a Revit level";
+            if (!Assembly.Crossings.Any(c => c.Status == Crossing.Place)) return "nothing was found to place";
+            return null;
         }
 
         /// <summary>
@@ -325,6 +378,17 @@ namespace SleevesOpenings.Automation.UI
             Section("Revit position", _align);
             Section("Check risers", _anchors);
             Section("Openings", _openings);
+
+            // Where each opening lands in Revit: compares two runs (PDF only against the DWG) position by position.
+            if (Assembly != null)
+            {
+                var placed = Assembly.Crossings.Where(c => c.HasPosition).OrderBy(c => FloorKey.Order(c.Floor)).ThenBy(c => c.Tag ?? "~").ToList();
+                sb.AppendLine($"## Openings: Revit positions ({placed.Count}); from the internal origin");
+                sb.AppendLine("Slab of\tTag\tSystem\tResult\tRevit X\tRevit Y\tX (ft)\tY (ft)");
+                foreach (var c in placed)
+                    sb.AppendLine(string.Join("\t", FloorKey.Describe(c.Floor), c.Tag ?? "-", c.System, c.Status, Ft(c.X), Ft(c.Y), $"{c.X:0.0000}", $"{c.Y:0.0000}"));
+                sb.AppendLine();
+            }
 
             // The raw reader output: what each riser is made of, before any merging across floors.
             if (Risers != null)
@@ -407,7 +471,7 @@ namespace SleevesOpenings.Automation.UI
             if (selected != null && pages.Contains(selected)) _tabs.SelectedTab = selected;
             else if (!all && Assembly != null) _tabs.SelectedTab = _openingsPage;
 
-            if (all) { _found.Text = "What was found"; _messages.Text = _fullMessages; return; }
+            if (all) { _found.Text = "What was found"; _messages.Text = _fullMessages; Fit(true); return; }
             // Results only: drop the extraction lines (what each file / tag / riser gave) and the indented details.
             string[] extraction = { "PDF:", "DWG:", "Tags:", "Services:", "Risers in the DWG", "Pipe groups in the DWG" };
             var lines = _fullMessages.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
@@ -416,7 +480,46 @@ namespace SleevesOpenings.Automation.UI
             if (hidden > 0) kept.Add($"({hidden} warning(s) from reading the drawings are hidden - tick Show extraction details to see them.)");
             _found.Text = "Summary";
             _messages.Text = string.Join(Environment.NewLine, kept);
+            _compact.Text = _messages.Text;
+            Fit(false);
         }
+
+        /// <summary>
+        /// Details on: the full window with the result tabs. Off: no tabs; a short message box when there is something to
+        /// read, and the window only as tall as its content.
+        /// </summary>
+        private void Fit(bool full)
+        {
+            if (_root == null || _bottom == null) return;
+            bool message = !full && _compact.Text.Trim().Length > 0;
+            bool wasFull = _tabs.Visible;
+            // leaving the full window: remember its size (and place, once shown) to give it back exactly
+            if (wasFull && !full) { _fullSize = Size; _fullLocation = Visible ? Location : (Point?)null; }
+            _tabs.Visible = full;
+            _compact.Visible = message;
+            _root.SuspendLayout();
+            _root.RowStyles[2] = full ? new RowStyle(SizeType.Percent, 100) : new RowStyle(SizeType.Absolute, message ? CompactMessageHeight : 0);
+            _root.ResumeLayout(true);
+            var screen = Screen.FromControl(this).WorkingArea;
+            if (full)
+            {
+                if (wasFull) return;
+                MinimumSize = new Size(800, 600);
+                Size = _fullSize ?? new Size(Math.Min(1100, screen.Width - 40), Math.Min(1000, screen.Height - 40));
+                var at = _fullLocation ?? new Point(screen.Left + (screen.Width - Width) / 2, screen.Top + (screen.Height - Height) / 2);
+                Location = new Point(Math.Max(screen.Left, Math.Min(at.X, screen.Right - Width)), Math.Max(screen.Top, Math.Min(at.Y, screen.Bottom - Height)));
+                return;
+            }
+            int Pref(Control c) => c.GetPreferredSize(new Size(_root.ClientSize.Width - _root.Padding.Horizontal, 0)).Height + c.Margin.Vertical;
+            int h = _root.Padding.Vertical + ExistingRowHeight + Pref(_inBox) + (message ? CompactMessageHeight : 0) + Pref(_bottom) + 8;
+            MinimumSize = new Size(800, 0);
+            ClientSize = new Size(ClientSize.Width, Math.Min(h, screen.Height - 80));
+            // the short window sits in the middle of the screen
+            Location = new Point(screen.Left + (screen.Width - Width) / 2, screen.Top + (screen.Height - Height) / 2);
+        }
+
+        private Size? _fullSize;
+        private Point? _fullLocation;
 
         private static bool LoadDetails()
         {
@@ -448,7 +551,8 @@ namespace SleevesOpenings.Automation.UI
             var browse = new Button { Text = "Browse…", AutoSize = true };
             browse.Click += (s, e) =>
             {
-                using (var dlg = new FolderBrowserDialog { Description = Plumbing ? "Folder of the per-floor plumbing xrefs at Revit's 0,0 (e.g. Xref\\Xref PL)"
+                using (var dlg = new FolderBrowserDialog { Description = Sprinkler ? "Folder of the per-floor sprinkler xrefs at Revit's 0,0 (e.g. Xref\\Xref SPR)"
+                                                                       : Plumbing ? "Folder of the per-floor plumbing xrefs at Revit's 0,0 (e.g. Xref\\Xref PL)"
                                                                                   : "Folder of the per-floor mechanical xrefs at Revit's 0,0 (e.g. Xref\\Xref ME)" })
                 {
                     if (Directory.Exists(box.Text)) dlg.SelectedPath = box.Text;
@@ -486,12 +590,6 @@ namespace SleevesOpenings.Automation.UI
             string pdfPath = _pdf.Text.Trim(), dwgPath = _dwg.Text.Trim(), xrefPath = _xrefs.Text.Trim(), soPath = _soSet?.Text.Trim() ?? "";
             var msg = new StringBuilder();
             if (pdfPath.Length == 0 && dwgPath.Length == 0) { _fullMessages = $"Select the {DisciplineWord} PDF and DWG."; ApplyView(); return; }
-            // Not found next to the model (a copy saved elsewhere): look around the engineer DWG's project folder.
-            if (xrefPath.Length == 0 && dwgPath.Length > 0)
-            {
-                xrefPath = ReferenceFiles.FindFolder(dwgPath, _profile.ReferenceFolders) ?? "";
-                _xrefs.Text = xrefPath;
-            }
 
             _check.Enabled = _ok.Enabled = false;
             _status.Text = "Reading drawings… (a large PDF can take 20 seconds)";
@@ -499,33 +597,79 @@ namespace SleevesOpenings.Automation.UI
             PdfSheetIndex pdf = null; DwgSheetIndex dwg = null; DwgRiserResult risers = null; CadDocument cad = null;
             try
             {
+                Task<(CadDocument, DwgSheetIndex)> Sheets(string path) => path.Length == 0
+                    ? Task.FromResult<(CadDocument, DwgSheetIndex)>((null, null))
+                    : Task.Run(() => { var doc = DwgSheetIndex.Open(path); return (doc, DwgSheetIndex.Read(doc, path)); });   // one read for floors, risers and alignment
                 var tp = pdfPath.Length == 0 ? Task.FromResult<PdfSheetIndex>(null) : Task.Run(() => PdfSheetIndex.Read(pdfPath));
-                var profile = _profile;
-                var td = dwgPath.Length == 0 ? Task.FromResult<(CadDocument, DwgSheetIndex, DwgRiserResult)>((null, null, null)) : Task.Run(() =>
-                {
-                    var doc = DwgSheetIndex.Open(dwgPath);               // one read for floors, risers and alignment
-                    var index = DwgSheetIndex.Read(doc, dwgPath);
-                    return (doc, index, DwgRiserReader.Read(doc, index, profile));
-                });
+                var td = Sheets(dwgPath);
                 try { pdf = await tp; } catch (Exception ex) { msg.AppendLine($"PDF could not be read: {ex.Message}"); App.Log("AutoRun PDF read failed: " + ex); }
-                try { (cad, dwg, risers) = await td; } catch (Exception ex) { msg.AppendLine($"DWG could not be read: {ex.Message}"); App.Log("AutoRun DWG read failed: " + ex); }
+                try { (cad, dwg) = await td; } catch (Exception ex) { msg.AppendLine($"DWG could not be read: {ex.Message}"); App.Log("AutoRun DWG read failed: " + ex); }
+
+                // ---- which drawings these are: the sheet numbers say it (P- plumbing, SP- sprinkler, M- mechanical)
+                string fromPdf = DisciplineOfSheets(pdf?.Discipline), fromDwg = DisciplineOfSheets(LayoutPrefix(dwg?.Layouts));
+                string wanted = fromPdf ?? fromDwg;
+                if (wanted != null && wanted != _discipline && _pipeOptions.ContainsKey(wanted))
+                {
+                    var before = _inputs.For(_discipline); var after = _inputs.For(wanted);
+                    string oldProfileFolders = _profile.ReferenceFolders;
+                    Switch(wanted);
+                    msg.AppendLine($"Recognised the {DisciplineWord} drawings (sheet numbers {(fromPdf != null ? pdf.Discipline : LayoutPrefix(dwg.Layouts))}-): " +
+                                   $"{DisciplineWord} sleeves.");
+                    // the other boxes still hold the other discipline's remembered files: bring this discipline's instead
+                    if (fromPdf != null && dwgPath.Length > 0 && dwgPath == (before.Dwg ?? "") && DisciplineOfSheets(LayoutPrefix(dwg?.Layouts)) != wanted)
+                    {
+                        dwgPath = after.Dwg ?? "";
+                        _dwg.Text = dwgPath;
+                        msg.AppendLine(dwgPath.Length > 0 ? $"  DWG: the {DisciplineWord} DWG used last time ({Path.GetFileName(dwgPath)})."
+                                                          : $"  DWG: none picked for the {DisciplineWord} drawings yet: reading the PDF only.");
+                        cad = null; dwg = null;
+                        try { (cad, dwg) = await Sheets(dwgPath); } catch (Exception ex) { msg.AppendLine($"DWG could not be read: {ex.Message}"); App.Log("AutoRun DWG read failed: " + ex); }
+                    }
+                    if (xrefPath.Length == 0 || xrefPath == (before.Xrefs ?? "") ||
+                        (!string.IsNullOrEmpty(oldProfileFolders) && System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(xrefPath.TrimEnd('\\', '/')), oldProfileFolders,
+                                                                                                                    System.Text.RegularExpressions.RegexOptions.IgnoreCase)))
+                    {
+                        xrefPath = after.Xrefs ?? ReferenceFiles.FindFolder(_modelPath, _profile.ReferenceFolders) ?? "";
+                        _xrefs.Text = xrefPath;
+                    }
+                }
+                string dwgSays = DisciplineOfSheets(LayoutPrefix(dwg?.Layouts));
+                if (fromPdf != null && dwgSays != null && fromPdf != dwgSays)
+                {
+                    msg.AppendLine($"The PDF is the {Word(fromPdf)} set (sheets {pdf.Discipline}-) but the DWG is the {Word(dwgSays)} set (layouts {LayoutPrefix(dwg.Layouts)}-): " +
+                                   $"pick the {Word(fromPdf)} DWG, or clear the DWG box to read the PDF only.");
+                    _fullMessages = msg.ToString().TrimEnd();
+                    ApplyView();
+                    return;
+                }
+                // Not found next to the model (a copy saved elsewhere): look around the engineer DWG's project folder.
+                if (xrefPath.Length == 0 && dwgPath.Length > 0)
+                {
+                    xrefPath = ReferenceFiles.FindFolder(dwgPath, _profile.ReferenceFolders) ?? "";
+                    _xrefs.Text = xrefPath;
+                }
+
+                var profile = _profile; var pipeRules = _plumbing; bool sprinkler = Sprinkler;
+                if (cad != null)
+                {
+                    var c0 = cad; var d0 = dwg;
+                    try { risers = await Task.Run(() => sprinkler ? SprinklerReader.Read(c0, d0, pipeRules) : DwgRiserReader.Read(c0, d0, profile)); }
+                    catch (Exception ex) { msg.AppendLine($"DWG could not be read: {ex.Message}"); App.Log("AutoRun DWG read failed: " + ex); cad = null; dwg = null; }
+                }
 
                 // PDF only (no DWG): the plans are read from the PDF's CAD layers and lined up by their columns
                 PdfPlanResult plans = null;
                 if (dwgPath.Length == 0 && pdf != null && _pdfOnly.Enabled)
                 {
-                    if (!Plumbing) msg.AppendLine("PDF only: built for the plumbing (PL) model for now; the mechanical model needs the DWG.");
-                    else
-                    {
-                        _status.Text = "Reading the plans from the PDF (PDF only)…";
-                        var pdfOnly = _pdfOnly;
-                        try { plans = await Task.Run(() => PdfPlanReader.Read(pdfPath, pdf, profile, pdfOnly)); dwg = plans.Index; risers = plans.Risers; }
-                        catch (Exception ex) { msg.AppendLine($"The PDF plans could not be read: {ex.Message}"); App.Log("AutoRun PDF-only read failed: " + ex); }
-                    }
+                    // plumbing (pipe circles), sprinkler (worded labels) or mechanical (duct section marks, tag bubbles, size labels)
+                    _status.Text = "Reading the plans from the PDF (PDF only)…";
+                    var pdfOnly = _pdfOnly;
+                    try { plans = await Task.Run(() => PdfPlanReader.Read(pdfPath, pdf, profile, pdfOnly, sprinkler ? pipeRules : null)); dwg = plans.Index; risers = plans.Risers; }
+                    catch (Exception ex) { msg.AppendLine($"The PDF plans could not be read: {ex.Message}"); App.Log("AutoRun PDF-only read failed: " + ex); }
                 }
 
                 Pdf = pdf; Dwg = dwg; Risers = risers; PdfPlans = plans; Alignment = null; Assembly = null; Diagram = null; SoSet = null; SoCompare = null;
-                Describe(pdf, plans == null ? dwg : null, pdfPath, plans == null ? dwgPath : "-", msg, Plumbing ? "P" : "M", DisciplineWord);
+                Describe(pdf, plans == null ? dwg : null, pdfPath, plans == null ? dwgPath : "-", msg, DisciplineOfSheets(pdf?.Discipline) == _discipline ? pdf.Discipline : Sprinkler ? "SP" : Plumbing ? "P" : "M", DisciplineWord);
                 if (plans != null) DescribePdfOnly(plans, msg);
                 FillFloors(pdf, dwg);
                 FillTags(pdf, msg);
@@ -541,7 +685,9 @@ namespace SleevesOpenings.Automation.UI
                     {
                         DwgPath = ReferenceFiles.FindGridFile(xrefPath, profile.GridFiles), Revit = _revitGrids.Revit, RevitSource = _revitGrids.RevitSource
                     };
-                    try { Alignment = await Task.Run(() => FloorAligner.Run(cad, dwg, risers, profile, refs, floorLevels, existingPoints, grids)); }
+                    // sprinkler: the office xref's labelled risers are the known positions the engineer's risers are checked on
+                    Func<CadDocument, List<RiserSymbol>> refRisers = sprinkler ? (c => SprinklerReader.Symbols(c, pipeRules)) : (Func<CadDocument, List<RiserSymbol>>)null;
+                    try { Alignment = await Task.Run(() => FloorAligner.Run(cad, dwg, risers, profile, refs, floorLevels, existingPoints, grids, referenceRisers: refRisers)); }
                     catch (Exception ex) { msg.AppendLine($"Lining up with Revit failed: {ex.Message}"); App.Log("AutoRun alignment failed: " + ex); }
                 }
                 else if (plans != null)
@@ -560,13 +706,16 @@ namespace SleevesOpenings.Automation.UI
                     var floorLevels = FloorLevels(); var alignment = Alignment; var rules = _plumbing;
                     try { Assembly = await Task.Run(() => PipeAssembler.Run(dwg, risers, alignment, floorLevels, rules)); }
                     catch (Exception ex) { msg.AppendLine($"Merging the floors failed: {ex.Message}"); App.Log("AutoRun plumbing assembly failed: " + ex); }
-                    if (Assembly != null && _resolveFixtureSleeves != null)
+                    if (Assembly != null && _resolveFixtureSleeves != null && !Sprinkler)
                     {
                         try { foreach (var line in _resolveFixtureSleeves(Assembly)) msg.AppendLine("  " + line); }
                         catch (Exception ex) { msg.AppendLine("  ! Fixture connector lookup failed; fixture sleeves remain review: " + ex.Message); App.Log("AutoRun fixture connector lookup failed: " + ex); }
                     }
                     if (Assembly != null && plans != null) MarkPdfOnly(Assembly, plans);
-                    if (pdf != null)
+                    if (Sprinkler)
+                        msg.AppendLine("  Sprinkler: pipe sizes are read from the labels (3\" SPRINKLER RISER, 4\" FDC); sleeve = pipe + " +
+                                       $"{Units.FormatInches(_plumbing.SleeveOverPipe)} (rules.json sprinkler). Risers inside the trash chute get no sleeve.");
+                    else if (pdf != null)
                         msg.AppendLine("  Plumbing: sizes are not on the plans; each sleeve uses rules.json plumbing.services pipe sizes (check the riser diagram" +
                                        (pdf.Sheets.Any(s => s.HasRiserDiagram) ? $", page {string.Join(", ", pdf.Sheets.Where(s => s.HasRiserDiagram).Select(s => s.Page))}" : "") + ").");
                 }
@@ -576,6 +725,7 @@ namespace SleevesOpenings.Automation.UI
                     var floorLevels = FloorLevels();
                     var legend = pdf?.Legend ?? new SleevesOpenings.Automation.Legend.Legend();
                     var rules = _legendRules; var alignment = Alignment; var profile2 = _profile; var dryerSpacing = _dryerSpacing; var layout = _layout;
+                    var pdfPlans = plans;
                     var warnings = new List<string>();
                     bool readDiagram = _automation.RiserDiagram;
                     RiserDiagramResult diagram = null;
@@ -584,7 +734,8 @@ namespace SleevesOpenings.Automation.UI
                         Assembly = await Task.Run(() =>
                         {
                             PdfCheckResult check = null;
-                            if (pdf != null)
+                            // PDF only: the labels were read from this PDF, there is nothing to check them against
+                            if (pdf != null && pdfPlans == null)
                                 try { check = PdfRiserCheck.Run(pdfPath, pdf, risers); warnings.AddRange(check.Warnings); }
                                 catch (Exception ex) { App.Log("AutoRun PDF label check failed: " + ex); warnings.Add("labels not checked against the PDF: " + ex.Message); }
                             var outlines = cad == null ? null : DuctOutlines.Read(cad, profile2);
@@ -606,6 +757,7 @@ namespace SleevesOpenings.Automation.UI
                             return assembly;
                         });
                         Diagram = diagram;
+                        if (Assembly != null && plans != null) MarkPdfOnly(Assembly, plans);
                     }
                     catch (Exception ex) { msg.AppendLine($"Merging the floors failed: {ex.Message}"); App.Log("AutoRun assembly failed: " + ex); }
                     foreach (var w in warnings) msg.AppendLine("  ! PDF check: " + w);
@@ -641,6 +793,46 @@ namespace SleevesOpenings.Automation.UI
             _fullMessages = msg.ToString().TrimEnd();
             ApplyView();
             _ok.Enabled = (pdf != null || dwg != null) && _floors.Rows.Count > 0;
+        }
+
+        /// <summary>The discipline a sheet-number prefix stands for: P plumbing, SP / FP sprinkler, M / H mechanical; null for any other.</summary>
+        internal static string DisciplineOfSheets(string prefix)
+        {
+            switch ((prefix ?? "").Trim().ToUpperInvariant())
+            {
+                case "P": case "PL": return AutomationInputs.Plumbing;
+                case "SP": case "FP": case "FS": return AutomationInputs.Sprinkler;
+                case "M": case "H": case "HV": case "MH": return AutomationInputs.Mechanical;
+                default: return null;
+            }
+        }
+
+        /// <summary>The most common sheet prefix of the DWG's layouts ("SP-001.00" -> SP); null when the layouts are not numbered.</summary>
+        private static string LayoutPrefix(IEnumerable<string> layouts)
+        {
+            var prefixes = (layouts ?? Enumerable.Empty<string>())
+                .Select(l => System.Text.RegularExpressions.Regex.Match(l ?? "", @"^\s*([A-Za-z]{1,3})\s*-?\s*\d"))
+                .Where(m => m.Success).Select(m => m.Groups[1].Value.ToUpperInvariant()).ToList();
+            return prefixes.GroupBy(p => p).OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault();
+        }
+
+        private static string Word(string discipline) =>
+            discipline == AutomationInputs.Sprinkler ? "sprinkler" : discipline == AutomationInputs.Plumbing ? "plumbing" : "mechanical";
+
+        private string DrawingsTitle() =>
+            Sprinkler ? "2. Engineer drawings — Sprinkler / standpipe (riser and FDC sleeves; recognised by the SP- sheet numbers)"
+          : Plumbing ? "2. Engineer drawings — Plumbing (pipe sleeves; pick the plumbing or the sprinkler set: the sheet numbers say which)"
+                     : "2. Engineer drawings — Mechanical (HV model; a PL model gets the plumbing drawings)";
+
+        /// <summary>The drawings picked are another pipe discipline's (sprinkler set in the PL model): run as that one.</summary>
+        private void Switch(string discipline)
+        {
+            _discipline = discipline;
+            _plumbing = _pipeOptions[discipline];
+            _profile = _plumbing?.Profile ?? _mechanicalProfile;
+            Text = "Sleeves & Openings — Auto Run" + (Plumbing ? $" ({DisciplineWord})" : "");
+            if (_inBox != null) _inBox.Text = DrawingsTitle();
+            App.Log($"AutoRun: drawings recognised as {discipline}");
         }
 
         private static void Describe(PdfSheetIndex pdf, DwgSheetIndex dwg, string pdfPath, string dwgPath, StringBuilder msg, string letter, string word)
@@ -697,7 +889,9 @@ namespace SleevesOpenings.Automation.UI
             {
                 var fa = Alignment?.For(c.Floor);
                 string how = fa?.Status == FloorAlignment.Confirmed ? "lined up by its columns"
-                           : fa?.Usable == true ? "lined up by the pipes stacked on the floor next to it" : "not lined up";
+                           : fa?.Usable == true ? (fa.Notes.Any(n => n.Contains("sheet frame")) ? "lined up in the sheet frame the other floors share"
+                                                                                                  : "lined up by the pipes stacked on the floor next to it")
+                           : "not lined up";
                 c.Pdf = "PDF only";
                 c.Notes.Add($"position from the PDF only (page {plans.For(c.Floor)?.Page}, {how})");
                 if (!_pdfOnly.PlaceWhenPassed && c.Status == Crossing.Place)

@@ -25,6 +25,8 @@ namespace SleevesOpenings.Automation
     {
         public const string Mechanical = "Mechanical";
         public const string Plumbing = "Plumbing";
+        /// <summary>Sprinkler / standpipe sleeves: run from the PL model (the office has no FP model) or a model matching rules.json sprinkler.modelMatch.</summary>
+        public const string Sprinkler = "Sprinkler";
 
         /// <summary>Saved as a floor's level when the user chose not to use that drawing floor.</summary>
         public const string NotUsed = "(not used)";
@@ -36,6 +38,9 @@ namespace SleevesOpenings.Automation
         public Dictionary<string, string> FloorLevels { get; set; } = new Dictionary<string, string>();
 
         public string Existing { get; set; } = ExistingPolicy.KeepAndAddMissing;
+
+        /// <summary>The discipline of the last run in this model (PL model: plumbing or sprinkler): the window opens on its files.</summary>
+        public string LastDiscipline { get; set; }
 
         public DisciplineFiles For(string discipline)
         {

@@ -29,6 +29,8 @@ namespace SleevesOpenings.Rules
         [JsonProperty("automation")] public Automation.AutomationRules Automation { get; set; } = new Automation.AutomationRules();
         /// <summary>Auto Run for the PL model: how the plumbing engineer draws risers, which services get sleeves, sizes.</summary>
         [JsonProperty("plumbing")] public Automation.PlumbingRules Plumbing { get; set; } = new Automation.PlumbingRules();
+        /// <summary>Sprinkler / standpipe Auto Run (same pipeline as plumbing; risers labelled in words with their size).</summary>
+        [JsonProperty("sprinkler")] public Automation.PlumbingRules Sprinkler { get; set; } = global::SleevesOpenings.Automation.PlumbingRules.SprinklerDefaults();
         [JsonProperty("pdfOnly")] public Automation.PdfOnlyRules PdfOnly { get; set; } = new Automation.PdfOnlyRules();
 
         /// <summary>Where this rule set was loaded from (for display/debugging).</summary>

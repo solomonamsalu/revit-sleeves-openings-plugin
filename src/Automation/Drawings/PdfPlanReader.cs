@@ -51,6 +51,11 @@ namespace SleevesOpenings.Automation.Drawings
     /// and the columns of the architectural background. Positions are real inches after the sheet scale printed under the
     /// plan title. The tag numbers inside the bubbles are drawn as strokes, not text: bubbles whose strokes are identical
     /// carry the same tag, so one stack gets one name on every floor (numbered 1, 2, 3... in the order found).
+    /// Sprinkler plans (<c>wordLabels</c> set): no pipe circles or bubbles; each riser is a label written in words
+    /// ('3" SPRINKLER RISER UP/DN') with a leader to it, read as <see cref="SprinklerReader"/> reads the DWG.
+    /// Mechanical plans (the profile names duct layers, no pipe layers): each duct riser is a section mark on a duct layer
+    /// (rectangle or circle crossed by a diagonal), tagged by a bubble on the connector layer with its tag as text (TX / 1),
+    /// sized by a label whose leader points at it ('12X8 DN 12X10 UP'); all go through the DWG reader's own floor grouping.
     /// Free of the Revit API.
     /// </summary>
     public static class PdfPlanReader
@@ -60,14 +65,16 @@ namespace SleevesOpenings.Automation.Drawings
         private class Line { public string Text; public double X0, Y0, X1, Y1, Size; public double Cx => (X0 + X1) / 2; public double Cy => (Y0 + Y1) / 2; }
         private class PageBubble { public double X, Y, R; public List<(double X, double Y)> Glyph; public string Tag; }
 
-        public static PdfPlanResult Read(string path, PdfSheetIndex sheets, DwgProfile profile, PdfOnlyRules rules)
+        public static PdfPlanResult Read(string path, PdfSheetIndex sheets, DwgProfile profile, PdfOnlyRules rules, PlumbingRules wordLabels = null)
         {
             var result = new PdfPlanResult();
             result.Index.Path = path; result.Index.Version = "PDF (vector)"; result.Index.Units = "Inches";
             Regex Rx(string p) => string.IsNullOrWhiteSpace(p) ? null : new Regex(p, RegexOptions.IgnoreCase);
             var pipeLayers = Rx(profile.RiserCircleLayers); var connector = Rx(profile.ConnectorLayers);
             var columnLayers = Rx(rules.ColumnLayers); var fixtureText = Rx(profile.FixtureText);
-            if (pipeLayers == null || connector == null)
+            var ductLayers = Rx(profile.DuctLayers); var leaderLayers = Rx(rules.LeaderLayers);
+            bool mechanical = wordLabels == null && pipeLayers == null && ductLayers != null && connector != null;
+            if (wordLabels == null && !mechanical && (pipeLayers == null || connector == null))
             {
                 result.Warnings.Add("PDF only: the drawing profile names no pipe-circle or leader layers; nothing read.");
                 return result;
@@ -106,6 +113,44 @@ namespace SleevesOpenings.Automation.Drawings
                         result.Warnings.Add($"{FloorKey.Describe(sheet.Floor)} (page {sheet.Page}): no printed scale found; {Ratio(plan.Scale)} assumed (rules.json pdfOnly.defaultScale).");
                     double k = plan.Scale / 72;                              // real inches per PDF point
                     (double X, double Y) Real(PdfPoint p) => (p.X * k, p.Y * k);
+
+                    // ---- columns (architectural background)
+                    if (columnLayers != null)
+                        foreach (var s in shapes.Where(s => columnLayers.IsMatch(s.Layer)))
+                            foreach (var rect in ColumnShapes(s.Path))
+                            {
+                                double a = rect.A * k, b = rect.B * k, x = rect.X * k, y = rect.Y * k;
+                                if (Math.Min(a, b) < rules.ColumnMinSize || Math.Max(a, b) > rules.ColumnMaxSize) continue;
+                                if (plan.Columns.Any(c => Dist(c.X, c.Y, x, y) < 1)) continue;          // outline + hatch, drawn twice
+                                plan.Columns.Add(new PdfColumn { X = x, Y = y, W = rect.W * k, L = rect.L * k });
+                            }
+                    var floorRegion = new DwgFloor
+                    {
+                        Floor = sheet.Floor, Title = sheet.Title, Layout = $"PDF page {sheet.Page}", Scale = (int)Math.Round(plan.Scale),
+                        MinX = 0, MinY = 0, MaxX = page.Width * k, MaxY = page.Height * k
+                    };
+                    if (plan.Columns.Count == 0)
+                        result.Warnings.Add($"{FloorKey.Describe(sheet.Floor)} (page {sheet.Page}): no columns found on the column layers (rules.json pdfOnly.columnLayers).");
+
+                    if (mechanical)
+                    {
+                        // ---- mechanical: section marks, tag bubbles, their connector lines, size labels with leaders
+                        var d = DuctPage(page, shapes, lines, ductLayers, connector, leaderLayers, k, profile, rules);
+                        int before = result.Risers.Risers.Count;
+                        DwgRiserReader.ReadFloor(sheet.Floor, d.Symbols, d.Bubbles, d.Connectors, d.Texts, profile, result.Risers, d.Labels);
+                        foreach (var r in result.Risers.Risers.Skip(before)) r.Evidence.Add($"read from PDF page {sheet.Page} ({Ratio(plan.Scale)})");
+                        result.Index.Floors.Add(floorRegion);
+                        continue;
+                    }
+                    if (wordLabels != null)
+                    {
+                        // ---- sprinkler: labels in words, each with a leader to its riser
+                        var found = SprinklerReader.Join(WordLabels(lines, SprinklerReader.Patterns(wordLabels), k), LabelLeaders(shapes, connector, k),
+                                                         RiserRings(page, k), wordLabels);
+                        SprinklerReader.AddFloor(sheet.Floor, found, result.Risers, $"read from PDF page {sheet.Page} ({Ratio(plan.Scale)})");
+                        result.Index.Floors.Add(floorRegion);
+                        continue;
+                    }
 
                     // ---- pipe circles
                     var symbols = new List<RiserSymbol>();
@@ -165,17 +210,6 @@ namespace SleevesOpenings.Automation.Drawings
                         foreach (var b in bubbles) b.Glyph = Glyph(strokes, b, k);
                     }
 
-                    // ---- columns (architectural background)
-                    if (columnLayers != null)
-                        foreach (var s in shapes.Where(s => columnLayers.IsMatch(s.Layer)))
-                            foreach (var rect in ColumnShapes(s.Path))
-                            {
-                                double a = rect.A * k, b = rect.B * k, x = rect.X * k, y = rect.Y * k;
-                                if (Math.Min(a, b) < rules.ColumnMinSize || Math.Max(a, b) > rules.ColumnMaxSize) continue;
-                                if (plan.Columns.Any(c => Dist(c.X, c.Y, x, y) < 1)) continue;          // outline + hatch, drawn twice
-                                plan.Columns.Add(new PdfColumn { X = x, Y = y, W = rect.W * k, L = rect.L * k });
-                            }
-
                     // ---- text: fixture names at their spot, the rest as notes (service lists attach to the bubbles)
                     var texts = new List<(string Text, double X, double Y)>();
                     foreach (var l in lines)
@@ -186,14 +220,8 @@ namespace SleevesOpenings.Automation.Drawings
                         else texts.Add((l.Text, l.Cx * k, l.Cy * k));
                     }
 
-                    result.Index.Floors.Add(new DwgFloor
-                    {
-                        Floor = sheet.Floor, Title = sheet.Title, Layout = $"PDF page {sheet.Page}", Scale = (int)Math.Round(plan.Scale),
-                        MinX = 0, MinY = 0, MaxX = page.Width * k, MaxY = page.Height * k
-                    });
+                    result.Index.Floors.Add(floorRegion);
                     pages.Add((plan, symbols, polylines, bubbles, texts));
-                    if (plan.Columns.Count == 0)
-                        result.Warnings.Add($"{FloorKey.Describe(sheet.Floor)} (page {sheet.Page}): no columns found on the column layers (rules.json pdfOnly.columnLayers).");
                 }
             }
 
@@ -233,6 +261,298 @@ namespace SleevesOpenings.Automation.Drawings
                     return den == 1 ? $"{Math.Round(num)}\" = 1'-0\"" : $"{Math.Round(num)}/{den}\" = 1'-0\"";
             }
             return $"1:{scale:0.##}";
+        }
+
+        // ------------------------------------------------------------------ sprinkler labels (words, with leaders)
+
+        /// <summary>
+        /// Labels that name a service in words ('3" SPRINKLER RISER UP/DN'), real inches. A label is often printed on two
+        /// lines ('3" SPRINKLER' / 'RISER UP/DN'): lines of one size stacked right under each other, aligned left, right
+        /// or centred, are one label.
+        /// </summary>
+        private static List<SprinklerReader.Label> WordLabels(List<Line> lines, List<Regex> services, double k)
+        {
+            var labels = new List<SprinklerReader.Label>();
+            foreach (var pp in Paragraphs(lines))
+            {
+                string text = SprinklerReader.Normal(string.Join(" ", pp.Select(l => l.Text)));
+                if (!services.Any(rx => rx.IsMatch(text))) continue;
+                double x0 = pp.Min(l => l.X0) * k, x1 = pp.Max(l => l.X1) * k, y0 = pp.Min(l => l.Y0) * k, y1 = pp.Max(l => l.Y1) * k;
+                labels.Add(new SprinklerReader.Label { Text = text, MinX = x0, MaxX = x1, MinY = y0, MaxY = y1, X = (x0 + x1) / 2, Y = (y0 + y1) / 2 });
+            }
+            return labels;
+        }
+
+        /// <summary>
+        /// Leaders on the connector layers (any layer when none is set): stroked lines with a filled arrowhead at one end;
+        /// the tip is the arrowhead's point, the tail the line's other end. Lines without an arrowhead are not leaders.
+        /// </summary>
+        private static List<SprinklerReader.Arrow> LabelLeaders(List<Shape> shapes, Regex connector, double k)
+        {
+            var lines = new List<List<PdfPoint>>(); var heads = new List<List<PdfPoint>>();
+            foreach (var s in shapes.Where(s => connector == null || connector.IsMatch(s.Layer)))
+                foreach (var sub in s.Path)
+                {
+                    var pts = Points(sub);
+                    if (pts.Count < 2) continue;
+                    if (s.Path.IsFilled) { if (pts.Count <= 5) heads.Add(pts); }
+                    else lines.Add(pts);
+                }
+            var arrows = new List<SprinklerReader.Arrow>();
+            foreach (var line in lines)
+                foreach (bool first in new[] { true, false })
+                {
+                    var end = first ? line[0] : line[line.Count - 1];
+                    var head = heads.Select(h => (H: h, D: Dist(h.Average(q => q.X), h.Average(q => q.Y), end.X, end.Y) * k))
+                                    .Where(t => t.D <= 8).OrderBy(t => t.D).Select(t => t.H).FirstOrDefault();
+                    if (head == null) continue;
+                    heads.Remove(head);
+                    var tip = head.OrderByDescending(q => Dist(q.X, q.Y, end.X, end.Y)).First();
+                    var tail = first ? line[line.Count - 1] : line[0];
+                    arrows.Add(new SprinklerReader.Arrow { Tip = (tip.X * k, tip.Y * k), Tail = (tail.X * k, tail.Y * k) });
+                    break;
+                }
+            return arrows;
+        }
+
+        /// <summary>
+        /// Riser symbols anywhere on the page, where a leader's arrow is snapped to: small circles (1-6" radius real), and
+        /// small square filled shapes (2-8" real; a thick-ring symbol is plotted as filled triangles, its X as filled bars).
+        /// </summary>
+        private static List<(double X, double Y, string Layer)> RiserRings(Page page, double k)
+        {
+            var list = new List<(double X, double Y, string Layer)>();
+            foreach (var path in page.Paths)
+            {
+                foreach (var sub in path)
+                {
+                    var ring = Round(Points(sub));
+                    if (ring == null || ring.R * k < 1 || ring.R * k > 6) continue;
+                    list.Add((ring.X * k, ring.Y * k, "(PDF riser symbol)"));
+                }
+                if (!path.IsFilled) continue;
+                var pts = path.SelectMany(Points).ToList();
+                if (pts.Count < 3) continue;
+                double w = (pts.Max(q => q.X) - pts.Min(q => q.X)) * k, h = (pts.Max(q => q.Y) - pts.Min(q => q.Y)) * k;
+                if (w < 2 || w > 8 || h < 2 || h > 8 || Math.Abs(w - h) > 0.25 * Math.Max(w, h)) continue;
+                list.Add(((pts.Max(q => q.X) + pts.Min(q => q.X)) / 2 * k, (pts.Max(q => q.Y) + pts.Min(q => q.Y)) / 2 * k, "(PDF riser symbol)"));
+            }
+            return list;
+        }
+
+        /// <summary>Text lines of one size stacked right under each other, aligned left, right or centred: one paragraph (PDF points).</summary>
+        private static List<List<Line>> Paragraphs(IEnumerable<Line> lines)
+        {
+            var paras = new List<List<Line>>();
+            foreach (var l in lines.OrderByDescending(l => l.Y1))
+            {
+                var para = paras.FirstOrDefault(pp =>
+                {
+                    var last = pp[pp.Count - 1];
+                    double gap = last.Y0 - l.Y1;
+                    return Math.Abs(last.Size - l.Size) < 0.5 && gap >= -0.3 * l.Size && gap <= 0.9 * l.Size &&
+                           (Math.Abs(last.X0 - l.X0) <= 0.6 * l.Size || Math.Abs(last.X1 - l.X1) <= 0.6 * l.Size || Math.Abs(last.Cx - l.Cx) <= 0.6 * l.Size);
+                });
+                if (para == null) paras.Add(new List<Line> { l }); else para.Add(l);
+            }
+            return paras;
+        }
+
+        // ------------------------------------------------------------------ mechanical (duct risers)
+
+        private class DuctShapes
+        {
+            public List<RiserSymbol> Symbols = new List<RiserSymbol>();
+            public List<(string Tag, double X, double Y, double Radius)> Bubbles = new List<(string, double, double, double)>();
+            public List<List<(double X, double Y)>> Connectors = new List<List<(double X, double Y)>>();
+            public List<(string Text, double X, double Y)> Texts = new List<(string, double, double)>();
+            public List<(string Text, double X, double Y, List<(double X, double Y)> Arrows)> Labels = new List<(string, double, double, List<(double, double)>)>();
+        }
+
+        /// <summary>One mechanical floor page, real inches.</summary>
+        private static DuctShapes DuctPage(Page page, List<Shape> shapes, List<Line> lines, Regex ductLayers, Regex connector, Regex leaderLayers,
+                                           double k, DwgProfile profile, PdfOnlyRules rules)
+        {
+            var d = new DuctShapes();
+            (double X, double Y) Real(PdfPoint p) => (p.X * k, p.Y * k);
+
+            // ---- section marks on the duct layers: rectangles / circles crossed by a diagonal
+            var rects = new List<((double X, double Y)[] Corners, string Layer)>();
+            var diagonals = new List<((double X, double Y) A, (double X, double Y) B)>();
+            var circles = new List<(double X, double Y, double R, string Layer)>();
+            foreach (var s in shapes.Where(s => ductLayers.IsMatch(s.Layer)))
+            {
+                var subs = s.Path.Select(Points).Where(p => p.Count >= 2).ToList();
+                var all = subs.SelectMany(p => p).ToList();
+                if (all.Count >= 4)
+                {
+                    // the outline (and its diagonal) traced as one shape: every point on a corner of its box
+                    double x0 = all.Min(p => p.X), x1 = all.Max(p => p.X), y0 = all.Min(p => p.Y), y1 = all.Max(p => p.Y);
+                    bool corners = x1 - x0 > 0.5 && y1 - y0 > 0.5 &&
+                                   all.All(p => (Math.Abs(p.X - x0) < 0.1 || Math.Abs(p.X - x1) < 0.1) && (Math.Abs(p.Y - y0) < 0.1 || Math.Abs(p.Y - y1) < 0.1));
+                    if (corners) rects.Add((new[] { (x0 * k, y0 * k), (x1 * k, y0 * k), (x1 * k, y1 * k), (x0 * k, y1 * k) }, s.Layer));
+                }
+                foreach (var sub in subs)
+                {
+                    // a square's four corners also lie on one circle: only shapes with enough distinct points are round
+                    var ring = sub.Select(q => (Math.Round(q.X, 1), Math.Round(q.Y, 1))).Distinct().Count() >= 6 ? Round(sub) : null;
+                    if (ring != null) { circles.Add((ring.X * k, ring.Y * k, ring.R * k, s.Layer)); continue; }
+                    var c = sub.ToList();
+                    if (c.Count == 5 && Dist(c[0].X, c[0].Y, c[4].X, c[4].Y) < 0.05) c.RemoveAt(4);
+                    if (Rectangle(sub) != null && c.Count == 4) rects.Add((c.Select(Real).ToArray(), s.Layer));
+                    for (int i = 1; i < sub.Count; i++) diagonals.Add((Real(sub[i - 1]), Real(sub[i])));
+                }
+            }
+            d.Symbols = DwgRiserReader.SectionMarks(rects, diagonals, circles, profile, rules.RoundRiserMaxSize);
+
+            // ---- tag bubbles: circles on the connector layer with their tag written inside (TX over 1, ERV over SA)
+            var words = page.GetWords().Where(w => w.Letters.Count > 0).ToList();
+            var rings = new List<(double X, double Y, double R)>();
+            foreach (var s in shapes.Where(s => connector.IsMatch(s.Layer)))
+                foreach (var sub in s.Path)
+                {
+                    var ring = Round(Points(sub));
+                    if (ring == null) continue;
+                    double r = ring.R * k, x = ring.X * k, y = ring.Y * k;
+                    if (r < rules.BubbleMinRadius || r > rules.BubbleMaxRadius || rings.Any(o => Dist(o.X, o.Y, x, y) < 2)) continue;
+                    rings.Add((x, y, r));
+                }
+            foreach (var (x, y, r) in rings)
+            {
+                var inside = words.Where(w => Dist((w.BoundingBox.Left + w.BoundingBox.Right) / 2 * k, (w.BoundingBox.Bottom + w.BoundingBox.Top) / 2 * k, x, y) <= 0.85 * r)
+                                  .OrderByDescending(w => Math.Round(w.BoundingBox.Bottom)).ThenBy(w => w.BoundingBox.Left)
+                                  .Select(w => w.Text.Trim().ToUpperInvariant()).Where(t => t.Length > 0).ToList();
+                if (inside.Count == 0) continue;
+                string tag = inside[0];
+                foreach (var p in inside.Skip(1)) tag += Regex.IsMatch(p, @"^\d") ? p : "-" + p;      // TX + 1 = TX1, ERV + SA = ERV-SA
+                d.Bubbles.Add((tag, x, y, r));
+            }
+
+            // ---- connector lines (the rest of the connector layer), dashes joined back into lines
+            var pieces = new List<List<(double X, double Y)>>();
+            foreach (var s in shapes.Where(s => connector.IsMatch(s.Layer) && !s.Path.IsFilled))
+                foreach (var sub in s.Path)
+                {
+                    var pts = Points(sub);
+                    if (pts.Count < 2 || Round(pts) != null) continue;
+                    var line = pts.Select(Real).ToList();
+                    // a bubble's divider
+                    if (d.Bubbles.Any(b => line.All(q => Dist(q.X, q.Y, b.X, b.Y) <= b.Radius + 0.5))) continue;
+                    pieces.Add(line);
+                }
+            d.Connectors = JoinDashes(pieces, 4);
+
+            // ---- size labels: a leader (line + filled arrowhead) whose tail lands on the text; the rest is free text
+            var bubbleText = new Func<Line, bool>(l => d.Bubbles.Any(b => Dist(l.Cx * k, l.Cy * k, b.X, b.Y) <= b.Radius));
+            var paras = Paragraphs(lines.Where(l => !bubbleText(l))).Select(pp => (Text: string.Join(" ", pp.Select(l => l.Text)),
+                            X0: pp.Min(l => l.X0) * k, X1: pp.Max(l => l.X1) * k, Y0: pp.Min(l => l.Y0) * k, Y1: pp.Max(l => l.Y1) * k)).ToList();
+            var claimed = new HashSet<int>();
+            if (leaderLayers != null)
+            {
+                var leaderLines = new List<List<PdfPoint>>(); var heads = new List<List<PdfPoint>>();
+                foreach (var s in shapes.Where(s => leaderLayers.IsMatch(s.Layer)))
+                    foreach (var sub in s.Path)
+                    {
+                        var pts = Points(sub);
+                        if (pts.Count < 2) continue;
+                        if (s.Path.IsFilled) { if (pts.Select(q => (Math.Round(q.X, 1), Math.Round(q.Y, 1))).Distinct().Count() == 3) heads.Add(pts); }  // triangles, not text masks
+                        else leaderLines.Add(pts);
+                    }
+                // each leader: its arrow tip (at the riser), its tail and its whole line (real inches)
+                var leaders = new List<(List<(double X, double Y)> Line, (double X, double Y) Tip, (double X, double Y) Tail)>();
+                foreach (var line in leaderLines)
+                    foreach (bool first in new[] { true, false })
+                    {
+                        var end = first ? line[0] : line[line.Count - 1];
+                        var head = heads.Select(h => (H: h, D: Dist(h.Average(q => q.X), h.Average(q => q.Y), end.X, end.Y) * k))
+                                        .Where(t => t.D <= 8).OrderBy(t => t.D).Select(t => t.H).FirstOrDefault();
+                        if (head == null) continue;
+                        heads.Remove(head);
+                        var tipPt = head.OrderByDescending(q => Dist(q.X, q.Y, end.X, end.Y)).First();
+                        leaders.Add((line.Select(Real).ToList(), Real(tipPt), Real(first ? line[line.Count - 1] : line[0])));
+                        break;
+                    }
+                // the text at its tail; a leader that ends on another leader (one label, two arrows) shares that one's text
+                var textOf = new Dictionary<int, int>();
+                for (int i = 0; i < leaders.Count; i++)
+                {
+                    var tail = leaders[i].Tail;
+                    double Box((string Text, double X0, double X1, double Y0, double Y1) p) =>
+                        Dist(0, 0, Math.Max(0, Math.Max(p.X0 - tail.X, tail.X - p.X1)), Math.Max(0, Math.Max(p.Y0 - tail.Y, tail.Y - p.Y1)));
+                    var best = paras.Select((p, j) => (I: j, D: Box(p))).Where(t => t.D <= profile.LeaderTextDistance).OrderBy(t => t.D).FirstOrDefault();
+                    if (best.D <= profile.LeaderTextDistance && paras.Count > 0 && Box(paras[best.I]) <= profile.LeaderTextDistance) textOf[i] = best.I;
+                }
+                for (bool grew = true; grew;)
+                {
+                    grew = false;
+                    for (int i = 0; i < leaders.Count; i++)
+                    {
+                        if (textOf.ContainsKey(i)) continue;
+                        var tail = leaders[i].Tail;
+                        foreach (var kv in textOf.ToList())
+                        {
+                            var other = leaders[kv.Key].Line;
+                            bool on = false;
+                            for (int s2 = 1; s2 < other.Count && !on; s2++) on = SegDist(tail, other[s2 - 1], other[s2]) <= 1;
+                            if (!on) continue;
+                            textOf[i] = kv.Value; grew = true;
+                            break;
+                        }
+                    }
+                }
+                foreach (var g in textOf.GroupBy(kv => kv.Value))
+                {
+                    var p = paras[g.Key];
+                    claimed.Add(g.Key);
+                    d.Labels.Add((p.Text, (p.X0 + p.X1) / 2, (p.Y0 + p.Y1) / 2, g.Select(kv => leaders[kv.Key].Tip).ToList()));
+                }
+            }
+            for (int i = 0; i < paras.Count; i++)
+                if (!claimed.Contains(i)) d.Texts.Add((paras[i].Text, (paras[i].X0 + paras[i].X1) / 2, (paras[i].Y0 + paras[i].Y1) / 2));
+            return d;
+        }
+
+        private static double SegDist((double X, double Y) p, (double X, double Y) a, (double X, double Y) b)
+        {
+            double dx = b.X - a.X, dy = b.Y - a.Y, len = dx * dx + dy * dy;
+            double t = len == 0 ? 0 : Math.Max(0, Math.Min(1, ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / len));
+            return Dist(p.X, p.Y, a.X + t * dx, a.Y + t * dy);
+        }
+
+        /// <summary>A dashed line plotted as separate dashes: pieces whose ends meet (within the gap) going the same way are one line.</summary>
+        private static List<List<(double X, double Y)>> JoinDashes(List<List<(double X, double Y)>> pieces, double gap)
+        {
+            var lines = pieces.Select(p => p.ToList()).ToList();
+            (double X, double Y) Dir((double X, double Y) a, (double X, double Y) b)
+            {
+                double l = Dist(a.X, a.Y, b.X, b.Y);
+                return l < 1e-9 ? (0, 0) : ((b.X - a.X) / l, (b.Y - a.Y) / l);
+            }
+            for (bool merged = true; merged;)
+            {
+                merged = false;
+                for (int i = 0; i < lines.Count && !merged; i++)
+                    for (int j = i + 1; j < lines.Count && !merged; j++)
+                    {
+                        var a = lines[i]; var b = lines[j];
+                        foreach (var (ra, rb) in new[] { (false, false), (false, true), (true, false), (true, true) })
+                        {
+                            var A = ra ? Enumerable.Reverse(a).ToList() : a;     // A ends where B starts
+                            var B = rb ? Enumerable.Reverse(b).ToList() : b;
+                            var ae = A[A.Count - 1]; var bs = B[0];
+                            if (Dist(ae.X, ae.Y, bs.X, bs.Y) > gap) continue;
+                            var da = Dir(A[A.Count - 2], ae); var db = Dir(bs, B[Math.Min(1, B.Count - 1)]);
+                            var dj = Dir(ae, bs);
+                            bool straight = da.X * db.X + da.Y * db.Y > 0.995 && (Dist(ae.X, ae.Y, bs.X, bs.Y) < 0.01 || da.X * dj.X + da.Y * dj.Y > 0.995);
+                            if (!straight) continue;
+                            var joined = A.Concat(B.Skip(Dist(ae.X, ae.Y, bs.X, bs.Y) < 0.01 ? 1 : 0)).ToList();
+                            lines[i] = joined; lines.RemoveAt(j);
+                            merged = true;
+                            break;
+                        }
+                    }
+            }
+            return lines;
         }
 
         // ------------------------------------------------------------------ page content by CAD layer

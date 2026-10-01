@@ -43,23 +43,31 @@ namespace SleevesOpenings.Automation
                 var existing = ExistingCheck.Run(doc, rules, state);
                 App.Log($"AutoRun: existing — {existing.Items.Count} item(s), {existing.UnknownFamilies.Values.Sum()} unrecognised");
 
-                // HV model: mechanical drawings, duct openings. PL model: plumbing drawings, pipe sleeves (rules.json "plumbing").
-                string discipline = Discipline(doc, rules);
+                // HV model: mechanical drawings, duct openings. PL model: plumbing drawings, pipe sleeves (rules.json "plumbing"),
+                // or sprinkler drawings, standpipe / FDC sleeves (rules.json "sprinkler"; the office has no FP model).
+                // The model says which disciplines it can run (PL model: plumbing and sprinkler); the drawings picked say
+                // which one this run is (their sheet numbers, P- / SP-), so nobody is asked. Opens on the last one used.
+                var pipeOptions = PipeDisciplines(doc, rules);
+                string discipline = pipeOptions.Count == 0 ? AutomationInputs.Mechanical
+                                  : pipeOptions.ContainsKey(state.Automation.LastDiscipline ?? "") ? state.Automation.LastDiscipline : pipeOptions.Keys.First();
                 bool plumbing = discipline == AutomationInputs.Plumbing;
-                var profile = plumbing ? rules.Plumbing.Profile : rules.DwgProfile;
-                App.Log($"AutoRun: discipline {discipline} (model '{doc.Title}')");
+                var pipeRules = pipeOptions.TryGetValue(discipline, out var pr) ? pr : null;
+                var profile = pipeRules?.Profile ?? rules.DwgProfile;
+                App.Log($"AutoRun: opens as {discipline} (model '{doc.Title}'; can run {(pipeOptions.Count == 0 ? "mechanical" : string.Join(", ", pipeOptions.Keys))})");
 
-                var saved = state.Automation.For(discipline);
-                var modelRefs = CadReferences.Collect(doc, new[] { saved.Xrefs, ReferenceFiles.FindFolder(doc.PathName, profile.ReferenceFolders) });
+                var folders = (pipeOptions.Count == 0 ? new[] { profile } : pipeOptions.Values.Select(o => o.Profile))
+                    .SelectMany(p => new[] { ReferenceFiles.FindFolder(doc.PathName, p.ReferenceFolders) })
+                    .Concat((pipeOptions.Count == 0 ? new[] { discipline } : pipeOptions.Keys.ToArray()).Select(d => state.Automation.For(d).Xrefs)).ToList();
+                var modelRefs = CadReferences.Collect(doc, folders);
                 App.Log($"AutoRun: {modelRefs.Count} DWG(s) imported/linked in the model: " +
                         string.Join(", ", modelRefs.Select(r => $"{r.Name} [{r.Method}, level {r.Level ?? "-"}, {(r.Path != null ? "file found" : r.Problem)}]")));
 
                 var revitGrids = RevitGrids.Collect(doc);
                 App.Log($"AutoRun: {revitGrids.Revit.Count} straight grid(s) from {revitGrids.RevitSource}: {string.Join(", ", revitGrids.Revit.Select(g => g.Name))}");
 
-                // PDF only (plumbing, no DWG): the plans are lined up by their columns against the model's columns
+                // PDF only (no DWG; plumbing, sprinkler or mechanical): the plans are lined up by their columns against the model's columns
                 RevitColumns columns = null;
-                if (plumbing && rules.PdfOnly.Enabled)
+                if (rules.PdfOnly.Enabled)
                 {
                     columns = RevitColumnCollector.Collect(doc, rules, levels);
                     App.Log($"AutoRun: {columns.Columns.Count} column(s) in the model for PDF-only alignment ({columns.Source})");
@@ -69,19 +77,23 @@ namespace SleevesOpenings.Automation
                 RiserDiagramResult diagram; SoCompareResult soCompare; SoSetResult soSet;
                 using (var form = new AutoRunForm(existing, state.Automation, levels, rules.Legend, profile, modelRefs, revitGrids, doc.PathName,
                                                   rules.Systems.DryerExhaust.MinSpacing, rules.Automation, c => AutoPlacer.OpeningSize(rules, c),
-                                                  plumbing ? (Action<RiserAssembly>)null
+                                                  pipeRules != null ? (Action<RiserAssembly>)null
                                                   : a => OpeningLayout.Apply(a, c => AutoPlacer.OpeningSize(rules, c), rules.Clearances.ErvFloorCenterToCenter,
                                                                            rules.Clearances.ErvSpacingExact, rules.Systems.DryerExhaust.Diameter,
                                                                            rules.Systems.DryerExhaust.ShaftOpening,
                                                                            firstNumberEastWest: rules.Systems.Exhaust.FirstNumberEastWest),
-                                                  discipline, plumbing ? rules.Plumbing : null, columns, rules.PdfOnly,
-                                                  plumbing ? a => FixtureSleeveLocator.Apply(doc, a, rules.Plumbing) : null))
+                                                  discipline, pipeRules, columns, rules.PdfOnly,
+                                                  pipeOptions.ContainsKey(AutomationInputs.Plumbing) ? a => FixtureSleeveLocator.Apply(doc, a, rules.Plumbing) : null,
+                                                  pipeOptions))
                 {
                     if (form.ShowDialog(SleevesOpenings.UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
                     pdf = form.Pdf; dwg = form.Dwg; risersFound = form.Risers?.Risers.Count ?? 0;
                     alignment = form.Alignment; assembly = form.Assembly; mark = form.MarkAnchors; place = form.PlaceNow;
                     diagram = form.Diagram; soCompare = form.SoCompare; soSet = form.SoSet; pdfPlans = form.PdfPlans;
+                    discipline = form.Discipline;
                 }
+                state.Automation.LastDiscipline = discipline;
+                App.Log($"AutoRun: discipline {discipline} (from the drawings picked)");
 
                 using (var t = new Transaction(doc, "Sleeves & Openings: Auto Run inputs"))
                 {
@@ -253,14 +265,25 @@ namespace SleevesOpenings.Automation
             }
         }
 
-        /// <summary>Plumbing when the model's name matches rules.json plumbing.modelMatch ("24 Skillman PL"), else mechanical.</summary>
-        internal static string Discipline(Document doc, RuleSet rules)
+        /// <summary>
+        /// The pipe disciplines the model can run, with their rules: a PL model (rules.json plumbing.modelMatch) or a sprinkler
+        /// model (sprinkler.modelMatch) runs plumbing and sprinkler / standpipe (the office has no FP model: those sleeves
+        /// go in the PL model); which one a run is comes from the drawings' sheet numbers. Empty = mechanical (HV) model.
+        /// </summary>
+        internal static Dictionary<string, PlumbingRules> PipeDisciplines(Document doc, RuleSet rules)
         {
-            string pattern = rules.Plumbing?.ModelMatch;
             string name = System.IO.Path.GetFileNameWithoutExtension(doc.PathName ?? "");
             if (string.IsNullOrEmpty(name)) name = doc.Title ?? "";
-            return !string.IsNullOrEmpty(pattern) && System.Text.RegularExpressions.Regex.IsMatch(name, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-                ? AutomationInputs.Plumbing : AutomationInputs.Mechanical;
+            bool Is(string pattern) => !string.IsNullOrEmpty(pattern) &&
+                                       System.Text.RegularExpressions.Regex.IsMatch(name, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            bool sprinkler = rules.Sprinkler != null && rules.Sprinkler.Enabled;
+            var options = new Dictionary<string, PlumbingRules>();
+            if (Is(rules.Plumbing?.ModelMatch) || (sprinkler && Is(rules.Sprinkler.ModelMatch)))
+            {
+                options[AutomationInputs.Plumbing] = rules.Plumbing;
+                if (sprinkler) options[AutomationInputs.Sprinkler] = rules.Sprinkler;
+            }
+            return options;
         }
 
         /// <summary>Final Check on the openings one run placed (issues touching them); safe fixes (size, name, riser id) applied once, then checked again.</summary>

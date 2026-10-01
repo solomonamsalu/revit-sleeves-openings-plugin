@@ -312,6 +312,32 @@
     "namePattern": "{service}-{riser}"
   },
 
+  "sprinkler": {
+    "_comment": "Auto Run for sprinkler / standpipe sleeves. The office has no FP model: Auto Run in the PL model asks 'Plumbing' or 'Sprinkler / standpipe' (enabled = false hides the question); a model matching modelMatch goes straight to sprinkler. Same pipeline as plumbing, but the fire protection engineer labels each pipe in words with its size and a leader to its riser symbol: '3\" SPRINKLER RISER UP/DN', '2\" SPRINKLER CHUTE RISER UP/DN', '4\" FDC DN'. services.*.match = regex on that label; the size in the label is the pipe size (services.*.pipe only when none is written). UP = the slab above, DN = this floor's slab; a label with neither (the roof's '3\" SPRINKLER RISER W/ INSPECTOR TEST TEE') = the pipe ends on this floor (unmarked = DN), placed only when the floor below sends it up, else review. Sleeve = pipe + sleeveOverPipe rounded up to sleeveSizes (manual: standpipe = pipe + 2\"), MPI sleeve 'Fire' toggle. Chute risers run inside the garbage chute opening: no sleeve, listed. Lined up by the per-floor Xref SPR drawings (referenceFolders), checked on the risers labelled there. PDF only (leave the DWG empty): the same labels and leaders read from the vector PDF, lined up by the columns as for plumbing (rules.json pdfOnly). Inches.",
+    "enabled": true,
+    "modelMatch": "(\\bFP(\\b|_)|\\bSP(\\b|_)|SPRINK|FIRE\\s*PROT)",
+    "dwgProfile": {
+      "_connectorLayers": "PDF only: the layers the leaders are drawn on (a line with a filled arrowhead). The DWG route reads every LEADER entity whatever its layer.",
+      "connectorLayers": "^SPR$|LEADER",
+      "leaderTextDistance": 12,
+      "pointTolerance": 6,
+      "referenceFolders": "^XREF\\s*-?\\s*(SPR|SP|FP|SPRINK\\w*|FIRE\\w*)$",
+      "gridFiles": "\\bGRID"
+    },
+    "services": {
+      "CHUTE": { "system": "Standpipe", "match": "CHUTE\\s+RISER|SPRINKLER\\s+CHUTE", "sleeve": false, "pipe": 1,
+                 "note": "sprinkler riser inside the trash chute: it goes through the chute opening, no sleeve" },
+      "SP": { "system": "Standpipe", "match": "(SPRINKLER|STANDPIPE|COMBINED|COMBINATION)\\s+(&\\s+STANDPIPE\\s+)?RISER|\\bSTANDPIPE\\b", "sleeve": true, "pipe": 3 },
+      "FDC": { "system": "Standpipe", "match": "\\bFDC\\b", "sleeve": true, "pipe": 4 }
+    },
+    "unmarked": "DN",
+    "fixtureSleeves": "off",
+    "sleeveOverPipe": 2,
+    "sleeveSizes": [ 3, 4, 5, 6, 8, 10 ],
+    "skipLowestSlab": true,
+    "namePattern": "{service}-{riser}"
+  },
+
   "adopt": {
     "_comment": "Setup > Adopt Existing: stamps openings/sleeves that were placed by hand so Final Check, Riser Manager, Propagate and Schedule see them. All regexes are case-insensitive. System is decided in this order: 1. nameToSystem on the label (nameParams) and on the type name; 2. for checkbox-sized sleeves, the prefix of the toggle that is ON via togglePrefixToSystem; 3. the matcher's default system. Systems the manual sizes (Exhaust, GarbageChute, DryerExhaust, MotorizedDamper, Refrigeration, Electrical, Storm, AreaDrain, Condensate, Standpipe, Bathtub, Toilet, ERV) get size checks; any other name (Sanitary, Vent, ColdWater, HotWater, Gas...) is still checked for structure, wall edges, overlaps and riser continuity.",
     "matchers": [

@@ -178,6 +178,29 @@ namespace SleevesOpenings.Automation.Alignment
                     }
                 }
             }
+
+            // ---- a floor still not lined up (a roof page with no columns and too few pipes to stack: sprinkler): the
+            //      engineer plots every floor in the same sheet frame. When most confirmed floors land the same way (same
+            //      turn, page origin within the stack tolerance), that frame is this page's too.
+            {
+                var confirmed = result.Floors.Where(f => f.Status == FloorAlignment.Confirmed && fits.ContainsKey(f)).ToList();
+                bool Same(Fit a, Fit b) => Math.Abs(Angle(a.Angle - b.Angle)) <= Math.PI / 1800 &&
+                                           Math.Sqrt(Math.Pow(a.Tx - b.Tx, 2) + Math.Pow(a.Ty - b.Ty, 2)) <= rules.StackTolerance;
+                var frame = confirmed.Select(f => (F: f, N: confirmed.Count(o => Same(fits[o], fits[f])))).OrderByDescending(t => t.N).FirstOrDefault();
+                if (frame.F != null && frame.N >= AlignmentResult.AnchorCount && frame.N * 3 >= confirmed.Count * 2)
+                    foreach (var fa in result.Floors.Where(f => !f.Usable && f.Reference != null && f.Status != FloorAlignment.NotConfirmed))
+                    {
+                        var nf = fits[frame.F];
+                        var f = new Fit { Cos = nf.Cos, Sin = nf.Sin, Tx = nf.Tx, Ty = nf.Ty };
+                        fits[fa] = f;
+                        fa.Map = new PlanMap { Scale = 1.0 / 12, Cos = f.Cos, Sin = f.Sin, Ox = f.Tx / 12, Oy = f.Ty / 12 };
+                        fa.Shift = new FloorShift { Support = frame.N, Names = frame.N };
+                        fa.Status = FloorAlignment.AgreesWithOthers;
+                        fa.RevitProven = frame.F.RevitProven;
+                        fa.Notes.Add($"lined up in the sheet frame {frame.N} of the {confirmed.Count} column-confirmed floors share " +
+                                     $"(their pages land within {rules.StackTolerance:0.#}\" of each other): the engineer plotted every floor the same way");
+                    }
+            }
             foreach (var fa in result.Floors.Where(f => f.Map != null))
             {
                 var below = Neighbours(result, fa).FirstOrDefault(n => FloorKey.Order(n.Floor) < FloorKey.Order(fa.Floor) && n.Map != null);
@@ -204,7 +227,7 @@ namespace SleevesOpenings.Automation.Alignment
             result.RevitProven = usable.Count > 0 && usable.All(f => f.RevitProven);
             result.RevitSummary = usable.Count == 0 ? "no floor lined up by its columns"
                 : $"{usable.Count(f => f.Status == FloorAlignment.Confirmed)} floor(s) lined up by their columns on the model's columns ({revit.Source ?? "model"})" +
-                  (usable.Any(f => f.Status == FloorAlignment.AgreesWithOthers) ? $", {usable.Count(f => f.Status == FloorAlignment.AgreesWithOthers)} by their stacked pipes" : "");
+                  (usable.Any(f => f.Status == FloorAlignment.AgreesWithOthers) ? $", {usable.Count(f => f.Status == FloorAlignment.AgreesWithOthers)} by their stacked pipes or the shared sheet frame" : "");
 
             result.Messages.Add($"PDF only: {usable.Count} of {result.Floors.Count} floor(s) lined up with Revit by their columns.");
             foreach (var f in result.Floors.Where(f => !f.Usable))

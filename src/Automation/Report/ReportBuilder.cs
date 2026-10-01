@@ -74,7 +74,7 @@ namespace SleevesOpenings.Automation.Report
                 report.Rows.Add(new ReportRow
                 {
                     Section = ReportRow.Reported, Floor = i.Floor, Tag = i.Tag, Result = i.Type, Notes = i.Detail, X = i.X, Y = i.Y, Attention = true,
-                    Level = assembly.Crossings.FirstOrDefault(c => c.Floor == i.Floor && c.Level != null)?.Level
+                    Level = i.Level ?? assembly.Crossings.FirstOrDefault(c => c.Floor == i.Floor && c.Level != null)?.Level
                 });
 
             foreach (var m in so?.Matches.Where(m => m.Ours == null) ?? Enumerable.Empty<SoMatch>())

@@ -200,11 +200,13 @@ namespace SleevesOpenings.Automation
             var s = _rules.Systems;
             double roof = c.Roof ? s.Exhaust.RoofIncreaseTotal : 0;
             OpeningSpec spec;
-            if (_rules.Plumbing != null && _rules.Plumbing.IsPipeSystem(c.System) && c.Size?.Diameter != null)
+            var pipes = _rules.Plumbing != null && _rules.Plumbing.IsPipeSystem(c.System) ? _rules.Plumbing
+                      : _rules.Sprinkler != null && _rules.Sprinkler.IsPipeSystem(c.System) ? _rules.Sprinkler : null;
+            if (pipes != null && c.Size?.Diameter != null)
             {
-                // plumbing (PL model): a round MPI sleeve, pipe + 2" rounded up to the next sleeve size; named "S-P3"
+                // plumbing / sprinkler: a round MPI sleeve, pipe + 2" rounded up to the next sleeve size; named "S-P3", "SP-1"
                 var pipeKind = Enum.TryParse(c.System, out SystemKind pk) ? pk : SystemKind.Sanitary;
-                spec = OpeningSpec.Round(pipeKind, _rules.Plumbing.SleeveFor(c.Size.Diameter.Value), c.Tag);
+                spec = OpeningSpec.Round(pipeKind, pipes.SleeveFor(c.Size.Diameter.Value), c.Tag);
                 spec.Riser = c.Tag;
                 return spec;
             }

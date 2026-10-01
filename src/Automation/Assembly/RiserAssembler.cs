@@ -57,9 +57,10 @@ namespace SleevesOpenings.Automation.Assembly
     {
         public const string TagMissing = "tag missing", Undefined = "undefined tag", Decision = "needs a decision",
                             NoSize = "no size label", Loose = "bubble not connected", Top = "no floor above", OnlyPdf = "only in the PDF",
-                            OnlyDiagram = "only in the riser diagram";
+                            OnlyDiagram = "only in the riser diagram", NotSleeved = "no sleeve";
         public string Floor, Tag, Type, Detail;
         public double? X, Y;                 // Revit (feet), when the floor is lined up
+        public string Level;                 // Revit level of the floor (the review list zooms in its view), when matched
     }
 
     public class RiserAssembly

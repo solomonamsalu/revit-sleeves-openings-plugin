@@ -130,7 +130,8 @@ namespace SleevesOpenings.Automation.Alignment
 
         public static AlignmentResult Run(CadDocument engineer, DwgSheetIndex index, DwgRiserResult risers, DwgProfile profile,
                                           IList<ReferenceDrawing> references, IDictionary<string, string> floorLevels,
-                                          IList<ExistingPoint> existing, GridInputs grids = null, double riserTolerance = 6)
+                                          IList<ExistingPoint> existing, GridInputs grids = null, double riserTolerance = 6,
+                                          Func<CadDocument, List<RiserSymbol>> referenceRisers = null)
         {
             var result = new AlignmentResult();
             var blocks = Points(engineer, profile);
@@ -144,7 +145,7 @@ namespace SleevesOpenings.Automation.Alignment
                     var cad = DwgSheetIndex.Open(path);
                     cache[path] = l = new Loaded
                     {
-                        Blocks = Points(cad, profile), Risers = DwgRiserReader.Symbols(cad, profile), Extents = DwgAlignment.Extents(cad),
+                        Blocks = Points(cad, profile), Risers = referenceRisers?.Invoke(cad) ?? DwgRiserReader.Symbols(cad, profile), Extents = DwgAlignment.Extents(cad),
                         Units = cad.Header.InsUnits.ToString()
                     };
                     l.FeetPerUnit = PlanMap.FeetPerUnit(l.Units);

@@ -20,25 +20,45 @@ namespace SleevesOpenings.Automation.Assembly
     public static class PipeAssembler
     {
         public const string NotSleeved = "not sleeved";
+        private const string UnmarkedDir = "no UP/DN written: ends on this floor (rules.json unmarked)";
 
         /// <summary>One service line of a group's text: "S UP &amp; DN".</summary>
         public class ServiceLine
         {
             public string Service, Text;
             public bool Up, Down, Through;
+            /// <summary>Pipe size written in the label ('3" SPRINKLER RISER UP/DN'), inches; null when none.</summary>
+            public double? Pipe;
+            /// <summary>No UP, DN or THRU written; read as this floor's slab (rules.json unmarked = "DN").</summary>
+            public bool Unmarked;
         }
 
-        /// <summary>The service lines of a riser's text; lines that do not start with a known service are ignored.</summary>
+        /// <summary>
+        /// The service lines of a riser's text; lines that do not start with a known service (or, for services written in
+        /// words, match none of their 'match' patterns) are ignored.
+        /// </summary>
         public static List<ServiceLine> Parse(IEnumerable<string> texts, PlumbingRules rules)
         {
             var list = new List<ServiceLine>();
             foreach (var line in texts.SelectMany(t => (t ?? "").Split('\n')).Select(l => Regex.Replace(l, @"\s+", " ").Trim().ToUpperInvariant()))
             {
+                string svc, rest;
                 var m = Regex.Match(line, @"^(?<svc>[A-Z]{1,4})\b\s*(?<rest>.*)$");
-                if (!m.Success || !rules.Services.ContainsKey(m.Groups["svc"].Value)) continue;
-                string rest = m.Groups["rest"].Value;
-                bool Has(IEnumerable<string> words) => words.Any(w => Regex.IsMatch(rest, $@"(?<![\w-]){Regex.Escape(w)}\b"));
-                var s = new ServiceLine { Service = m.Groups["svc"].Value, Text = line, Up = Has(rules.UpWords), Down = Has(rules.DownWords), Through = Has(rules.ThroughWords) };
+                if (m.Success && rules.Services.ContainsKey(m.Groups["svc"].Value)) { svc = m.Groups["svc"].Value; rest = m.Groups["rest"].Value; }
+                else
+                {
+                    // written in words: the matched words are not direction words ("SPRINKLER RISER" is not "RISE(R)" = UP)
+                    svc = rules.ServiceForLabel(line, out var words);
+                    if (svc == null) continue;
+                    rest = line.Remove(words.Index, words.Length).Insert(words.Index, " ");
+                }
+                bool Has(IEnumerable<string> ws) => ws.Any(w => Regex.IsMatch(rest, $@"(?<![\w-]){Regex.Escape(w)}\b"));
+                var s = new ServiceLine { Service = svc, Text = line, Up = Has(rules.UpWords), Down = Has(rules.DownWords), Through = Has(rules.ThroughWords) };
+                var size = Regex.Match(line, @"(?<![\d./-])(?<whole>\d{1,2})(?:[ -](?<num>\d)/(?<den>\d))?\s*(""|''|IN\b)");
+                if (size.Success)
+                    s.Pipe = int.Parse(size.Groups["whole"].Value) +
+                             (size.Groups["num"].Success ? double.Parse(size.Groups["num"].Value) / double.Parse(size.Groups["den"].Value) : 0);
+                if (!s.Up && !s.Down && !s.Through && string.Equals(rules.Unmarked, "DN", StringComparison.OrdinalIgnoreCase)) s.Down = s.Unmarked = true;
                 if (!list.Any(x => x.Service == s.Service)) list.Add(s);
             }
             return list;
@@ -83,24 +103,32 @@ namespace SleevesOpenings.Automation.Assembly
                 foreach (var line in lines)
                 {
                     var svc = rules.Services[line.Service];
-                    if (!svc.Sleeve) { result.NotRisers++; continue; }
-                    var circle = circles.Where(c => c.Service == line.Service).Select(c => c.S).FirstOrDefault();
-                    var pos = circle != null ? At(circle.X, circle.Y) : At(r.X, r.Y);
                     string name = rules.Name(line.Service, tag);
+                    if (!svc.Sleeve)
+                    {
+                        result.NotRisers++;
+                        if (!string.IsNullOrEmpty(svc.Note)) Issue(result, r.Floor, name, At(r.X, r.Y), AssemblyIssue.NotSleeved, $"'{line.Text}': {svc.Note}");
+                        continue;
+                    }
+                    // a pipe labelled on its own (sprinkler: one leader per riser) is the one symbol drawn there
+                    var circle = circles.Where(c => c.Service == line.Service).Select(c => c.S).FirstOrDefault()
+                                 ?? (lines.Count == 1 && r.Symbols.Count == 1 ? r.Symbols[0] : null);
+                    var pos = circle != null ? At(circle.X, circle.Y) : At(r.X, r.Y);
                     Crossing Make(string slab, string dir)
                     {
                         var c = new Crossing
                         {
-                            Floor = slab, Tag = name, System = svc.System, Size = new DuctSize { Diameter = svc.Pipe },
+                            Floor = slab, Tag = name, System = svc.System, Size = new DuctSize { Diameter = line.Pipe ?? svc.Pipe },
                             X = pos?.X ?? 0, Y = pos?.Y ?? 0, HasPosition = pos.HasValue, Roof = slab == FloorKey.Roof
                         };
                         c.From.Add($"{FloorKey.Describe(r.Floor)}: {tag ?? "(no tag)"} '{line.Text}' ({dir})");
                         c.Plans.Add(r.Floor);
+                        if (line.Pipe != null) c.Notes.Add($"pipe size {Units.FormatInches(line.Pipe.Value)} from the label");
                         if (circle == null) c.Notes.Add($"no {line.Service} circle drawn in the {tag} group on the {FloorKey.Describe(r.Floor)} plan; placed at the group's centre");
                         if (!pos.HasValue) c.Notes.Add($"{FloorKey.Describe(r.Floor)} is not lined up with Revit");
                         return c;
                     }
-                    if (line.Down || line.Through) raw.Add(Make(r.Floor, line.Through ? "THRU" : "DN"));
+                    if (line.Down || line.Through) raw.Add(Make(r.Floor, line.Through ? "THRU" : line.Unmarked ? UnmarkedDir : "DN"));
                     if (line.Up)
                     {
                         var up = Above(r.Floor);
@@ -133,11 +161,19 @@ namespace SleevesOpenings.Automation.Assembly
                 bool own = c.Plans.Contains(c.Floor), fromBelow = c.Plans.Contains(Below(c.Floor) ?? "");
                 c.Confidence = own && fromBelow ? "high" : "medium";
                 c.Pdf = "not checked";
-                c.Notes.Add($"pipe size {Units.FormatInches(c.Size.Diameter.Value)} from rules.json (the plans carry no sizes; check the riser diagram)");
+                if (!c.Notes.Any(n => n.StartsWith("pipe size")))
+                    c.Notes.Add($"pipe size {Units.FormatInches(c.Size.Diameter.Value)} from rules.json (the plans carry no sizes; check the riser diagram)");
                 if (!own && fromBelow)
                 {
                     c.Status = Crossing.Review;
                     c.Notes.Add($"only the {FloorKey.Describe(Below(c.Floor))} plan shows it (UP); the {FloorKey.Describe(c.Floor)} plan does not list it");
+                }
+                else if (own && !fromBelow && c.From.All(f => f.Contains(UnmarkedDir)))
+                {
+                    // a label with no UP/DN is trusted only as the top of a pipe the floor below sends up (a note about
+                    // the FDC on the facade, a valve...)
+                    c.Status = Crossing.Review;
+                    c.Notes.Add($"the label says neither UP nor DN and the {FloorKey.Describe(Below(c.Floor) ?? "floor below")} plan does not send this pipe up");
                 }
                 else if (own && !fromBelow && Below(c.Floor) != null && c.Floor != lowest)
                     c.Notes.Add($"not listed UP on the {FloorKey.Describe(Below(c.Floor))} plan");
@@ -187,6 +223,7 @@ namespace SleevesOpenings.Automation.Assembly
             result.Crossings = result.Crossings.OrderBy(c => FloorKey.Order(c.Floor)).ThenBy(c => c.Status == Crossing.Review && c.Confidence == "low" ? 1 : 0)
                                                .ThenBy(c => c.Tag ?? "~").ToList();
             result.Issues = result.Issues.OrderBy(i => FloorKey.Order(i.Floor)).ThenBy(i => i.Type).ToList();
+            foreach (var i in result.Issues) if (i.Floor != null) floorLevels.TryGetValue(i.Floor, out i.Level);
             return result;
         }
 
