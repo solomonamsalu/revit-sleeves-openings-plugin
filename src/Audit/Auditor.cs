@@ -41,10 +41,28 @@ namespace SleevesOpenings.Audit
         private readonly List<AuditIssue> _issues = new List<AuditIssue>();
         private readonly Dictionary<ElementId, WallGeometry> _walls = new Dictionary<ElementId, WallGeometry>();
 
-        public Auditor(Document doc, RuleSet rules, ProjectState state, LevelMap levels)
+        /// <param name="serving">Sleeves already in the model that an Auto Run used for its risers (element id -> riser name): they
+        /// take part in the riser checks under that name, read only (hand-placed ones are described as Adopt Existing would).</param>
+        public Auditor(Document doc, RuleSet rules, ProjectState state, LevelMap levels, IDictionary<long, string> serving = null)
         {
             _doc = doc; _rules = rules; _state = state; _levels = levels;
             _openings = RiserIndex.AllOpenings(doc);
+            if (serving != null && serving.Count > 0)
+            {
+                foreach (var o in _openings)
+                    if (serving.TryGetValue(o.Instance.Id.Value, out var riser)) o.RiserOverride = riser;
+                var known = new HashSet<long>(_openings.Select(o => o.Instance.Id.Value));
+                if (serving.Keys.Any(id => !known.Contains(id)))
+                    foreach (var c in new SleevesOpenings.Setup.Adopter(doc, rules, state).Scan().Candidates)
+                    {
+                        if (c.Level == null || c.Point == null || known.Contains(c.Instance.Id.Value) || !serving.TryGetValue(c.Instance.Id.Value, out var riser)) continue;
+                        _openings.Add(new OpeningRecord
+                        {
+                            Instance = c.Instance, Level = c.Level, Point = c.Point, RiserOverride = riser,
+                            Data = new OpeningData { System = c.System, Riser = riser, Label = c.Label, Width = c.Width, Length = c.Length, Diameter = c.Diameter, Level = c.Level.Name, Adopted = true }
+                        });
+                    }
+            }
         }
 
         public int OpeningCount => _openings.Count;
@@ -245,7 +263,7 @@ namespace SleevesOpenings.Audit
                         double gap = Gap(a, b);
                         double cc = CenterDist(a, b);
 
-                        if (gap < 0)
+                        if (gap < 0 && !FixturePair(a, b, cc))
                             Add(Severity.Error, "Overlap", $"Overlaps {b.Riser ?? b.Data.Label} on {level.Name}", a, b);
 
                         bool bothDryer = a.Data.System == "DryerExhaust" && b.Data.System == "DryerExhaust";
@@ -273,11 +291,43 @@ namespace SleevesOpenings.Audit
                         {
                             // an area-drain pair: intentionally 2'-0" c-c, exempt from rule 59
                         }
+                        else if (SamePipeGroup(a, b))
+                        {
+                            // the pipes of one plumbing group (S-6, V-6, ST-6, G-6): the engineer draws them as one row in the
+                            // chase; their sleeves sit side by side, rule 59 is about separate roof openings
+                        }
                         else if (gap >= 0 && gap < c.RoofMinBetweenOpenings)
                             Add(Severity.Warning, "Rule 59", $"Roof openings {Units.FormatInches(gap)} apart (min {Units.FormatInches(c.RoofMinBetweenOpenings)})", a, b);
                     }
                 }
             }
+        }
+
+        /// <summary>Two pipe sleeves (plumbing services) of one group: "S-6" and "V-6", "ST-D1#1" and "ST-D1#2".</summary>
+        private bool SamePipeGroup(OpeningRecord a, OpeningRecord b)
+        {
+            var pipes = _rules.Plumbing?.Services?.Values.Select(v => v.System).ToList();
+            if (pipes == null || !pipes.Contains(a.Data.System) || !pipes.Contains(b.Data.System)) return false;
+            string Group(string riser)
+            {
+                if (string.IsNullOrEmpty(riser)) return null;
+                int i = riser.IndexOf('-'), hash = riser.IndexOf('#');
+                string g = i >= 0 ? riser.Substring(i + 1) : riser;
+                return hash > i ? g.Substring(0, hash - i - 1) : g;
+            }
+            string ga = Group(a.Riser);
+            return ga != null && ga == Group(b.Riser);
+        }
+
+        /// <summary>A fixture code from rules.json plumbing.fixtures (WC, BT, KS...): the riser id of fixture sleeves.</summary>
+        private bool IsFixture(string riser) => riser != null && (_rules.Plumbing?.Fixtures?.ContainsKey(riser) ?? false);
+
+        /// <summary>The sleeves of one fixture laid out together (a tub's two 6" sleeves 6" c-c touch by design): not an overlap.</summary>
+        private bool FixturePair(OpeningRecord a, OpeningRecord b, double cc)
+        {
+            if (a.Riser == null || a.Riser != b.Riser || !IsFixture(a.Riser)) return false;
+            var f = _rules.Plumbing.Fixtures[a.Riser];
+            return f.Count > 1 && f.Spacing > 0 && Near(cc, f.Spacing, 0.5);
         }
 
         // ------------------------------------------------------------------ 4. riser continuity
@@ -286,9 +336,14 @@ namespace SleevesOpenings.Audit
         {
             var lowest = _levels.Lowest?.Level;
             var roof = _levels.MainRoof?.Level;
+            // the lowest slab is on grade (rules.json plumbing.skipLowestSlab): pipes leave the building at the ceiling of the
+            // lowest floor (storm main, detention tank), so a riser whose last sleeve is in the slab above it is complete
+            bool onGrade = lowest != null && (_rules.Plumbing?.SkipLowestSlab ?? false);
 
             foreach (var r in RiserIndex.Group(_openings))
             {
+                // fixture sleeves (WC, LAV, BT, KS...) share their fixture's code on every floor: they are not one riser
+                if (IsFixture(r.Riser)) continue;
                 var top = r.Top;
                 var others = r.Openings.Except(new[] { top }).ToArray();
                 _state.RiserEnds.TryGetValue(r.Riser, out var declared);
@@ -327,9 +382,13 @@ namespace SleevesOpenings.Audit
                 switch (r.System)
                 {
                     case "Storm": case "AreaDrain": case "Condensate": case "Standpipe":
-                        if (lowest != null && r.Bottom.Level.Id != lowest.Id && declared?.Bottom != r.Bottom.Level.Name)
+                        // a roof / terrace drain's leader (ST-D1#1, named by Auto Run) joins a stack's storm pipe on the way down
+                        if (System.Text.RegularExpressions.Regex.IsMatch(r.Riser, @"-D\d+(#\d+)?$")) break;
+                        // slab on grade: the system's lowest sleeved slab in the model is where its risers end
+                        var lowestSleeved = onGrade ? _openings.Where(o => o.Data.System == r.System).Select(o => o.Level).OrderBy(l => l.Elevation).FirstOrDefault() ?? lowest : lowest;
+                        if (lowest != null && r.Bottom.Level.Id != lowest.Id && r.Bottom.Level.Id != lowestSleeved.Id && declared?.Bottom != r.Bottom.Level.Name)
                             Add(Severity.Warning, r.System == "Standpipe" ? "Standpipe" : r.System == "Condensate" ? "Condensate 7" : "Storm 12",
-                                $"Riser {r.Riser} stops at {r.Bottom.Level.Name}; expected to continue to the lowest level ({lowest.Name}). If this is intended, set it in Riser Manager.", r.Bottom);
+                                $"Riser {r.Riser} stops at {r.Bottom.Level.Name}; expected to continue to {(lowestSleeved.Id == lowest.Id ? $"the lowest level ({lowest.Name})" : $"{lowestSleeved.Name} (the lowest slab with sleeves; the slab on grade below gets none)")}. If this is intended, set it in Riser Manager.", r.Bottom);
                         break;
                     case "GarbageChute": case "Exhaust": case "ERV":
                         if (roof != null && top.Level.Elevation < roof.Elevation && !IsRoofLevel(top.Level) && declared?.Top != top.Level.Name)

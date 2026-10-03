@@ -27,6 +27,7 @@ namespace SleevesOpenings.Automation.Legend
         public string System;         // for Opening
         public bool LabelOnHost;      // FSD/GD: no opening, tag goes on the host duct opening's label
         public string Review;         // Review: why it waits for a decision
+        public LegendCategory Rule;   // the category that matched (shaft / label / check options for notes)
 
         public string Describe() =>
             Category == TagCategory.Opening ? $"opening ({System})" :
@@ -96,7 +97,9 @@ namespace SleevesOpenings.Automation.Legend
             foreach (var c in rules?.Categories ?? new List<LegendCategory>())
             {
                 if (string.IsNullOrEmpty(c.Match) || !Regex.IsMatch(definition, c.Match, RegexOptions.IgnoreCase)) continue;
-                if (!string.IsNullOrEmpty(c.Review)) { m.Category = TagCategory.Review; m.Review = c.Review; }
+                m.Rule = c;
+                if (!string.IsNullOrEmpty(c.Shaft)) { m.Category = TagCategory.Opening; m.System = c.System ?? "Exhaust"; }
+                else if (!string.IsNullOrEmpty(c.Review)) { m.Category = TagCategory.Review; m.Review = c.Review; }
                 else if (c.Ignore) { m.Category = TagCategory.Ignore; m.LabelOnHost = c.LabelOnHost; }
                 else if (!string.IsNullOrEmpty(c.System)) { m.Category = TagCategory.Opening; m.System = c.System; }
                 return;

@@ -98,6 +98,9 @@ namespace SleevesOpenings.Automation.Drawings
     {
         public string Floor, Code;
         public double X, Y;
+        /// <summary>Sleeve point(s) from the fixture drawn on the plan (PDF only), same axes as X/Y; empty = not found.</summary>
+        public List<(double X, double Y)> Drains = new List<(double X, double Y)>();
+        public string DrainHow;
     }
 
     public class DwgRiserResult

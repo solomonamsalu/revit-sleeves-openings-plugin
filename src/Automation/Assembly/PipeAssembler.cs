@@ -20,6 +20,8 @@ namespace SleevesOpenings.Automation.Assembly
     public static class PipeAssembler
     {
         public const string NotSleeved = "not sleeved";
+        /// <summary>The From line of a storm pipe drawn with no tag (a roof / terrace / area drain's leader).</summary>
+        private const string LeaderMark = "storm pipe drawn with no tag";
         private const string UnmarkedDir = "no UP/DN written: ends on this floor (rules.json unmarked)";
 
         /// <summary>One service line of a group's text: "S UP &amp; DN".</summary>
@@ -65,7 +67,7 @@ namespace SleevesOpenings.Automation.Assembly
         }
 
         public static RiserAssembly Run(DwgSheetIndex index, DwgRiserResult risers, AlignmentResult alignment, IDictionary<string, string> floorLevels,
-                                        PlumbingRules rules, double drift = 24)
+                                        PlumbingRules rules, double drift = 24, bool trustUp = false)
         {
             var result = new RiserAssembly();
             var floors = index.Floors.Select(f => f.Floor).Distinct().OrderBy(FloorKey.Order).ToList();
@@ -76,6 +78,8 @@ namespace SleevesOpenings.Automation.Assembly
 
             // ---- 1. every sleeved service of every group, as the crossings its words describe
             var raw = new List<Crossing>();
+            var leaders = new List<(DwgRiser R, List<RiserSymbol> Circles)>();
+            var bare = new List<(AssemblyIssue Issue, List<string> Services)>();     // groups drawn with no tag: explained after merging
             foreach (var r in risers.Risers.OrderBy(r => FloorKey.Order(r.Floor)))
             {
                 var fa = alignment?.For(r.Floor);
@@ -92,8 +96,19 @@ namespace SleevesOpenings.Automation.Assembly
                     if (drawn.Count == 0) continue;
                     var sleeved = drawn.Where(sv => rules.Services[sv].Sleeve).ToList();
                     string what = $"{circles.Count} pipe(s) drawn ({string.Join(", ", drawn)})";
-                    if (tag == null)
+                    if (tag == null && rules.SkipLowestSlab && r.Floor == lowest) { }   // slab on grade: nothing to sleeve, nothing to report
+                    else if (tag == null && drawn.All(sv => rules.Services[sv].System == "Storm" && rules.Services[sv].Sleeve))
+                    {
+                        // storm pipes alone with no bubble: the leaders of roof / terrace drains (C.F.R.D + O.D pairs) on their way
+                        // down to the storm main (manual, storm sleeves 3-6 and 11): sleeved at each circle
+                        leaders.Add((r, circles.Select(c => c.S).ToList()));
+                        continue;
+                    }
+                    else if (tag == null)
+                    {
                         Issue(result, r.Floor, null, At(r.X, r.Y), AssemblyIssue.TagMissing, $"{what} with no tag bubble and no UP/DN list");
+                        bare.Add((result.Issues[result.Issues.Count - 1], sleeved));
+                    }
                     else
                         Issue(result, r.Floor, tag, At(r.X, r.Y), AssemblyIssue.NoSize, $"{tag}: {what}; no UP/DN list next to its bubble");
                     if (sleeved.Count == 0) result.NotRisers++;
@@ -140,11 +155,29 @@ namespace SleevesOpenings.Automation.Assembly
                 }
             }
 
+            // ---- 1b. storm leaders: the same spot on several floors is one leader (named D1, D2... by position); each pipe of
+            //      a drain pair keeps its own sleeve (ST-D1#1, ST-D1#2)
+            raw.AddRange(Leaders(leaders, alignment, rules, far));
+
             // ---- 2. one crossing per pipe per slab: the floor below's UP and this floor's DN are the same sleeve
             foreach (var c in raw)
             {
                 var same = result.Crossings.FirstOrDefault(o => o.Floor == c.Floor && o.Tag == c.Tag && o.System == c.System &&
                                                                 (!o.HasPosition || !c.HasPosition || Near((o.X, o.Y), (c.X, c.Y), far)));
+                // the floor below sends the pipe up at one spot and this floor's own plan shows it at another: the riser offsets
+                // in the ceiling below, the slab is crossed where this floor's plan draws it (one sleeve, not two)
+                if (same == null && c.Tag != null && !c.From.Any(f => f.Contains(LeaderMark)))
+                {
+                    same = result.Crossings.FirstOrDefault(o => o.Floor == c.Floor && o.Tag == c.Tag && o.System == c.System &&
+                                                                o.Plans.Contains(o.Floor) != c.Plans.Contains(c.Floor));
+                    if (same != null && same.HasPosition && c.HasPosition)
+                    {
+                        var below = c.Plans.Contains(c.Floor) ? same : c;
+                        string note = $"the {FloorKey.Describe(Below(c.Floor) ?? "floor below")} plan sends it up {Math.Sqrt(Math.Pow(c.X - same.X, 2) + Math.Pow(c.Y - same.Y, 2)):0.#} ft from where the " +
+                                      $"{FloorKey.Describe(c.Floor)} plan draws it: the riser offsets in the ceiling below; one sleeve, where this floor's plan shows it";
+                        if (!same.Notes.Contains(note)) same.Notes.Add(note);
+                    }
+                }
                 if (same == null) { result.Crossings.Add(c); continue; }
                 same.From.AddRange(c.From);
                 // the slab's own plan says where the pipe goes through it
@@ -163,7 +196,11 @@ namespace SleevesOpenings.Automation.Assembly
                 c.Pdf = "not checked";
                 if (!c.Notes.Any(n => n.StartsWith("pipe size")))
                     c.Notes.Add($"pipe size {Units.FormatInches(c.Size.Diameter.Value)} from rules.json (the plans carry no sizes; check the riser diagram)");
-                if (!own && fromBelow)
+                if (!own && fromBelow && trustUp)
+                    // the floor below lists it UP in words: the pipe goes on through this slab, straight (manual 23, 45-51)
+                    c.Notes.Add($"only the {FloorKey.Describe(Below(c.Floor))} plan shows it; its list says UP, so it is placed straight above it " +
+                                $"(manual 23, 45-51: risers stay straight); the {FloorKey.Describe(c.Floor)} plan does not list it");
+                else if (!own && fromBelow)
                 {
                     c.Status = Crossing.Review;
                     c.Notes.Add($"only the {FloorKey.Describe(Below(c.Floor))} plan shows it (UP); the {FloorKey.Describe(c.Floor)} plan does not list it");
@@ -175,7 +212,7 @@ namespace SleevesOpenings.Automation.Assembly
                     c.Status = Crossing.Review;
                     c.Notes.Add($"the label says neither UP nor DN and the {FloorKey.Describe(Below(c.Floor) ?? "floor below")} plan does not send this pipe up");
                 }
-                else if (own && !fromBelow && Below(c.Floor) != null && c.Floor != lowest)
+                else if (own && !fromBelow && Below(c.Floor) != null && c.Floor != lowest && !c.From.Any(f => f.Contains(LeaderMark)))
                     c.Notes.Add($"not listed UP on the {FloorKey.Describe(Below(c.Floor))} plan");
 
                 if (rules.SkipLowestSlab && c.Floor == lowest)
@@ -187,11 +224,28 @@ namespace SleevesOpenings.Automation.Assembly
                 else if (c.Level == null) { c.Status = Crossing.Skip; c.Notes.Add($"{FloorKey.Describe(c.Floor)} is not matched to a Revit level"); }
             }
 
+            // ---- 3b. the top of a stack: above its last fixture the sanitary stack carries on as the vent, through the roof as
+            //      one VTR (sanitary riser diagram). A sanitary crossing only the floor below sends up, on the group's top slab
+            //      where its vent also goes through, is that same pipe: no second sleeve
+            foreach (var c in result.Crossings.Where(c => c.System == "Sanitary" && c.Status != Crossing.Skip && !c.Plans.Contains(c.Floor)))
+            {
+                string group = RiserOf(c.Tag), up = Above(c.Floor);
+                if (up != null && result.Crossings.Any(o => o.Floor == up && RiserOf(o.Tag) == group)) continue;      // not the top
+                var vent = result.Crossings.FirstOrDefault(o => o.Floor == c.Floor && o.System == "Vent" && RiserOf(o.Tag) == group && o.Status != Crossing.Skip);
+                if (vent == null) continue;
+                c.Status = Crossing.Skip; c.MergedInto = vent;
+                c.Notes.Add($"top of the stack: the sanitary pipe goes on as {vent.Tag} through this slab (vent through roof), one sleeve; " +
+                            $"the {FloorKey.Describe(c.Floor)} plan does not list {c.Tag}");
+            }
+
             // ---- 4. the sleeves of one group are spread along its row so they do not overlap (pipes of the group that
             //      sit together only: an offset pipe drawn elsewhere keeps its place)
+            //      in one order on every floor (the stack runs straight): the order drawn on the floors where every pipe of the
+            //      group has its own circle, the most complete one first
+            var orders = RowOrders(result.Crossings);
             foreach (var g in result.Crossings.Where(c => c.HasPosition).GroupBy(c => (c.Floor, Riser: RiserOf(c.Tag))))
                 foreach (var row in Clusters(g.ToList(), 36.0 / 12))
-                    Spread(row, rules);
+                    Spread(row, rules, orders.TryGetValue(g.Key.Riser, out var order) ? order : null);
             Overlaps(result.Crossings, rules);
 
             // ---- 5. fixtures named on the plans: for review (the text is next to the fixture, not on its drain)
@@ -214,8 +268,43 @@ namespace SleevesOpenings.Automation.Assembly
                                 (fs.Count > 1 && fs.Spacing > 0 ? $" {Units.FormatInches(fs.Spacing)} c-c" : "") +
                                 " under the fixture's drain; the position is the engineer's fixture text, lay the sleeve out on the fixture (manual: toilet sleeves page)");
                     if (!pos.HasValue || fa == null || !fa.Usable) c.Notes.Add($"{FloorKey.Describe(fx.Floor)} position not confirmed (Revit position tab)");
+                    else if (fx.Drains.Count > 0)
+                    {
+                        // the fixture as the architect drew it on the plan gives the sleeve point(s); still for review until the
+                        // model is checked (a sleeve already there, a modelled fixture's connector: FixtureSleeveLocator)
+                        var drains = fx.Drains.Select(d => fa.ToRevit(d.X, d.Y)).Where(d => d.HasValue).Select(d => d.Value).ToList();
+                        if (drains.Count == fx.Drains.Count)
+                        {
+                            c.X = drains.Average(d => d.X); c.Y = drains.Average(d => d.Y);
+                            if (drains.Count > 1) { c.Points.AddRange(drains.Select(d => new[] { d.X, d.Y })); c.EachPoint = true; }
+                            c.DrawnDrain = fx.DrainHow;
+                        }
+                    }
                     result.Crossings.Add(c);
                 }
+
+            // ---- 6. pipes drawn with no tag that are explained by a tagged group: the same pipe as a sleeve already placed on
+            //      this floor, or the stack after its offset (the floor above shows the tagged group right there)
+            foreach (var (issue, services) in bare.Where(b => b.Issue.X.HasValue && b.Services.Count > 0))
+            {
+                var at = (issue.X.Value, issue.Y.Value);
+                var here = result.Crossings.FirstOrDefault(c => c.Floor == issue.Floor && c.HasPosition && c.Status != Crossing.Skip && Near((c.X, c.Y), at, 1.5) &&
+                                                               services.Contains(c.Tag?.Split('-')[0] ?? ""));
+                string up = Above(issue.Floor);
+                var above = here != null || up == null ? null : result.Crossings.FirstOrDefault(c => c.Floor == up && c.HasPosition && c.Plans.Contains(up) &&
+                                                               c.Tag != null && Near((c.X, c.Y), at, far) && services.Contains(c.Tag.Split('-')[0]));
+                if (here != null)
+                {
+                    issue.Type = AssemblyIssue.Explained;
+                    issue.Detail += $": the same pipe as {here.Tag}, already sleeved here";
+                }
+                else if (above != null)
+                {
+                    issue.Type = AssemblyIssue.Explained;
+                    issue.Tag = RiserOf(above.Tag);
+                    issue.Detail += $": the {RiserOf(above.Tag)} stack after its offset; the {FloorKey.Describe(up)} plan shows {RiserOf(above.Tag)} right here, its sleeve is in that slab";
+                }
+            }
 
             foreach (var t in risers.LooseTags)
                 Issue(result, t.Floor, t.Tag, alignment?.For(t.Floor)?.ToRevit(t.X, t.Y), AssemblyIssue.Loose, "tag bubble with no leader to a pipe group");
@@ -227,12 +316,52 @@ namespace SleevesOpenings.Automation.Assembly
             return result;
         }
 
-        /// <summary>"S-P3" -> "P3" (the group the sleeve belongs to, from the name pattern).</summary>
+        /// <summary>"S-P3" -> "P3" (the group the sleeve belongs to, from the name pattern); "ST-D1#2" -> "D1".</summary>
         private static string RiserOf(string name)
         {
             if (name == null) return "?";
             int i = name.IndexOf('-');
-            return i >= 0 ? name.Substring(i + 1) : name;
+            string riser = i >= 0 ? name.Substring(i + 1) : name;
+            int hash = riser.IndexOf('#');
+            return hash > 0 ? riser.Substring(0, hash) : riser;
+        }
+
+        /// <summary>
+        /// Storm pipes drawn with no tag, as crossings of their own floor's slab (the drain sits on it, or the leader passes
+        /// through it on the way down). Groups at one spot (within <paramref name="far"/> feet) on several floors are one
+        /// leader and share its name, numbered from the top of the building down.
+        /// </summary>
+        private static List<Crossing> Leaders(List<(DwgRiser R, List<RiserSymbol> Circles)> leaders, AlignmentResult alignment, PlumbingRules rules, double far)
+        {
+            var placed = new List<(string Id, double X, double Y)>();
+            var result = new List<Crossing>();
+            int n = 0;
+            foreach (var (r, circles) in leaders.OrderByDescending(l => FloorKey.Order(l.R.Floor)))
+            {
+                var fa = alignment?.For(r.Floor);
+                var at = fa?.ToRevit(r.X, r.Y);
+                string id = at == null ? null : placed.Where(p => Near((p.X, p.Y), at.Value, far)).Select(p => p.Id).FirstOrDefault();
+                if (id == null) id = "D" + (++n);
+                if (at != null) placed.Add((id, at.Value.X, at.Value.Y));
+                var ordered = circles.OrderBy(c => c.X).ThenBy(c => c.Y).ToList();
+                for (int i = 0; i < ordered.Count; i++)
+                {
+                    var svc = rules.ServiceForLayer(ordered[i].Layer);
+                    var pos = fa?.ToRevit(ordered[i].X, ordered[i].Y);
+                    var c = new Crossing
+                    {
+                        Floor = r.Floor, Tag = rules.Name(svc, id) + (ordered.Count > 1 ? "#" + (i + 1) : ""), System = rules.Services[svc].System,
+                        Size = new DuctSize { Diameter = rules.Services[svc].Pipe }, X = pos?.X ?? 0, Y = pos?.Y ?? 0, HasPosition = pos.HasValue,
+                        Roof = r.Floor == FloorKey.Roof
+                    };
+                    c.From.Add($"{FloorKey.Describe(r.Floor)}: {LeaderMark} ({ordered.Count} pipe(s) here)");
+                    c.Plans.Add(r.Floor);
+                    c.Notes.Add($"{LeaderMark}: a roof / terrace drain leader going down to the storm main (manual, storm sleeves 3-6, 11); check the drain on the plan and the storm riser diagram");
+                    if (!pos.HasValue) c.Notes.Add($"{FloorKey.Describe(r.Floor)} is not lined up with Revit");
+                    result.Add(c);
+                }
+            }
+            return result;
         }
 
         /// <summary>Single-link clusters of crossings closer than <paramref name="reach"/> (feet).</summary>
@@ -254,14 +383,16 @@ namespace SleevesOpenings.Automation.Assembly
         /// The sleeves of one group on one slab, drawn as pipes 5" apart: kept in the order drawn along the row, centred
         /// where the pipes are, spread so neighbours keep <see cref="PlumbingRules.SleeveGap"/> between them.
         /// </summary>
-        private static void Spread(List<Crossing> group, PlumbingRules rules)
+        private static void Spread(List<Crossing> group, PlumbingRules rules, List<string> order = null)
         {
             if (group.Count < 2) return;
             double cx = group.Average(c => c.X), cy = group.Average(c => c.Y);
             // the row's direction: the longer spread of the drawn positions
             double sx = group.Max(c => c.X) - group.Min(c => c.X), sy = group.Max(c => c.Y) - group.Min(c => c.Y);
             bool alongX = sx >= sy;
-            var ordered = group.OrderBy(c => alongX ? c.X : c.Y).ToList();
+            var ordered = order != null && group.All(c => order.Contains(c.System))
+                ? group.OrderBy(c => order.IndexOf(c.System)).ToList()
+                : group.OrderBy(c => alongX ? c.X : c.Y).ToList();
             double R(Crossing c) => rules.SleeveFor(c.Size?.Diameter ?? 0) / 2 / 12;
             double gap = rules.SleeveGap / 12;
             bool overlap = false;
@@ -284,6 +415,29 @@ namespace SleevesOpenings.Automation.Assembly
                 c.Notes.Add($"the {RiserOf(c.Tag)} pipes are drawn closer than their sleeves: sleeves set in a row {Units.FormatInches(rules.SleeveGap)} apart" +
                             (moved >= 0.5 ? $" (moved {Units.FormatInches(Math.Round(moved * 2) / 2)})" : ""));
             }
+        }
+
+        /// <summary>
+        /// Per group (P6), the order of its pipes along the row (by system) as drawn on the floor that shows the most of them
+        /// each at its own circle (a pipe placed at the group's centre does not count), the commonest such order on ties.
+        /// </summary>
+        private static Dictionary<string, List<string>> RowOrders(List<Crossing> all)
+        {
+            var result = new Dictionary<string, List<string>>();
+            foreach (var g in all.Where(c => c.HasPosition && c.Tag != null).GroupBy(c => RiserOf(c.Tag)))
+            {
+                var seen = new List<List<string>>();
+                foreach (var floor in g.GroupBy(c => c.Floor))
+                {
+                    var row = floor.ToList();
+                    if (row.Count < 2 || row.Any(c => c.Notes.Any(n => n.Contains("placed at the group's centre")))) continue;
+                    bool alongX = row.Max(c => c.X) - row.Min(c => c.X) >= row.Max(c => c.Y) - row.Min(c => c.Y);
+                    seen.Add(row.OrderBy(c => alongX ? c.X : c.Y).Select(c => c.System).ToList());
+                }
+                var best = seen.GroupBy(o => string.Join(",", o)).OrderByDescending(o => o.First().Count).ThenByDescending(o => o.Count()).FirstOrDefault();
+                if (best != null) result[g.Key] = best.First();
+            }
+            return result;
         }
 
         /// <summary>Sleeves of different groups on one slab that still overlap: review.</summary>

@@ -32,6 +32,10 @@ namespace SleevesOpenings.Rules
         /// <summary>Sprinkler / standpipe Auto Run (same pipeline as plumbing; risers labelled in words with their size).</summary>
         [JsonProperty("sprinkler")] public Automation.PlumbingRules Sprinkler { get; set; } = global::SleevesOpenings.Automation.PlumbingRules.SprinklerDefaults();
         [JsonProperty("pdfOnly")] public Automation.PdfOnlyRules PdfOnly { get; set; } = new Automation.PdfOnlyRules();
+        /// <summary>Auto Run: how an HV model is told from a PL or FP model when its name does not say (contents, then other signs).</summary>
+        /// <summary>The S&amp;O set (SL101…) made from a pattern sheet, its notes and its PDF.</summary>
+        [JsonProperty("soSheets")] public Sheets.SoSheetRules SoSheets { get; set; } = new Sheets.SoSheetRules();
+        [JsonProperty("modelKind")] public Automation.ModelKindRules ModelKind { get; set; } = new Automation.ModelKindRules();
 
         /// <summary>Where this rule set was loaded from (for display/debugging).</summary>
         [JsonIgnore] public string SourcePath { get; set; }

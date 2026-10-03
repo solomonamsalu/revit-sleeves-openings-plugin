@@ -9,6 +9,8 @@ namespace SleevesOpenings.Automation.Legend
     /// </summary>
     public class LegendRules
     {
+        private const string GasCheck = "gas vent: confirm the gas scope with the engineer before cutting (the plumbing set may say the water heaters are electric)";
+
         /// <summary>Office-wide tags that engineer PDFs do not define. Only KX and TX are fixed across the office.</summary>
         [JsonProperty("officeFixed", ObjectCreationHandling = ObjectCreationHandling.Replace)]
         public Dictionary<string, string> OfficeFixed { get; set; } = new Dictionary<string, string>
@@ -20,7 +22,8 @@ namespace SleevesOpenings.Automation.Legend
         [JsonProperty("categories", ObjectCreationHandling = ObjectCreationHandling.Replace)]
         public List<LegendCategory> Categories { get; set; } = new List<LegendCategory>
         {
-            new LegendCategory { Match = @"COMBUSTION AIR|FUEL VENT|GAS FLUE", Review = "combustion air / Type B fuel vent: needs a decision" },
+            new LegendCategory { Match = @"GAS METER VENT", System = "Exhaust", Label = "GMV", Diameter = 8, Check = GasCheck },
+            new LegendCategory { Match = @"COMBUSTION AIR|FUEL VENT|GAS FLUE", Shaft = "COMB AIR/B-VENT", Check = GasCheck },
             new LegendCategory { Match = @"DIFFUSER|GRILLE|REGISTER|LOUVER", Ignore = true },
             new LegendCategory { Match = @"\b(EXHAUST|SUPPLY|RETURN|OUTSIDE|RELIEF|TRANSFER) AIR\b", Ignore = true },
             new LegendCategory { Match = @"PARKING|GARAGE", System = "Exhaust" },
@@ -46,5 +49,16 @@ namespace SleevesOpenings.Automation.Legend
         [JsonProperty("labelOnHost")] public bool LabelOnHost { get; set; }
         /// <summary>Not decided yet: reported with this text, not placed (plan section 14, left tasks).</summary>
         [JsonProperty("review")] public string Review { get; set; }
+        /// <summary>
+        /// Notes next to untagged risers: the ducts drawn there go up in a shaft and get ONE opening around them all, named
+        /// this (combustion air / Type B vents), on every slab the shaft passes.
+        /// </summary>
+        [JsonProperty("shaft")] public string Shaft { get; set; }
+        /// <summary>Notes next to an untagged riser with a <see cref="System"/>: the opening's name (GMV for "8Ø GAS METER VENT").</summary>
+        [JsonProperty("label")] public string Label { get; set; }
+        /// <summary>Duct size (inches round) when the note gives none.</summary>
+        [JsonProperty("diameter")] public double Diameter { get; set; } = 6;
+        /// <summary>Placed, but flagged with this note for the drafter (e.g. a scope question for the engineer).</summary>
+        [JsonProperty("check")] public string Check { get; set; }
     }
 }

@@ -27,12 +27,16 @@ namespace SleevesOpenings.Automation.Report
     /// <summary>Turns one Auto Run (drawings, placement, Final Check, S&amp;O comparison) into report rows.</summary>
     public static class ReportBuilder
     {
+        /// <summary>Result of a crossing whose opening was combined with a neighbour's.</summary>
+        public const string Merged = "in combined opening";
+
         public static RunReport Build(string model, DisciplineFiles files, AlignmentResult alignment, RiserAssembly assembly,
-                                      List<PlacementOutcome> outcomes, SoCompareResult so, FinalCheckRun final, RuleSet rules, IEnumerable<string> lines)
+                                      List<PlacementOutcome> outcomes, SoCompareResult so, FinalCheckRun final, RuleSet rules, IEnumerable<string> lines,
+                                      string discipline = AutomationInputs.Mechanical)
         {
-            var report = new RunReport { Model = model, RunAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm") };
-            report.Inputs.Add(("Mechanical PDF", files?.Pdf));
-            report.Inputs.Add(("Mechanical DWG", files?.Dwg));
+            var report = new RunReport { Model = model, RunAt = DateTime.Now.ToString("yyyy-MM-dd HH:mm"), Discipline = discipline };
+            report.Inputs.Add(($"{discipline} PDF", files?.Pdf));
+            report.Inputs.Add(($"{discipline} DWG", files?.Dwg));
             if (!string.IsNullOrEmpty(files?.Xrefs)) report.Inputs.Add(("Xrefs at Revit 0,0", files.Xrefs));
             if (!string.IsNullOrEmpty(files?.Reference)) report.Inputs.Add(("S&O set compared", files.Reference));
             report.Lines.AddRange(lines ?? Enumerable.Empty<string>());
@@ -54,7 +58,10 @@ namespace SleevesOpenings.Automation.Report
                 var notes = new List<string>(c.Notes);
                 if (o?.Detail != null) notes.Add(o.Detail);
                 if (o != null && o.Warnings.Count > 0) notes.Add("rule warnings: " + string.Join("; ", o.Warnings));
+                outcome.TryGetValue(c.MergedInto ?? c, out var host);
                 string result = o != null ? o.Result
+                              : c.MergedInto != null ? Merged
+                              : c.ExistingIds.Count > 0 ? PlacementOutcome.Existing
                               : c.Status == Crossing.Review ? "review" : c.Status == Crossing.Skip ? "not placed" : "to place (not placed this run)";
                 report.Rows.Add(new ReportRow
                 {
@@ -64,8 +71,8 @@ namespace SleevesOpenings.Automation.Report
                     SoSet = m == null ? null : m.Status + (string.IsNullOrEmpty(m.Detail) ? "" : ": " + m.Detail),
                     Source = string.Join(" + ", c.From), Notes = string.Join("; ", notes),
                     X = c.HasPosition ? c.X : (double?)null, Y = c.HasPosition ? c.Y : (double?)null,
-                    Ids = o?.Ids.Select(i => i.Value).ToList() ?? new List<long>(),
-                    Attention = c.Check || (o == null ? c.Status != Crossing.Place
+                    Ids = o?.Ids.Select(i => i.Value).ToList() ?? (c.MergedInto != null ? host?.Ids.Select(i => i.Value).ToList() ?? new List<long>() : c.ExistingIds.ToList()),
+                    Attention = c.Check || (o == null ? c.Status != Crossing.Place && c.MergedInto == null
                               : o.Result == PlacementOutcome.Skipped || o.Result == PlacementOutcome.Failed || o.Warnings.Count > 0)
                 });
             }
@@ -73,7 +80,7 @@ namespace SleevesOpenings.Automation.Report
             foreach (var i in assembly.Issues)
                 report.Rows.Add(new ReportRow
                 {
-                    Section = ReportRow.Reported, Floor = i.Floor, Tag = i.Tag, Result = i.Type, Notes = i.Detail, X = i.X, Y = i.Y, Attention = true,
+                    Section = ReportRow.Reported, Floor = i.Floor, Tag = i.Tag, Result = i.Type, Notes = i.Detail, X = i.X, Y = i.Y, Attention = i.Type != AssemblyIssue.Explained,
                     Level = i.Level ?? assembly.Crossings.FirstOrDefault(c => c.Floor == i.Floor && c.Level != null)?.Level
                 });
 

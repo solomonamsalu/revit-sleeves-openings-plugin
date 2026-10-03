@@ -27,6 +27,10 @@ namespace SleevesOpenings.Setup
         public string AcSystem { get; set; }
         /// <summary>Auto Run: drawing files, floor-to-level overrides, existing-openings choice.</summary>
         public SleevesOpenings.Automation.AutomationInputs Automation { get; set; } = new SleevesOpenings.Automation.AutomationInputs();
+        /// <summary>S&amp;O set: the notes the drafter wrote for the sheets' notes table (written as revisions on every run).</summary>
+        public List<SleevesOpenings.Sheets.SoNote> SoNotes { get; set; } = new List<SleevesOpenings.Sheets.SoNote>();
+        /// <summary>S&amp;O set: the PDF folder the user chose (null = the project's Structural folder).</summary>
+        public string SoPdfFolder { get; set; }
     }
 
     public class RiserEnds

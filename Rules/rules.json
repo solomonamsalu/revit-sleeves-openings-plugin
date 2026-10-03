@@ -174,10 +174,11 @@
   },
 
   "legend": {
-    "_comment": "Auto Run: tag meanings are read from the engineer's PDF (ABBREVIATIONS table, SYMBOLS list, schedules). officeFixed = tags the office always uses and PDFs do not define (only KX and TX). categories are tried in order against the definition text (regex, case-insensitive); the first match wins. system = gets an opening of that system; ignore = no opening; labelOnHost = no opening, but the tag is added to the label of the duct opening it sits on (ERV-FSD). review = not decided yet: reported with that text, not placed. A definition matching nothing is 'not a riser'. Also applied to the note written next to a riser that has no tag.",
+    "_comment": "Auto Run: tag meanings are read from the engineer's PDF (ABBREVIATIONS table, SYMBOLS list, schedules). officeFixed = tags the office always uses and PDFs do not define (only KX and TX). categories are tried in order against the definition text (regex, case-insensitive); the first match wins. system = gets an opening of that system; ignore = no opening; labelOnHost = no opening, but the tag is added to the label of the duct opening it sits on (ERV-FSD). review = not decided yet: reported with that text, not placed. For the note written next to an untagged riser: shaft = the ducts drawn there go up in a shaft and get one opening around them all (2\" clear each side, roof +4\"), named this, on every slab the shaft passes; system + label = that riser is an opening of this name, its round size read from the note (8Ø) or diameter; check = placed but flagged with this text. A definition matching nothing is 'not a riser'. Also applied to the note written next to a riser that has no tag.",
     "officeFixed": { "KX": "KITCHEN EXHAUST", "TX": "TOILET EXHAUST" },
     "categories": [
-      { "match": "COMBUSTION AIR|FUEL VENT|GAS FLUE", "review": "combustion air / Type B fuel vent: needs a decision" },
+      { "match": "GAS METER VENT", "system": "Exhaust", "label": "GMV", "diameter": 8, "check": "gas vent: confirm the gas scope with the engineer before cutting (the plumbing set may say the water heaters are electric)" },
+      { "match": "COMBUSTION AIR|FUEL VENT|GAS FLUE", "shaft": "COMB AIR/B-VENT", "check": "gas vent: confirm the gas scope with the engineer before cutting (the plumbing set may say the water heaters are electric)" },
       { "match": "DIFFUSER|GRILLE|REGISTER|LOUVER", "ignore": true },
       { "match": "\\b(EXHAUST|SUPPLY|RETURN|OUTSIDE|RELIEF|TRANSFER) AIR\\b", "ignore": true },
       { "match": "PARKING|GARAGE", "system": "Exhaust" },
@@ -230,6 +231,18 @@
     "finalCheck": true,
     "autoFix": true,
     "riserDiagram": true,
+    "decisions": {
+      "_comment": "Cases the manual or the engineer's notes settle, decided by rule instead of left for review. trustUpFromBelow = a crossing only the floor below shows, labelled UP there, is placed straight above it (manual 23, 45-51). dryersIntoHost = dryer ducts landing on another opening make that opening bigger to take them (rule 74). roofDryerGrid = roof dryer shafts get a 6x6 per duct in straight rows of roofDryerPerRow, dryerExhaust.minSpacing clear between them (rules 78-82). mergeOverlaps = openings on one slab that overlap become one opening around both, named with both tags (manual 21). avoidStructure = an opening in a beam or shear wall (rules 27-28), within 1'-0\" of a column (rule 26) or on a wall edge is first reshaped to the same duct area up to maxAspect:1 (engineer's general note: duct dimensions can be reconfigured up to 4:1 keeping the area), then moved up to maxShift in shiftStep steps; skipped only when neither clears it. Inches.",
+      "trustUpFromBelow": true,
+      "dryersIntoHost": true,
+      "roofDryerGrid": true,
+      "roofDryerPerRow": 6,
+      "mergeOverlaps": true,
+      "avoidStructure": true,
+      "maxAspect": 4,
+      "maxShift": 24,
+      "shiftStep": 2
+    },
     "referenceSet": {
       "enabled": false,
       "files": "SLEEVES\\s*(&|AND)?\\s*OPENINGS",
@@ -259,6 +272,34 @@
     "minStacked": 4,
     "stackTolerance": 1,
     "placeWhenPassed": true
+  },
+
+  "soSheets": {
+    "_comment": "The S&O set (SO_SHEETS_PLAN.md): one sheet per floor that has a '<level> Sleeves' view, built like the pattern sheet (patternSheet, or the lowest numberPrefix sheet holding a Sleeves view: SL101 on 24 Skillman): its title block and switches, the plan at the same spot, the legend, a copy of its schedule with the Level filter set to the floor, the floor label (text of type floorLabelType in the plan, rewritten) and texts of copyTextTypes. Names: {Floor} = '1st Floor' / 'Roof', {FLOOR} = upper case, {index} = the sheet's place in the set (1st... '8th' for the 24 Skillman roof), {kind} = floor / roof / bulkhead / cellar. Existing sheets are only completed, never rebuilt or deleted. Notes = revisions in the title block's revision table (NOTES TO ARCH, ENG, & G.C.), marked with notesTag in Issued By; the office's own revisions are never touched. afterAutoRun / pdfAfterAutoRun: done at the end of Auto Run in the PL / FP model. PDF: pdfName in the folder named pdfFolder found next to the model or the drawings Auto Run read (24 Skillman: Project Files/Structural); {project} = the model name with projectNameStrip removed.",
+    "enabled": true,
+    "numberPrefix": "SL",
+    "firstNumber": 101,
+    "patternSheet": null,
+    "sheetName": "{Floor} Sleeves & Openings",
+    "scheduleName": "SL- {index} {kind}",
+    "floorLabel": "{FLOOR}",
+    "floorLabelType": "Floor Notes",
+    "copyTextTypes": [ "street name" ],
+    "issueDateFormat": "MM/dd/yy",
+    "notesTag": "S&O notes",
+    "afterAutoRun": true,
+    "pdfAfterAutoRun": true,
+    "pdfName": "{project} Sleeves & Openings {date}",
+    "pdfDateFormat": "M-d-yy",
+    "pdfFolder": "^Structural$",
+    "projectNameStrip": "[\\s_-]+(PL|HV|FP|SP|MEP|HVAC|MECH\\w*|PLUMB\\w*|SPRINK\\w*)([\\s_-].*)?$|[\\s_-]*detached$"
+  },
+
+  "modelKind": {
+    "_comment": "Which kind of model Auto Run is in (HV runs mechanical; PL and FP run plumbing and sprinkler). In order: the answer the user saved in the model (asked only when nothing else decides, or when the drawings disagree with the model); the file name (plumbing.modelMatch, sprinkler.modelMatch, hvMatch; '_' counts as a separator); what the model holds, not its links (ducts + air terminals + hydronic pipes vs plumbing pipes + plumbing fixtures + fire pipes + sprinkler heads, pipes by their system type): decides when the larger side has at least minElements and ratio times the other; then other signs (plan view disciplines, worksets, sheet numbers, sleeves already placed). If none decides, the drawings' sheet numbers do (M-, P-, SP-), and if they do not either the user is asked once.",
+    "hvMatch": "(\\bHV(\\b|_)|HVAC|\\bMECH)",
+    "minElements": 20,
+    "ratio": 2
   },
 
   "plumbing": {
@@ -296,7 +337,7 @@
     "fixtures": {
       "WC": { "name": "toilet", "pipe": 4 },
       "LAV": { "name": "lavatory", "pipe": 1.5 },
-      "BT": { "name": "bathtub", "pipe": 4, "count": 2, "spacing": 6 },
+      "BT": { "name": "bathtub", "pipe": 4, "count": 2, "spacing": 7 },
       "SH": { "name": "shower", "pipe": 2 },
       "KS": { "name": "kitchen sink", "pipe": 2 },
       "LS": { "name": "laundry sink", "pipe": 2 },

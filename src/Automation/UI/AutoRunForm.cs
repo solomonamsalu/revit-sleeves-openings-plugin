@@ -39,8 +39,13 @@ namespace SleevesOpenings.Automation.UI
         private readonly Action<RiserAssembly> _layout;              // openings next to each other (ERV pairs, dryers on other openings)
         private string _discipline;                                  // AutomationInputs.Mechanical / Plumbing / Sprinkler: set by the drawings picked
         private PlumbingRules _plumbing;                             // plumbing or sprinkler: pipe groups instead of ducts
-        /// <summary>The pipe disciplines this model can run (PL model: plumbing and sprinkler), with their rules; empty for the HV model.</summary>
+        /// <summary>The pipe disciplines' rules (plumbing, sprinkler), whichever this model may run.</summary>
         private readonly IDictionary<string, PlumbingRules> _pipeOptions;
+        /// <summary>What the model is (HV / PL / FP, or null when nothing recognised it) and the disciplines it may run.</summary>
+        private ModelKindResult _model;
+        private List<string> _allowed;
+        /// <summary>HV / PL / FP when the user said what this model is in this window (saved in the model); null otherwise.</summary>
+        public string ChosenModelKind { get; private set; }
         private readonly RevitColumns _columns;                      // PDF only: the model's columns, to line the plans up
         private readonly PdfOnlyRules _pdfOnly;
         private readonly Func<RiserAssembly, List<string>> _resolveFixtureSleeves;
@@ -101,9 +106,12 @@ namespace SleevesOpenings.Automation.UI
                            AutomationRules automation = null, Func<Crossing, (double W, double L)?> openingSize = null,
                            Action<RiserAssembly> layout = null, string discipline = AutomationInputs.Mechanical, PlumbingRules plumbing = null,
                            RevitColumns columns = null, PdfOnlyRules pdfOnly = null, Func<RiserAssembly, List<string>> resolveFixtureSleeves = null,
-                           IDictionary<string, PlumbingRules> pipeOptions = null)
+                           IDictionary<string, PlumbingRules> pipeOptions = null, ModelKindResult model = null, IList<string> allowed = null,
+                           DwgProfile mechanicalProfile = null)
         {
             _pipeOptions = pipeOptions ?? new Dictionary<string, PlumbingRules>();
+            _model = model ?? new ModelKindResult { Kind = plumbing == null ? ModelDiscipline.HV : ModelDiscipline.PL, Source = "caller", Reason = "-" };
+            _allowed = allowed?.ToList() ?? (plumbing == null ? new List<string> { AutomationInputs.Mechanical } : _pipeOptions.Keys.ToList());
             _columns = columns ?? new RevitColumns();
             _pdfOnly = pdfOnly ?? new PdfOnlyRules();
             _resolveFixtureSleeves = resolveFixtureSleeves;
@@ -114,7 +122,7 @@ namespace SleevesOpenings.Automation.UI
             _automation = automation ?? new AutomationRules();
             _openingSize = openingSize ?? (c => null);
             _existing = existing; _inputs = inputs; _levels = levels; _legendRules = legendRules; _profile = profile ?? new DwgProfile();
-            _mechanicalProfile = plumbing == null ? _profile : new DwgProfile();
+            _mechanicalProfile = mechanicalProfile ?? (plumbing == null ? _profile : new DwgProfile());
             _modelRefs = modelRefs ?? new List<ReferenceDrawing>(); _modelPath = modelPath;
             _revitGrids = revitGrids ?? new GridInputs();
             _existingPoints = existing.Items.Where(i => i.Point != null)
@@ -608,7 +616,42 @@ namespace SleevesOpenings.Automation.UI
                 // ---- which drawings these are: the sheet numbers say it (P- plumbing, SP- sprinkler, M- mechanical)
                 string fromPdf = DisciplineOfSheets(pdf?.Discipline), fromDwg = DisciplineOfSheets(LayoutPrefix(dwg?.Layouts));
                 string wanted = fromPdf ?? fromDwg;
-                if (wanted != null && wanted != _discipline && _pipeOptions.ContainsKey(wanted))
+                string sheets = fromPdf != null ? pdf.Discipline : fromDwg != null ? LayoutPrefix(dwg.Layouts) : null;
+                // the drawings and the model disagree (P- drawings in the HV model): stop, unless the user says what the model really is
+                if (wanted != null && !_allowed.Contains(wanted))
+                {
+                    var kinds = ModelDiscipline.KindsFor(wanted);
+                    string kind = AskModelKind($"The drawings are the {Word(wanted)} set (sheet numbers {sheets}-), but this model is " +
+                                               $"{ModelDiscipline.Word(_model.Kind)}, from {_model.Source}: {_model.Reason}.",
+                                               $"Run {Word(wanted)} here only if this model really is a {string.Join(" or ", kinds)} model; " +
+                                               "the answer is saved in the model. Otherwise stop and pick the right drawings or open the right model.", kinds);
+                    if (kind == null)
+                    {
+                        msg.AppendLine($"Stopped: the drawings are the {Word(wanted)} set (sheets {sheets}-) but this model is {ModelDiscipline.Word(_model.Kind)} " +
+                                       $"({_model.Source}: {_model.Reason}). Pick the {string.Join(" / ", _allowed.Select(Word))} drawings, or open the {Word(wanted)} model.");
+                        _fullMessages = msg.ToString().TrimEnd();
+                        ApplyView();
+                        return;
+                    }
+                    SetModelKind(kind);
+                }
+                // nothing says what the model is and the sheet numbers say nothing either: ask once (saved in the model)
+                else if (wanted == null && _model.Kind == null)
+                {
+                    var all = new List<string> { ModelDiscipline.HV, ModelDiscipline.PL, ModelDiscipline.FP };
+                    string kind = AskModelKind($"Neither this model ({_model.Reason}) nor the drawings' sheet numbers say which discipline this is.",
+                                               "Choose what this model is; the answer is saved in the model and not asked again.", all);
+                    if (kind == null)
+                    {
+                        msg.AppendLine("Stopped: the model type is not known and the drawings' sheet numbers do not say it. Run Auto Run again and choose HV, PL or FP.");
+                        _fullMessages = msg.ToString().TrimEnd();
+                        ApplyView();
+                        return;
+                    }
+                    SetModelKind(kind);
+                    wanted = _allowed.First();
+                }
+                if (wanted != null && wanted != _discipline && _allowed.Contains(wanted))
                 {
                     var before = _inputs.For(_discipline); var after = _inputs.For(wanted);
                     string oldProfileFolders = _profile.ReferenceFolders;
@@ -664,10 +707,11 @@ namespace SleevesOpenings.Automation.UI
                     // plumbing (pipe circles), sprinkler (worded labels) or mechanical (duct section marks, tag bubbles, size labels)
                     _status.Text = "Reading the plans from the PDF (PDF only)…";
                     var pdfOnly = _pdfOnly;
-                    try { plans = await Task.Run(() => PdfPlanReader.Read(pdfPath, pdf, profile, pdfOnly, sprinkler ? pipeRules : null)); dwg = plans.Index; risers = plans.Risers; }
+                    try { plans = await Task.Run(() => PdfPlanReader.Read(pdfPath, pdf, profile, pdfOnly, sprinkler ? pipeRules : null, sprinkler ? null : pipeRules?.Fixtures)); dwg = plans.Index; risers = plans.Risers; }
                     catch (Exception ex) { msg.AppendLine($"The PDF plans could not be read: {ex.Message}"); App.Log("AutoRun PDF-only read failed: " + ex); }
                 }
 
+                msg.Insert(0, $"Model: {_model.Describe()}{Environment.NewLine}");
                 Pdf = pdf; Dwg = dwg; Risers = risers; PdfPlans = plans; Alignment = null; Assembly = null; Diagram = null; SoSet = null; SoCompare = null;
                 Describe(pdf, plans == null ? dwg : null, pdfPath, plans == null ? dwgPath : "-", msg, DisciplineOfSheets(pdf?.Discipline) == _discipline ? pdf.Discipline : Sprinkler ? "SP" : Plumbing ? "P" : "M", DisciplineWord);
                 if (plans != null) DescribePdfOnly(plans, msg);
@@ -704,7 +748,8 @@ namespace SleevesOpenings.Automation.UI
                     // PL model: pipe groups -> sleeves; no duct label check, riser diagram or duct outlines
                     _status.Text = "Merging the floors (pipe groups)…";
                     var floorLevels = FloorLevels(); var alignment = Alignment; var rules = _plumbing;
-                    try { Assembly = await Task.Run(() => PipeAssembler.Run(dwg, risers, alignment, floorLevels, rules)); }
+                    bool trustUp = _automation.Decisions?.TrustUpFromBelow ?? false;
+                    try { Assembly = await Task.Run(() => PipeAssembler.Run(dwg, risers, alignment, floorLevels, rules, trustUp: trustUp)); }
                     catch (Exception ex) { msg.AppendLine($"Merging the floors failed: {ex.Message}"); App.Log("AutoRun plumbing assembly failed: " + ex); }
                     if (Assembly != null && _resolveFixtureSleeves != null && !Sprinkler)
                     {
@@ -728,6 +773,7 @@ namespace SleevesOpenings.Automation.UI
                     var pdfPlans = plans;
                     var warnings = new List<string>();
                     bool readDiagram = _automation.RiserDiagram;
+                    bool trustUp = _automation.Decisions?.TrustUpFromBelow ?? false;
                     RiserDiagramResult diagram = null;
                     try
                     {
@@ -739,7 +785,8 @@ namespace SleevesOpenings.Automation.UI
                                 try { check = PdfRiserCheck.Run(pdfPath, pdf, risers); warnings.AddRange(check.Warnings); }
                                 catch (Exception ex) { App.Log("AutoRun PDF label check failed: " + ex); warnings.Add("labels not checked against the PDF: " + ex.Message); }
                             var outlines = cad == null ? null : DuctOutlines.Read(cad, profile2);
-                            var assembly = RiserAssembler.Run(dwg, risers, alignment, legend, rules, floorLevels, check, outlines, dryerSpacing);
+                            var assembly = RiserAssembler.Run(dwg, risers, alignment, legend, rules, floorLevels, check, outlines, dryerSpacing,
+                                                              trustUp: trustUp);
                             // Phase 8: tagged runs of the riser diagram that the plans do not show (GX-1, GX-2...)
                             if (pdf != null && readDiagram)
                                 try
@@ -822,17 +869,61 @@ namespace SleevesOpenings.Automation.UI
         private string DrawingsTitle() =>
             Sprinkler ? "2. Engineer drawings — Sprinkler / standpipe (riser and FDC sleeves; recognised by the SP- sheet numbers)"
           : Plumbing ? "2. Engineer drawings — Plumbing (pipe sleeves; pick the plumbing or the sprinkler set: the sheet numbers say which)"
+                     : _model.Kind == null ? "2. Engineer drawings — model type not recognised: the sheet numbers (M-, P-, SP-) say which discipline this is"
                      : "2. Engineer drawings — Mechanical (HV model; a PL model gets the plumbing drawings)";
 
         /// <summary>The drawings picked are another pipe discipline's (sprinkler set in the PL model): run as that one.</summary>
         private void Switch(string discipline)
         {
             _discipline = discipline;
-            _plumbing = _pipeOptions[discipline];
+            _plumbing = _pipeOptions.TryGetValue(discipline, out var pipe) ? pipe : null;
             _profile = _plumbing?.Profile ?? _mechanicalProfile;
             Text = "Sleeves & Openings — Auto Run" + (Plumbing ? $" ({DisciplineWord})" : "");
             if (_inBox != null) _inBox.Text = DrawingsTitle();
             App.Log($"AutoRun: drawings recognised as {discipline}");
+        }
+
+        /// <summary>The user said what the model is: it runs that kind's disciplines from now on (saved by the command).</summary>
+        private void SetModelKind(string kind)
+        {
+            ChosenModelKind = kind;
+            _model = new ModelKindResult { Kind = kind, Source = "your choice", Reason = "chosen in Auto Run, saved in this model" };
+            var pipe = _pipeOptions.Keys.ToList();                   // plumbing, then sprinkler when it is on
+            if (kind == ModelDiscipline.FP) pipe.Reverse();          // the FP model opens on sprinkler
+            _allowed = kind == ModelDiscipline.HV ? new List<string> { AutomationInputs.Mechanical } : pipe;
+            if (_inBox != null) _inBox.Text = DrawingsTitle();
+            App.Log($"AutoRun: model kind set to {kind} by the user");
+        }
+
+        /// <summary>Asks what the model is (one button per kind, and Stop); null = stop. Shows the window first when it was checking quietly.</summary>
+        private string AskModelKind(string question, string detail, IList<string> kinds)
+        {
+            if (_quiet) { _quiet = false; ShowInTaskbar = true; Opacity = 1; Activate(); }
+            using (var dlg = new Form
+            {
+                Text = "Auto Run — which model is this?", FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent,
+                MinimizeBox = false, MaximizeBox = false, ShowInTaskbar = false, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Font = Font, Padding = new Padding(12)
+            })
+            {
+                var panel = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, Dock = DockStyle.Fill, WrapContents = false };
+                panel.Controls.Add(new Label { Text = question, AutoSize = true, MaximumSize = new Size(520, 0), Font = new Font(Font, FontStyle.Bold), UseMnemonic = false });
+                panel.Controls.Add(new Label { Text = detail, AutoSize = true, MaximumSize = new Size(520, 0), Padding = new Padding(0, 6, 0, 10), UseMnemonic = false });
+                var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
+                string chosen = null;
+                foreach (var k in kinds)
+                {
+                    var b = new Button { Text = $"{ModelDiscipline.Word(k)} model", AutoSize = true };
+                    b.Click += (s, e) => { chosen = k; dlg.DialogResult = DialogResult.OK; };
+                    buttons.Controls.Add(b);
+                }
+                var stop = new Button { Text = "Stop", AutoSize = true, DialogResult = DialogResult.Cancel };
+                buttons.Controls.Add(stop);
+                dlg.CancelButton = stop;
+                panel.Controls.Add(buttons);
+                dlg.Controls.Add(panel);
+                return dlg.ShowDialog(this) == DialogResult.OK ? chosen : null;
+            }
         }
 
         private static void Describe(PdfSheetIndex pdf, DwgSheetIndex dwg, string pdfPath, string dwgPath, StringBuilder msg, string letter, string word)
@@ -980,7 +1071,7 @@ namespace SleevesOpenings.Automation.UI
                 var f = kv.Value;
                 string fixtureResult = !review ? "not listed"
                     : string.Equals(_plumbing.FixtureSleeves, "model", StringComparison.OrdinalIgnoreCase)
-                        ? "Revit sanitary connector when uniquely matched; otherwise review"
+                        ? "sleeve already in the model, else Revit sanitary connector when uniquely matched; otherwise review by stack"
                         : "for review";
                 int i = _tags.Rows.Add(kv.Key, f.Name + Pdf(kv.Key), "rules.json plumbing.fixtures",
                                        $"fixture sleeve {(f.Count > 1 ? f.Count + " x " : "")}{Units.FormatInches(_plumbing.SleeveFor(f.Pipe))}: {fixtureResult}");
@@ -1145,10 +1236,10 @@ namespace SleevesOpenings.Automation.UI
             {
                 int i = _openings.Rows.Add(FloorKey.Describe(c.Floor), c.Level ?? "(not used)", c.Tag == null ? (c.System == "DryerExhaust" ? "(dryer)" : "-") : c.Tag + c.DamperSuffix, c.System,
                                            c.Size?.ToString() ?? (c.SizedByRules ? "by rules" : "?"), c.Ducts,
-                                           c.Status == Crossing.Place ? "place" : c.Status == Crossing.Review ? "review" : "not placed",
+                                           c.MergedInto != null ? "in combined opening" : c.Status == Crossing.Place ? "place" : c.Status == Crossing.Review ? "review" : "not placed",
                                            c.Rotation.HasValue ? $"{c.Rotation.Value * 180 / Math.PI:0}°" : "-",
                                            c.Confidence, c.Pdf ?? "-", SoFor(c), string.Join(" + ", c.From), string.Join("; ", c.Notes));
-                _openings.Rows[i].DefaultCellStyle.BackColor = c.Status == Crossing.Place ? Color.Honeydew : c.Status == Crossing.Review ? Color.LightYellow : Color.MistyRose;
+                _openings.Rows[i].DefaultCellStyle.BackColor = c.Status == Crossing.Place || c.MergedInto != null ? Color.Honeydew : c.Status == Crossing.Review ? Color.LightYellow : Color.MistyRose;
             }
             foreach (var x in a.Issues)
             {

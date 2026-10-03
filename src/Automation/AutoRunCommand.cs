@@ -44,20 +44,21 @@ namespace SleevesOpenings.Automation
                 App.Log($"AutoRun: existing — {existing.Items.Count} item(s), {existing.UnknownFamilies.Values.Sum()} unrecognised");
 
                 // HV model: mechanical drawings, duct openings. PL model: plumbing drawings, pipe sleeves (rules.json "plumbing"),
-                // or sprinkler drawings, standpipe / FDC sleeves (rules.json "sprinkler"; the office has no FP model).
-                // The model says which disciplines it can run (PL model: plumbing and sprinkler); the drawings picked say
-                // which one this run is (their sheet numbers, P- / SP-), so nobody is asked. Opens on the last one used.
-                var pipeOptions = PipeDisciplines(doc, rules);
-                string discipline = pipeOptions.Count == 0 ? AutomationInputs.Mechanical
-                                  : pipeOptions.ContainsKey(state.Automation.LastDiscipline ?? "") ? state.Automation.LastDiscipline : pipeOptions.Keys.First();
-                bool plumbing = discipline == AutomationInputs.Plumbing;
+                // or sprinkler drawings, standpipe / FDC sleeves (rules.json "sprinkler"; the office puts them in the PL model).
+                // What the model is comes from the user's saved answer, its name, then what it holds (ModelDiscipline); the
+                // drawings picked say which discipline this run is (their sheet numbers, P- / SP- / M-). A model nothing
+                // recognises can run any of them: the drawings decide, or the user is asked once.
+                var model = ModelDiscipline.Detect(doc, rules, state, existing);
+                var allowed = ModelDiscipline.Disciplines(model.Kind, rules);
+                var pipeOptions = PipeRules(rules);
+                string discipline = allowed.Contains(state.Automation.LastDiscipline ?? "") ? state.Automation.LastDiscipline : allowed.First();
                 var pipeRules = pipeOptions.TryGetValue(discipline, out var pr) ? pr : null;
                 var profile = pipeRules?.Profile ?? rules.DwgProfile;
-                App.Log($"AutoRun: opens as {discipline} (model '{doc.Title}'; can run {(pipeOptions.Count == 0 ? "mechanical" : string.Join(", ", pipeOptions.Keys))})");
+                App.Log($"AutoRun: model '{doc.Title}' is {model.Describe()}; can run {string.Join(", ", allowed)}; opens as {discipline}");
 
-                var folders = (pipeOptions.Count == 0 ? new[] { profile } : pipeOptions.Values.Select(o => o.Profile))
-                    .SelectMany(p => new[] { ReferenceFiles.FindFolder(doc.PathName, p.ReferenceFolders) })
-                    .Concat((pipeOptions.Count == 0 ? new[] { discipline } : pipeOptions.Keys.ToArray()).Select(d => state.Automation.For(d).Xrefs)).ToList();
+                var folders = allowed.Select(d => pipeOptions.TryGetValue(d, out var o) ? o.Profile : rules.DwgProfile)
+                    .Distinct().Select(p => ReferenceFiles.FindFolder(doc.PathName, p.ReferenceFolders))
+                    .Concat(allowed.Select(d => state.Automation.For(d).Xrefs)).ToList();
                 var modelRefs = CadReferences.Collect(doc, folders);
                 App.Log($"AutoRun: {modelRefs.Count} DWG(s) imported/linked in the model: " +
                         string.Join(", ", modelRefs.Select(r => $"{r.Name} [{r.Method}, level {r.Level ?? "-"}, {(r.Path != null ? "file found" : r.Problem)}]")));
@@ -77,23 +78,32 @@ namespace SleevesOpenings.Automation
                 RiserDiagramResult diagram; SoCompareResult soCompare; SoSetResult soSet;
                 using (var form = new AutoRunForm(existing, state.Automation, levels, rules.Legend, profile, modelRefs, revitGrids, doc.PathName,
                                                   rules.Systems.DryerExhaust.MinSpacing, rules.Automation, c => AutoPlacer.OpeningSize(rules, c),
-                                                  pipeRules != null ? (Action<RiserAssembly>)null
-                                                  : a => OpeningLayout.Apply(a, c => AutoPlacer.OpeningSize(rules, c), rules.Clearances.ErvFloorCenterToCenter,
+                                                  a => OpeningLayout.Apply(a, c => AutoPlacer.OpeningSize(rules, c), rules.Clearances.ErvFloorCenterToCenter,
                                                                            rules.Clearances.ErvSpacingExact, rules.Systems.DryerExhaust.Diameter,
                                                                            rules.Systems.DryerExhaust.ShaftOpening,
-                                                                           firstNumberEastWest: rules.Systems.Exhaust.FirstNumberEastWest),
+                                                                           firstNumberEastWest: rules.Systems.Exhaust.FirstNumberEastWest,
+                                                                           decisions: rules.Automation.Decisions,
+                                                                           roofDryerWidth: rules.Systems.DryerExhaust.RoofOpeningWidth,
+                                                                           roofDryerLength: rules.Systems.DryerExhaust.RoofOpeningLength,
+                                                                           dryerGap: rules.Systems.DryerExhaust.MinSpacing),
                                                   discipline, pipeRules, columns, rules.PdfOnly,
-                                                  pipeOptions.ContainsKey(AutomationInputs.Plumbing) ? a => FixtureSleeveLocator.Apply(doc, a, rules.Plumbing) : null,
-                                                  pipeOptions))
+                                                  pipeOptions.ContainsKey(AutomationInputs.Plumbing) ? a => FixtureSleeveLocator.Apply(doc, a, rules.Plumbing, existing) : null,
+                                                  pipeOptions, model, allowed, rules.DwgProfile))
                 {
                     if (form.ShowDialog(SleevesOpenings.UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
                     pdf = form.Pdf; dwg = form.Dwg; risersFound = form.Risers?.Risers.Count ?? 0;
                     alignment = form.Alignment; assembly = form.Assembly; mark = form.MarkAnchors; place = form.PlaceNow;
                     diagram = form.Diagram; soCompare = form.SoCompare; soSet = form.SoSet; pdfPlans = form.PdfPlans;
                     discipline = form.Discipline;
+                    if (form.ChosenModelKind != null)
+                    {
+                        state.Automation.ModelKind = form.ChosenModelKind;
+                        model = new ModelKindResult { Kind = form.ChosenModelKind, Source = "your choice", Reason = "chosen in Auto Run, saved in this model" };
+                    }
                 }
                 state.Automation.LastDiscipline = discipline;
-                App.Log($"AutoRun: discipline {discipline} (from the drawings picked)");
+                App.Log($"AutoRun: discipline {discipline} (from the drawings picked)" +
+                        (state.Automation.ModelKind != null ? $"; model kind {state.Automation.ModelKind} (your choice, saved)" : ""));
 
                 using (var t = new Transaction(doc, "Sleeves & Openings: Auto Run inputs"))
                 {
@@ -201,13 +211,23 @@ namespace SleevesOpenings.Automation
                     if (placedIds.Count > 0)
                         try
                         {
-                            final = FinalCheck(doc, rules, levels, placedIds);
+                            // sleeves already in the model that this run's risers use are checked as part of those risers
+                            var serving = new Dictionary<long, string>();
+                            foreach (var o in outcomes.Where(o => o.Result == PlacementOutcome.Existing && o.Crossing?.Tag != null))
+                                foreach (var id in o.Ids) serving[id.Value] = o.Crossing.Tag;
+                            final = FinalCheck(doc, rules, levels, placedIds, serving);
                             App.Log("AutoRun: " + final);
                             foreach (var (i, fix) in final.Fixed) App.Log($"AutoRun: final check fixed {i.Level} {i.Riser}: {i.Message} -> {fix}");
                             foreach (var i in final.Remaining) App.Log($"AutoRun: final check {i.Severity} {i.Rule} {i.Level} {i.Riser}: {i.Message}");
                         }
                         catch (Exception ex) { App.Log("AutoRun: final check failed: " + ex); }
                 }
+
+                // the S&O set (SL101…): completed from the pattern sheet and printed, in the PL / FP model where the office keeps it
+                string soSheets = null;
+                if (place && discipline != AutomationInputs.Mechanical)
+                    try { soSheets = Sheets.SoSetCommand.AfterAutoRun(doc, rules, levels, ProjectStore.Load(doc)); }
+                    catch (Exception ex) { soSheets = "S&O sheets failed: " + ex.Message; App.Log("AutoRun: S&O sheets failed: " + ex); }
 
                 var marks = new List<ElementId>();
                 if (mark && alignment != null)
@@ -222,6 +242,7 @@ namespace SleevesOpenings.Automation
                 }
 
                 string summary =
+                        $"Model: {model.Describe()}\n" +
                         $"PDF: {(pdf == null ? "none" : $"{pdf.FloorPlans.Count()} floor plan(s)")}\n" +
                         (pdfPlans != null
                             ? $"DWG: none (PDF only: {pdfPlans.Plans.Count(p => p.Problem == null)} floor plan(s) read from the PDF's CAD layers, lined up by their columns)\n" +
@@ -234,6 +255,7 @@ namespace SleevesOpenings.Automation
                         OpeningsText(assembly, listPath) +
                         PlacedText(outcomes, place, alignment, assembly) + (views != null ? "\n\n" + views : "") +
                         (final != null ? "\n\n" + final : "") +
+                        (soSheets != null ? "\n\n" + soSheets : "") +
                         (soCompare != null ? $"\n\nS&O set ({System.IO.Path.GetFileName(soSet?.Path)}): {soCompare.Summary()}" : "") +
                         (diagram != null ? $"\nRiser diagram (page {diagram.Page}): {diagram.Risers.Count} tagged run(s) checked against the plans" : "");
 
@@ -243,7 +265,7 @@ namespace SleevesOpenings.Automation
                 try
                 {
                     report = ReportBuilder.Build(doc.Title, files, alignment, assembly, outcomes, soCompare, final, rules,
-                                                 summary.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith("List saved")));
+                                                 summary.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith("List saved")), discipline);
                     report.Summary = summary;
                     (html, _) = report.Write(folder);
                     App.Log("AutoRun: report saved to " + html);
@@ -265,32 +287,19 @@ namespace SleevesOpenings.Automation
             }
         }
 
-        /// <summary>
-        /// The pipe disciplines the model can run, with their rules: a PL model (rules.json plumbing.modelMatch) or a sprinkler
-        /// model (sprinkler.modelMatch) runs plumbing and sprinkler / standpipe (the office has no FP model: those sleeves
-        /// go in the PL model); which one a run is comes from the drawings' sheet numbers. Empty = mechanical (HV) model.
-        /// </summary>
-        internal static Dictionary<string, PlumbingRules> PipeDisciplines(Document doc, RuleSet rules)
+        /// <summary>The pipe disciplines' rules: plumbing, and sprinkler / standpipe unless rules.json turns it off.</summary>
+        internal static Dictionary<string, PlumbingRules> PipeRules(RuleSet rules)
         {
-            string name = System.IO.Path.GetFileNameWithoutExtension(doc.PathName ?? "");
-            if (string.IsNullOrEmpty(name)) name = doc.Title ?? "";
-            bool Is(string pattern) => !string.IsNullOrEmpty(pattern) &&
-                                       System.Text.RegularExpressions.Regex.IsMatch(name, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            bool sprinkler = rules.Sprinkler != null && rules.Sprinkler.Enabled;
-            var options = new Dictionary<string, PlumbingRules>();
-            if (Is(rules.Plumbing?.ModelMatch) || (sprinkler && Is(rules.Sprinkler.ModelMatch)))
-            {
-                options[AutomationInputs.Plumbing] = rules.Plumbing;
-                if (sprinkler) options[AutomationInputs.Sprinkler] = rules.Sprinkler;
-            }
+            var options = new Dictionary<string, PlumbingRules> { [AutomationInputs.Plumbing] = rules.Plumbing };
+            if (rules.Sprinkler != null && rules.Sprinkler.Enabled) options[AutomationInputs.Sprinkler] = rules.Sprinkler;
             return options;
         }
 
         /// <summary>Final Check on the openings one run placed (issues touching them); safe fixes (size, name, riser id) applied once, then checked again.</summary>
-        private static FinalCheckRun FinalCheck(Document doc, RuleSet rules, LevelMap levels, HashSet<long> ids)
+        private static FinalCheckRun FinalCheck(Document doc, RuleSet rules, LevelMap levels, HashSet<long> ids, IDictionary<long, string> serving = null)
         {
             var run = new FinalCheckRun { Checked = ids.Count };
-            List<AuditIssue> Mine() => new Auditor(doc, rules, ProjectStore.Load(doc), levels).Run()
+            List<AuditIssue> Mine() => new Auditor(doc, rules, ProjectStore.Load(doc), levels, serving).Run()
                                            .Where(i => i.Elements.Any(e => ids.Contains(e.Value))).ToList();
             var issues = Mine();
             var fixable = !rules.Automation.AutoFix ? new List<AuditIssue>()

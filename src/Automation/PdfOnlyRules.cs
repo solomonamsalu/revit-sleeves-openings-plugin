@@ -28,6 +28,18 @@ namespace SleevesOpenings.Automation
         [JsonProperty("columnMinSize")] public double ColumnMinSize { get; set; } = 6;
         [JsonProperty("columnMaxSize")] public double ColumnMaxSize { get; set; } = 48;
 
+        /// <summary>
+        /// Plumbing: regex on the PDF layers holding the architect's fixtures (toilets, tubs, sinks...). A fixture label's
+        /// sleeve is placed from the fixture drawn there (manual, toilet sleeves page); empty = fixture labels stay for review.
+        /// </summary>
+        [JsonProperty("fixtureLayers")] public string FixtureLayers { get; set; } = @"A-FIXT|KITCHEN|PLUMBING.?FIXTURE|P-FIXT";
+        /// <summary>Regex on the PDF layers holding the walls (a sink's sleeve goes in the wall behind it).</summary>
+        [JsonProperty("wallLayers")] public string WallLayers { get; set; } = @"A-WALL$";
+        /// <summary>A fixture's drawing this far (inches) from its label at most.</summary>
+        [JsonProperty("fixtureSearch")] public double FixtureSearch { get; set; } = 24;
+        /// <summary>Toilet sleeve centre from the wall behind the toilet (manual: 1'-1").</summary>
+        [JsonProperty("toiletFromWall")] public double ToiletFromWall { get; set; } = 13;
+
         /// <summary>Tag bubbles: circles in this radius range at the end of a leader.</summary>
         [JsonProperty("bubbleMinRadius")] public double BubbleMinRadius { get; set; } = 6;
         [JsonProperty("bubbleMaxRadius")] public double BubbleMaxRadius { get; set; } = 30;

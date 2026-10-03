@@ -39,8 +39,24 @@ namespace SleevesOpenings.Automation.Assembly
 
         public string Name => Tag ?? (System == "DryerExhaust" ? "dryer" : "?");
 
-        /// <summary>The rules give the size, not a drawing label: dryer sleeves, garbage chutes (always 28.5" x 28.5").</summary>
-        public bool SizedByRules => System == "DryerExhaust" || System == "GarbageChute";
+        /// <summary>The rules give the size, not a drawing label: dryer sleeves, garbage chutes (always 28.5" x 28.5"), boxes.</summary>
+        public bool SizedByRules => System == "DryerExhaust" || System == "GarbageChute" || BoxW.HasValue;
+
+        /// <summary>
+        /// A Regular Opening of exactly this size (inches across Revit X / along Y, clearances included, not turned) instead
+        /// of the duct + clearances: shafts, openings combined with their neighbours, openings reshaped to clear structure.
+        /// </summary>
+        public double? BoxW, BoxL;
+        /// <summary>Opening name instead of the tag ("KX2/TX3" for a combined opening).</summary>
+        public string Label;
+        /// <summary>Combined into that crossing's opening: nothing of its own is placed.</summary>
+        public Crossing MergedInto;
+        /// <summary>One opening at each of <see cref="Points"/> (a tub's two sleeves), not one at X/Y.</summary>
+        public bool EachPoint;
+        /// <summary>Fixture sleeves: how the drawn fixture gave the position (X/Y, Points); null = only the label's spot is known.</summary>
+        public string DrawnDrain;
+        /// <summary>A fixture's sleeve (WC, LAV, BT... named on the plan), not a riser that runs floor to floor.</summary>
+        public bool IsFixture => From.Any(f => f.Contains(": fixture '"));
 
         /// <summary>Angle (radians, Revit plan) of the size's first number; null = no duct outline drawn (first number along X assumed).</summary>
         public double? Rotation;
@@ -50,6 +66,11 @@ namespace SleevesOpenings.Automation.Assembly
         public List<string> Dampers = new List<string>();
         /// <summary>" +MD", " +FSD" for the tables; empty without dampers.</summary>
         public string DamperSuffix => Dampers.Count == 0 ? "" : " +" + string.Join("-", Dampers);
+
+        /// <summary>Sleeves already in the model that serve this crossing (element id values), found before placing (fixture sleeves).</summary>
+        public List<long> ExistingIds = new List<long>();
+        /// <summary>What <see cref="ExistingIds"/> are and how far from the drawing's point, for the report.</summary>
+        public string ExistingDetail;
     }
 
     /// <summary>Something the drawings show that will not be placed, with the reason.</summary>
@@ -57,7 +78,8 @@ namespace SleevesOpenings.Automation.Assembly
     {
         public const string TagMissing = "tag missing", Undefined = "undefined tag", Decision = "needs a decision",
                             NoSize = "no size label", Loose = "bubble not connected", Top = "no floor above", OnlyPdf = "only in the PDF",
-                            OnlyDiagram = "only in the riser diagram", NotSleeved = "no sleeve";
+                            OnlyDiagram = "only in the riser diagram", NotSleeved = "no sleeve", ModelGap = "model/PDF gap",
+                            Explained = "explained (no sleeve needed)";
         public string Floor, Tag, Type, Detail;
         public double? X, Y;                 // Revit (feet), when the floor is lined up
         public string Level;                 // Revit level of the floor (the review list zooms in its view), when matched
@@ -89,6 +111,8 @@ namespace SleevesOpenings.Automation.Assembly
             public (double X, double Y)? At;     // Revit (feet)
             public TagMeaning Meaning;
             public string Review;                // "needs a decision" text
+            public TagMeaning Note;              // the note next to an untagged riser makes it an opening (shaft / GMV)
+            public string NoteText;
         }
 
         /// <param name="tolerance">Inches: two labels this close on one slab are the same crossing.</param>
@@ -96,7 +120,8 @@ namespace SleevesOpenings.Automation.Assembly
         /// <param name="reach">Inches: a crossing only the floor below shows moves to the same riser drawn this close on its own floor.</param>
         public static RiserAssembly Run(DwgSheetIndex index, DwgRiserResult risers, AlignmentResult alignment, SleevesOpenings.Automation.Legend.Legend legend,
                                         LegendRules rules, IDictionary<string, string> floorLevels, PdfCheckResult pdf = null,
-                                        IList<DuctOutline> outlines = null, double dryerMinSpacing = 8, double tolerance = 3, double drift = 12, double reach = 24)
+                                        IList<DuctOutline> outlines = null, double dryerMinSpacing = 8, double tolerance = 3, double drift = 12, double reach = 24,
+                                        bool trustUp = false, double clearance = 2, double roofIncrease = 4)
         {
             var result = new RiserAssembly();
             var floors = index.Floors.Select(f => f.Floor).Distinct().OrderBy(FloorKey.Order).ToList();
@@ -123,6 +148,8 @@ namespace SleevesOpenings.Automation.Assembly
                         var m = new TagMeaning();
                         SleevesOpenings.Automation.Legend.Legend.Classify(m, note, rules);
                         if (m.Category == TagCategory.Review) { it.Review = $"{m.Review}: '{Short(note)}'"; break; }
+                        if (m.Category == TagCategory.Opening && m.Rule != null && (!string.IsNullOrEmpty(m.Rule.Shaft) || !string.IsNullOrEmpty(m.Rule.Label)))
+                        { it.Note = m; it.NoteText = note; break; }
                     }
                 items.Add(it);
             }
@@ -131,12 +158,13 @@ namespace SleevesOpenings.Automation.Assembly
             while (spread)
             {
                 spread = false;
-                foreach (var it in items.Where(i => i.Review == null && Bare(i) && i.At.HasValue))
+                foreach (var it in items.Where(i => i.Review == null && i.Note == null && Bare(i) && i.At.HasValue))
                 {
-                    var src = items.FirstOrDefault(o => o.Review != null && o.At.HasValue && (o.R.Floor == Above(it.R.Floor) || o.R.Floor == Below(it.R.Floor)) &&
+                    var src = items.FirstOrDefault(o => (o.Review != null || o.Note != null) && o.At.HasValue && (o.R.Floor == Above(it.R.Floor) || o.R.Floor == Below(it.R.Floor)) &&
                                                         Near(o.At.Value, it.At.Value, far));
                     if (src == null) continue;
-                    it.Review = $"{src.Review.Split(':')[0]} (same shaft as on the {FloorKey.Describe(src.R.Floor)})";
+                    if (src.Note != null) { it.Note = src.Note; it.NoteText = $"{src.NoteText} (same riser as on the {FloorKey.Describe(src.R.Floor)})"; }
+                    else it.Review = $"{src.Review.Split(':')[0]} (same shaft as on the {FloorKey.Describe(src.R.Floor)})";
                     spread = true;
                 }
             }
@@ -236,6 +264,39 @@ namespace SleevesOpenings.Automation.Assembly
                 }
             }
 
+            // ---- 4b. untagged risers whose note makes them an opening: a shaft (one box around every duct drawn there, e.g.
+            //      combustion air / Type B vents) or a named riser ("8Ø GAS METER VENT" -> GMV). A floor's slab is cut where the
+            //      floor below draws the same riser (it comes up through it); where it starts, nothing is cut.
+            const double shaftReach = 72.0 / 12;
+            foreach (var it in items.Where(i => i.Note != null && i.At.HasValue && i.Fa != null))
+            {
+                var rule = it.Note.Rule;
+                bool shaft = !string.IsNullOrEmpty(rule.Shaft);
+                var below = Below(it.R.Floor);
+                if (below == null || !items.Any(o => o != it && o.Note?.Rule == rule && o.R.Floor == below && o.At.HasValue && Near(o.At.Value, it.At.Value, shaftReach))) continue;
+                var pts = it.R.Symbols.Where(DwgRiserReader.Drawn).Select(sy => it.Fa.ToRevit(sy.X, sy.Y)).Where(q => q.HasValue).Select(q => q.Value).ToList();
+                if (pts.Count == 0) pts.Add(it.At.Value);
+                double dia = NoteDiameter(it.NoteText) ?? rule.Diameter;
+                var c = new Crossing
+                {
+                    Floor = it.R.Floor, Tag = shaft ? rule.Shaft : rule.Label, System = it.Note.System ?? "Exhaust", HasPosition = true, Ducts = pts.Count,
+                    X = (pts.Min(q => q.X) + pts.Max(q => q.X)) / 2, Y = (pts.Min(q => q.Y) + pts.Max(q => q.Y)) / 2
+                };
+                if (shaft)
+                {
+                    double Even(double v) => Math.Ceiling(Math.Round(v, 2) / 2) * 2;
+                    double extra = dia + 2 * clearance + (FloorKey.Order(c.Floor) >= FloorKey.Order("ROOF") ? roofIncrease : 0);
+                    c.BoxW = Even((pts.Max(q => q.X) - pts.Min(q => q.X)) * 12 + extra);
+                    c.BoxL = Even((pts.Max(q => q.Y) - pts.Min(q => q.Y)) * 12 + extra);
+                    c.Notes.Add($"shaft: {pts.Count} duct(s) drawn in it get one opening around them all ({c.BoxW:0}\" x {c.BoxL:0}\": {dia:0.#}\" ducts + {clearance:0.#}\" each side), as the office sets draw it");
+                }
+                else c.Size = new DuctSize { Diameter = dia };
+                c.From.Add($"{FloorKey.Describe(below)} + {FloorKey.Describe(c.Floor)}: '{Short(it.NoteText)}'");
+                c.Plans.Add(below); c.Plans.Add(c.Floor);
+                if (!string.IsNullOrEmpty(rule.Check)) { c.Check = true; c.Notes.Add(rule.Check); }
+                result.Crossings.Add(c);
+            }
+
             // ---- 5. the issued PDF: its size wins; a label it does not show is left for review
             foreach (var c in result.Crossings.Where(c => c.Sources.Count > 0))
             {
@@ -290,6 +351,14 @@ namespace SleevesOpenings.Automation.Assembly
                 if (fromBelow && !own)
                 {
                     if (drawn) c.Notes.Add($"riser drawn on the {FloorKey.Describe(c.Floor)} plan (no label there)");
+                    else if (trustUp && c.Sources.Any(x => x.Dir == "UP" && x.L.GoesUp))
+                    {
+                        // the floor below says UP in words: the riser goes on through this slab, straight (manual 23, 45-51)
+                        var near = drawnHere.Select(p => Math.Sqrt(Math.Pow(p.X - c.X, 2) + Math.Pow(p.Y - c.Y, 2)) * 12).Where(d => d <= 24).DefaultIfEmpty().Min();
+                        c.Notes.Add($"only the {FloorKey.Describe(plans[0])} plan shows it; its label says UP, so it is placed straight above it " +
+                                    $"(manual 23, 45-51: risers stay straight); nothing drawn here on the {FloorKey.Describe(c.Floor)} plan" +
+                                    (near > 0 ? $" (a riser is drawn {near:0}\" away)" : ""));
+                    }
                     else
                     {
                         c.Status = Crossing.Review;
@@ -392,6 +461,8 @@ namespace SleevesOpenings.Automation.Assembly
                     result.NotRisers++;
                 else if (Bare(it) && Explained(result, it, far))
                     continue;                           // named by the floor below (a dryer shaft continuing up)
+                else if (it.Note != null)
+                    continue;                           // an opening from its note (step 4b)
                 else if (it.Review != null)
                     Issue(result, r.Floor, null, it.At, AssemblyIssue.Decision, $"{it.Review} ({r.Ducts} duct(s))");
                 else if (Bare(it))
@@ -428,6 +499,13 @@ namespace SleevesOpenings.Automation.Assembly
         private static bool OnDryerDuct(RiserAssembly result, Crossing c) =>
             c.System != "DryerExhaust" &&
             result.Crossings.Any(o => o != c && o.Floor == c.Floor && o.System == "DryerExhaust" && o.Points.Any(p => Math.Abs(p[0] - c.X) <= 1.5 / 12 && Math.Abs(p[1] - c.Y) <= 1.5 / 12));
+
+        /// <summary>A round size written in a note ("8Ø GAS METER VENT" -> 8); null when none.</summary>
+        private static double? NoteDiameter(string note)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(note ?? "", @"(\d+(?:\.\d+)?)\s*(?:\u00D8|\u00F8|""|\uFFFD|DIA\b)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return m.Success ? double.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) : (double?)null;
+        }
 
         private static string Short(string text) => text.Length <= 90 ? text : text.Substring(0, 87).TrimEnd() + "...";
 

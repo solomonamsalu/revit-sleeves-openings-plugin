@@ -60,7 +60,7 @@ namespace SleevesOpenings.Automation
         {
             ["WC"] = new FixtureSleeve { Name = "toilet", Pipe = 4 },
             ["LAV"] = new FixtureSleeve { Name = "lavatory", Pipe = 1.5 },
-            ["BT"] = new FixtureSleeve { Name = "bathtub", Pipe = 4, Count = 2, Spacing = 6 },
+            ["BT"] = new FixtureSleeve { Name = "bathtub", Pipe = 4, Count = 2, Spacing = 7 },      // two 6" sleeves, 1" clear
             ["SH"] = new FixtureSleeve { Name = "shower", Pipe = 2 },
             ["KS"] = new FixtureSleeve { Name = "kitchen sink", Pipe = 2 },
             ["LS"] = new FixtureSleeve { Name = "laundry sink", Pipe = 2 },

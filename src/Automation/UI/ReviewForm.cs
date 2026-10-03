@@ -25,7 +25,7 @@ namespace SleevesOpenings.Automation.UI
     /// Plan section 9: the review list after an Auto Run. One row per opening / reported item / Final Check finding /
     /// S&amp;O difference; double-click zooms to it in the floor's Sleeves view (placed openings are selected, the rest are
     /// shown at their drawing position). Review spots can be marked in the model (one undo removes them). Opens the
-    /// HTML report and the run folder.
+    /// HTML report, the CSV report and the run folder.
     /// </summary>
     public class ReviewForm : Form
     {
@@ -80,6 +80,9 @@ namespace SleevesOpenings.Automation.UI
             var zoom = new Button { Text = "Zoom to selected", AutoSize = true };
             var mark = new Button { Text = "Mark spots in the model", AutoSize = true };
             var open = new Button { Text = "Open report", AutoSize = true, Enabled = html != null && File.Exists(html) };
+            // report.csv is written next to report.html
+            string csv = html == null ? null : Path.Combine(Path.GetDirectoryName(html) ?? "", "report.csv");
+            var openCsv = new Button { Text = "Open CSV", AutoSize = true, Enabled = csv != null && File.Exists(csv) };
             var folderBtn = new Button { Text = "Open run folder", AutoSize = true, Enabled = folder != null && Directory.Exists(folder) };
             var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
             var hint = new Label
@@ -90,8 +93,9 @@ namespace SleevesOpenings.Automation.UI
             zoom.Click += (s, e) => { var r = Current(); if (r != null) Zoom(r); };
             mark.Click += (s, e) => Mark();
             open.Click += (s, e) => Start(_html);
+            openCsv.Click += (s, e) => Start(csv);
             folderBtn.Click += (s, e) => Start(_folder);
-            bottom.Controls.AddRange(new Control[] { zoom, mark, open, folderBtn, close, hint });
+            bottom.Controls.AddRange(new Control[] { zoom, mark, open, openCsv, folderBtn, close, hint });
 
             Controls.Add(_grid);
             Controls.Add(bar);
@@ -160,7 +164,13 @@ namespace SleevesOpenings.Automation.UI
                     // zoom in the floor's view ourselves: ShowElements asks to search every closed view when the
                     // active one does not show them
                     var open = _uidoc.GetOpenUIViews().FirstOrDefault(v => v.ViewId == _uidoc.ActiveView.Id);
-                    if (open == null) { _uidoc.ShowElements(ids); return; }
+                    if (open == null)
+                    {
+                        // the floor's view is still opening (the change is asynchronous): the selection shows in it; only with no
+                        // floor view at all let Revit find one (it asks before searching closed views)
+                        if (view == null) _uidoc.ShowElements(ids);
+                        return;
+                    }
                     var boxes = elements.Select(e => e.get_BoundingBox(null)).ToList();
                     var min = new XYZ(boxes.Min(b => b.Min.X), boxes.Min(b => b.Min.Y), 0);
                     var max = new XYZ(boxes.Max(b => b.Max.X), boxes.Max(b => b.Max.Y), 0);

@@ -81,34 +81,46 @@ namespace SleevesOpenings
             return _rules;
         }
 
+        /// <summary>false = the tab shows only the automation (Auto Run, S&amp;O Set, Report) and its setup.</summary>
+        private static readonly bool ShowManualTools = false;
+
         private static void BuildRibbon(UIControlledApplication app)
         {
             try { app.CreateRibbonTab(TabName); } catch { /* already exists */ }
             string asm = Assembly.GetExecutingAssembly().Location;
 
-            var setup = app.CreateRibbonPanel(TabName, "Setup");
+            var auto = app.CreateRibbonPanel(TabName, "Automate");
+            auto.AddItem(Button("AutoRun", "Auto\nRun", asm, typeof(Automation.AutoRunCommand),
+                "Place sleeves and openings from the engineer's PDF + DWG. Checks what is already in the model, reads the drawings and matches their floors to the Revit levels."));
+            auto.AddItem(Button("SoSet", "S&O\nSet", asm, typeof(Sheets.SoSetCommand),
+                "Make or complete the S&O sheets (SL101…) like the pattern sheet: title block, the floor's Sleeves view, legend, " +
+                "the floor's schedule and label. Notes for the notes table. Prints the set to one PDF (Structural folder)."));
+            auto.AddItem(Button("LastReport", "Report", asm, typeof(Automation.LastReportCommand),
+                "Reopen the results of this model's latest Auto Run (placed, review, Final Check) without running it again. Double-click a row to zoom to it."));
+
+            var settings = app.CreateRibbonPanel(TabName, "Setup");
+            settings.AddItem(Button("ProjectSetup", "Project\nSetup", asm, typeof(Commands.ProjectSetupCommand),
+                "Classify levels, run the 'always verify' checklist, load families and set view ranges per the manual."));
+            settings.AddItem(Button("MapFamilies", "Map\nFamilies", asm, typeof(Commands.MapFamiliesCommand),
+                "Choose which loaded families and parameters are used for Regular Opening, Pipe Reference Opening, Round Sleeve and Electrical Opening."));
+            settings.AddItem(Button("EditRules", "Edit\nRules", asm, typeof(Commands.EditRulesCommand),
+                "Open rules.json for editing."));
+            settings.AddItem(Button("ReloadRules", "Reload\nRules", asm, typeof(Commands.ReloadRulesCommand),
+                "Re-read rules.json and show the active sizes/clearances."));
+
+            // The manual tools (Workflow, Place, Plan, Risers, Check, Document...) are hidden while the automation is
+            // finished: Auto Run does their work. Kept in the code; set ShowManualTools to bring them back.
+            if (!ShowManualTools) return;
+
+            var setup = app.CreateRibbonPanel(TabName, "Tools");
             setup.AddItem(Button("Workflow", "Workflow", asm, typeof(Commands.WorkflowCommand),
                 "The manual's sequence as a checklist: what is done in this model, what is next, one click to the right button."));
-            setup.AddItem(Button("ProjectSetup", "Project\nSetup", asm, typeof(Commands.ProjectSetupCommand),
-                "Classify levels, run the 'always verify' checklist, load families and set view ranges per the manual."));
-            setup.AddItem(Button("ReloadRules", "Reload\nRules", asm, typeof(Commands.ReloadRulesCommand),
-                "Re-read rules.json and show the active sizes/clearances."));
-            setup.AddItem(Button("EditRules", "Edit\nRules", asm, typeof(Commands.EditRulesCommand),
-                "Open rules.json for editing."));
-            setup.AddItem(Button("MapFamilies", "Map\nFamilies", asm, typeof(Commands.MapFamiliesCommand),
-                "Choose which loaded families and parameters are used for Regular Opening, Pipe Reference Opening, Round Sleeve and Electrical Opening."));
             setup.AddItem(Button("TestFamilies", "Create Test\nFamilies", asm, typeof(Commands.CreateTestFamiliesCommand),
                 "No office families yet? Generates a parametric test opening and test sleeve, loads them and maps them so every Place button works."));
             setup.AddItem(Button("Adopt", "Adopt\nExisting", asm, typeof(Commands.AdoptCommand),
                 "Stamp sleeves/openings that were placed by hand so Final Check, Riser Manager, Propagate and Schedule include them."));
             setup.AddItem(Button("ExportKey", "Export\nAnswer Key", asm, typeof(Commands.ExportAnswerKeyCommand),
                 "Read-only: write every sleeve/opening in this model (system, size, level, location) plus levels, grids and links to CSV, to score automatic placement against a finished model."));
-
-            var auto = app.CreateRibbonPanel(TabName, "Automate");
-            auto.AddItem(Button("AutoRun", "Auto\nRun", asm, typeof(Automation.AutoRunCommand),
-                "Place sleeves and openings from the engineer's PDF + DWG. Checks what is already in the model, reads the drawings and matches their floors to the Revit levels."));
-            auto.AddItem(Button("LastReport", "Last\nReport", asm, typeof(Automation.LastReportCommand),
-                "Reopen the results of this model's latest Auto Run (placed, review, Final Check) without running it again. Double-click a row to zoom to it."));
 
             // Place: one button per manual section. Click a plan, enter the engineer's size, click locations, Esc.
             var mech = app.CreateRibbonPanel(TabName, "Place – Mechanical");

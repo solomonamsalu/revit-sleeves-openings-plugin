@@ -42,6 +42,9 @@ namespace SleevesOpenings.Automation
         /// <summary>The discipline of the last run in this model (PL model: plumbing or sprinkler): the window opens on its files.</summary>
         public string LastDiscipline { get; set; }
 
+        /// <summary>HV / PL / FP when the user chose what this model is (its name and contents did not say, or the drawings disagreed); null otherwise.</summary>
+        public string ModelKind { get; set; }
+
         public DisciplineFiles For(string discipline)
         {
             if (!Files.TryGetValue(discipline, out var f)) Files[discipline] = f = new DisciplineFiles();

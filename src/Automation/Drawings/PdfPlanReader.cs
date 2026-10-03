@@ -63,9 +63,11 @@ namespace SleevesOpenings.Automation.Drawings
         private class Shape { public string Layer; public PdfPath Path; }
         private class Ring { public double X, Y, R; }
         private class Line { public string Text; public double X0, Y0, X1, Y1, Size; public double Cx => (X0 + X1) / 2; public double Cy => (Y0 + Y1) / 2; }
-        private class PageBubble { public double X, Y, R; public List<(double X, double Y)> Glyph; public string Tag; }
+        private class PageBubble { public double X, Y, R; public List<(double X, double Y)> Glyph; public List<List<(double X, double Y)>> Strokes; public string Tag; }
 
-        public static PdfPlanResult Read(string path, PdfSheetIndex sheets, DwgProfile profile, PdfOnlyRules rules, PlumbingRules wordLabels = null)
+        /// <param name="wordFixtures">Plumbing: sleeves per fixture code (tub: 2 x 6" c-c), for the sleeves placed from fixture drawings.</param>
+        public static PdfPlanResult Read(string path, PdfSheetIndex sheets, DwgProfile profile, PdfOnlyRules rules, PlumbingRules wordLabels = null,
+                                         IDictionary<string, FixtureSleeve> wordFixtures = null)
         {
             var result = new PdfPlanResult();
             result.Index.Path = path; result.Index.Version = "PDF (vector)"; result.Index.Units = "Inches";
@@ -73,6 +75,7 @@ namespace SleevesOpenings.Automation.Drawings
             var pipeLayers = Rx(profile.RiserCircleLayers); var connector = Rx(profile.ConnectorLayers);
             var columnLayers = Rx(rules.ColumnLayers); var fixtureText = Rx(profile.FixtureText);
             var ductLayers = Rx(profile.DuctLayers); var leaderLayers = Rx(rules.LeaderLayers);
+            var fixtureLayers = Rx(rules.FixtureLayers); var wallLayers = Rx(rules.WallLayers);
             bool mechanical = wordLabels == null && pipeLayers == null && ductLayers != null && connector != null;
             if (wordLabels == null && !mechanical && (pipeLayers == null || connector == null))
             {
@@ -207,17 +210,52 @@ namespace SleevesOpenings.Automation.Drawings
                     if (bubbles.Count > 0)
                     {
                         var strokes = page.Paths.SelectMany(q => q).Select(Points).Where(q => q.Count >= 2).ToList();
-                        foreach (var b in bubbles) b.Glyph = Glyph(strokes, b, k);
+                        foreach (var b in bubbles) { b.Strokes = Strokes(strokes, b, k); b.Glyph = b.Strokes.SelectMany(q => q).ToList(); }
                     }
 
                     // ---- text: fixture names at their spot, the rest as notes (service lists attach to the bubbles)
                     var texts = new List<(string Text, double X, double Y)>();
+                    var pageFixtures = new List<FixtureMark>();
                     foreach (var l in lines)
                     {
                         string t = l.Text.Trim().ToUpperInvariant();
                         if (fixtureText != null && !t.Contains(" ") && fixtureText.IsMatch(t))
-                            result.Risers.Fixtures.Add(new FixtureMark { Floor = sheet.Floor, Code = t, X = l.Cx * k, Y = l.Cy * k });
+                            pageFixtures.Add(new FixtureMark { Floor = sheet.Floor, Code = t, X = l.Cx * k, Y = l.Cy * k });
                         else texts.Add((l.Text, l.Cx * k, l.Cy * k));
+                    }
+                    result.Risers.Fixtures.AddRange(pageFixtures);
+
+                    // ---- the fixtures as drawn (architect's fixture layers) and the walls: where each fixture's sleeve goes
+                    if (pageFixtures.Count > 0 && fixtureLayers != null && wallLayers != null)
+                    {
+                        var strokes = new List<FixtureDrains.Stroke>();
+                        foreach (var s in shapes.Where(s => fixtureLayers.IsMatch(s.Layer)))
+                            foreach (var sub in s.Path)
+                            {
+                                var pts = Points(sub).Select(Real).ToList();
+                                if (pts.Count < 2) continue;
+                                var ring = Round(Points(sub));
+                                strokes.Add(new FixtureDrains.Stroke
+                                {
+                                    X0 = pts.Min(q => q.X), Y0 = pts.Min(q => q.Y), X1 = pts.Max(q => q.X), Y1 = pts.Max(q => q.Y),
+                                    Circle = ring != null && ring.R * k <= 3
+                                });
+                            }
+                        var walls = new List<((double X, double Y) A, (double X, double Y) B)>();
+                        foreach (var s in shapes.Where(s => wallLayers.IsMatch(s.Layer)))
+                            foreach (var sub in s.Path)
+                            {
+                                var pts = Points(sub).Select(Real).ToList();
+                                for (int i = 1; i < pts.Count; i++) walls.Add((pts[i - 1], pts[i]));
+                                if (sub.IsClosed() && pts.Count > 2) walls.Add((pts[pts.Count - 1], pts[0]));
+                            }
+                        try
+                        {
+                            FixtureDrains.Locate(pageFixtures, strokes, walls,
+                                code => wordFixtures != null && wordFixtures.TryGetValue(code, out var fs) ? (fs.Count, fs.Spacing) : (1, 0),
+                                rules.FixtureSearch, rules.ToiletFromWall);
+                        }
+                        catch (Exception ex) { result.Warnings.Add($"{FloorKey.Describe(sheet.Floor)} (page {sheet.Page}): fixture drawings not read: {ex.Message}"); }
                     }
 
                     result.Index.Floors.Add(floorRegion);
@@ -225,8 +263,9 @@ namespace SleevesOpenings.Automation.Drawings
                 }
             }
 
-            // ---- one name per tag drawing: bubbles whose strokes match carry the same tag, numbered in the order found
-            //      (lowest floor first, then left to right)
+            // ---- one name per tag drawing: bubbles whose strokes match carry the same tag. The number plotted in the
+            //      bubble is read from its strokes (StrokeDigits) so the tags are the engineer's (P6 -> "6"); a drawing that
+            //      cannot be read is numbered after the read ones, in the order found (lowest floor first, then left to right)
             var classes = new List<List<PageBubble>>();
             foreach (var b in pages.OrderBy(p => FloorKey.Order(p.Plan.Floor)).SelectMany(p => p.Bubbles.OrderBy(x => x.X)).Where(b => b.Glyph.Count > 0))
             {
@@ -234,8 +273,21 @@ namespace SleevesOpenings.Automation.Drawings
                 if (cls == null) classes.Add(cls = new List<PageBubble>());
                 cls.Add(b);
             }
-            for (int i = 0; i < classes.Count; i++)
-                foreach (var b in classes[i]) b.Tag = (i + 1).ToString();
+            var unread = new List<List<PageBubble>>();
+            foreach (var cls in classes)
+            {
+                var read = cls.Select(b => StrokeDigits.Read(b.Strokes)).Where(t => t != null).GroupBy(t => t).OrderByDescending(g => g.Count()).FirstOrDefault()?.Key;
+                if (read == null) { unread.Add(cls); continue; }
+                foreach (var b in cls) b.Tag = read;
+            }
+            int next = 0;
+            foreach (var cls in unread)
+            {
+                do next++; while (classes.Any(c => c[0].Tag == next.ToString()));
+                foreach (var b in cls) b.Tag = next.ToString();
+            }
+            if (unread.Count > 0)
+                result.Warnings.Add($"{unread.Count} tag bubble drawing(s) whose number could not be read from the strokes: numbered {string.Join(", ", unread.Select(c => c[0].Tag))} in the order found (not the engineer's numbers)");
             int loose = 0;
             foreach (var b in pages.SelectMany(p => p.Bubbles).Where(b => b.Tag == null)) b.Tag = "?" + (++loose);
 
@@ -679,21 +731,21 @@ namespace SleevesOpenings.Automation.Drawings
         }
 
         /// <summary>
-        /// The strokes drawn inside a bubble (its tag, plotted as lines), relative to the bubble's centre (PDF points).
+        /// The strokes drawn inside a bubble (its tag, plotted as lines), relative to the bubble's centre (PDF points), one polyline each.
         /// Rectangles (the white boxes behind the text, which shift a little from bubble to bubble) and the divider line are left out.
         /// </summary>
-        private static List<(double X, double Y)> Glyph(List<List<PdfPoint>> strokes, PageBubble b, double k)
+        private static List<List<(double X, double Y)>> Strokes(List<List<PdfPoint>> strokes, PageBubble b, double k)
         {
             double cx = b.X / k, cy = b.Y / k, inner = b.R / k * 0.8;
-            var pts = new List<(double X, double Y)>();
+            var result = new List<List<(double X, double Y)>>();
             foreach (var s in strokes)
             {
                 if (s.Any(p => Dist(p.X, p.Y, cx, cy) > inner)) continue;
                 if (s.Count == 2 && Math.Abs(s[0].Y - s[1].Y) < 0.01 && Math.Abs(s[0].X - s[1].X) > inner) continue;   // the bubble's divider
                 if (Rectangle(s) != null) continue;
-                pts.AddRange(s.Select(p => (p.X - cx, p.Y - cy)));
+                result.Add(s.Select(p => (p.X - cx, p.Y - cy)).ToList());
             }
-            return pts;
+            return result;
         }
 
         /// <summary>Two tag drawings are the same when every point of each lies within 1 pt of the other (after centring both).</summary>

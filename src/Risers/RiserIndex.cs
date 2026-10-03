@@ -14,7 +14,9 @@ namespace SleevesOpenings.Risers
         public OpeningData Data;
         public Level Level;
         public XYZ Point;
-        public string Riser => Data.Riser;
+        /// <summary>The riser this opening serves for one check only (a hand-placed sleeve an Auto Run used), not written to it.</summary>
+        public string RiserOverride;
+        public string Riser => RiserOverride ?? Data.Riser;
         public string SizeText => Data.Diameter.HasValue
             ? Units.FormatInches(Data.Diameter.Value)
             : $"{Units.FormatInches(Data.Width ?? 0)} x {Units.FormatInches(Data.Length ?? 0)}";
