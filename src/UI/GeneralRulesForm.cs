@@ -18,7 +18,8 @@ namespace SleevesOpenings.UI
         private readonly List<CheckBox> _confirms = new List<CheckBox>();
         private readonly Button _continue;
 
-        public GeneralRulesForm(GeneralRules rules, string fileName, string user)
+        /// <param name="status">When the rules were last confirmed (Project Setup), or null.</param>
+        public GeneralRulesForm(GeneralRules rules, string fileName, string user, string status = null)
         {
             Text = "Sleeves & Openings — General Rules";
             Font = new Font("Segoe UI", 10f);
@@ -36,7 +37,13 @@ namespace SleevesOpenings.UI
             };
             Controls.Add(head); y += head.PreferredHeight + 4;
             var file = new Label { Text = $"File: {fileName}    User: {user}", ForeColor = Color.DimGray, AutoSize = true, Location = new Point(pad, y) };
-            Controls.Add(file); y += file.PreferredHeight + 14;
+            Controls.Add(file); y += file.PreferredHeight + 4;
+            if (!string.IsNullOrEmpty(status))
+            {
+                var last = new Label { Text = status, ForeColor = Color.SeaGreen, AutoSize = true, Location = new Point(pad, y) };
+                Controls.Add(last); y += last.PreferredHeight + 4;
+            }
+            y += 10;
 
             foreach (var rule in rules.MustConfirm)
             {

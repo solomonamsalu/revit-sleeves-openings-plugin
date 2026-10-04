@@ -89,6 +89,17 @@ namespace SleevesOpenings
             try { app.CreateRibbonTab(TabName); } catch { /* already exists */ }
             string asm = Assembly.GetExecutingAssembly().Location;
 
+            // Setup on the left, Automate on the right: panels show in the order they are created.
+            var settings = app.CreateRibbonPanel(TabName, "Setup");
+            settings.AddItem(Button("ProjectSetup", "Project\nSetup", asm, typeof(Commands.ProjectSetupCommand),
+                "Confirm the manual's general rules for today: working from the Owner's plan and the latest file. Auto Run asks the same if this was not done."));
+            settings.AddItem(Button("MapFamilies", "Map\nFamilies", asm, typeof(Commands.MapFamiliesCommand),
+                "Optional: use other families in this project for Regular Opening, Pipe Reference Opening, Round Sleeve and Electrical Opening. Without it Auto Run uses the office families."));
+            settings.AddItem(Button("EditRules", "Edit\nRules", asm, typeof(Commands.EditRulesCommand),
+                "Edit the office's or this project's rules: sizes, clearances, names, tags, plumbing services, fixtures… Add, delete and reorder rules; import / export tables as CSV."));
+            settings.AddItem(Button("ReloadRules", "Reload\nRules", asm, typeof(Commands.ReloadRulesCommand),
+                "Re-read the rules files (after editing them by hand) and show the active sizes/clearances."));
+
             var auto = app.CreateRibbonPanel(TabName, "Automate");
             auto.AddItem(Button("AutoRun", "Auto\nRun", asm, typeof(Automation.AutoRunCommand),
                 "Place sleeves and openings from the engineer's PDF + DWG. Checks what is already in the model, reads the drawings and matches their floors to the Revit levels."));
@@ -97,16 +108,6 @@ namespace SleevesOpenings
                 "the floor's schedule and label. Notes for the notes table. Prints the set to one PDF (Structural folder)."));
             auto.AddItem(Button("LastReport", "Report", asm, typeof(Automation.LastReportCommand),
                 "Reopen the results of this model's latest Auto Run (placed, review, Final Check) without running it again. Double-click a row to zoom to it."));
-
-            var settings = app.CreateRibbonPanel(TabName, "Setup");
-            settings.AddItem(Button("ProjectSetup", "Project\nSetup", asm, typeof(Commands.ProjectSetupCommand),
-                "Classify levels, run the 'always verify' checklist, load families and set view ranges per the manual."));
-            settings.AddItem(Button("MapFamilies", "Map\nFamilies", asm, typeof(Commands.MapFamiliesCommand),
-                "Choose which loaded families and parameters are used for Regular Opening, Pipe Reference Opening, Round Sleeve and Electrical Opening."));
-            settings.AddItem(Button("EditRules", "Edit\nRules", asm, typeof(Commands.EditRulesCommand),
-                "Open rules.json for editing."));
-            settings.AddItem(Button("ReloadRules", "Reload\nRules", asm, typeof(Commands.ReloadRulesCommand),
-                "Re-read rules.json and show the active sizes/clearances."));
 
             // The manual tools (Workflow, Place, Plan, Risers, Check, Document...) are hidden while the automation is
             // finished: Auto Run does their work. Kept in the code; set ShowManualTools to bring them back.

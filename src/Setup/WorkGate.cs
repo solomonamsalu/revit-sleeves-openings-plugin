@@ -28,8 +28,25 @@ namespace SleevesOpenings.Setup
         public static bool Ensure(Document doc, RuleSet rules, ProjectState state)
         {
             if (IsConfirmed(rules, state, doc)) return true;
+            return Ask(doc, rules, state, null);
+        }
 
-            using (var form = new GeneralRulesForm(rules.GeneralRules, FileName(doc), Environment.UserName))
+        /// <summary>
+        /// Project Setup: shows the confirmations even when already given (to give them again after getting a newer file).
+        /// Saves them in the model, so Auto Run does not ask again today.
+        /// </summary>
+        public static bool Confirm(Document doc, RuleSet rules, ProjectState state)
+        {
+            var c = state.Confirmation;
+            string status = c == null ? null
+                : IsConfirmed(rules, state, doc) ? $"Already confirmed today by {c.User} at {c.Date:HH:mm}."
+                : $"Last confirmed {c.Date:MM/dd/yy HH:mm} by {c.User} for {c.FileName}.";
+            return Ask(doc, rules, state, status);
+        }
+
+        private static bool Ask(Document doc, RuleSet rules, ProjectState state, string status)
+        {
+            using (var form = new GeneralRulesForm(rules.GeneralRules, FileName(doc), Environment.UserName, status))
             {
                 if (form.ShowDialog(UI.RevitWindow.Instance) != DialogResult.OK)
                 {

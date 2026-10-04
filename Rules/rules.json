@@ -292,6 +292,9 @@
     "pdfName": "{project} Sleeves & Openings {date}",
     "pdfDateFormat": "M-d-yy",
     "pdfFolder": "^Structural$",
+    "_paperSize": "auto = the smallest standard paper the title block fits on, at 100% and centred (24 Skillman's 35.5 x 23.2 in title block -> ARCH_D 24 x 36, as the office's sets); sheet = Revit's 'use sheet size' (page cut to the title block's lines); or ARCH_D, ARCH_E1, ANSI_D, ISO_A1... The S&O Set window's Naming and PDF tabs override these per project (saved in the model).",
+    "paperSize": "auto",
+    "renameExisting": false,
     "projectNameStrip": "[\\s_-]+(PL|HV|FP|SP|MEP|HVAC|MECH\\w*|PLUMB\\w*|SPRINK\\w*)([\\s_-].*)?$|[\\s_-]*detached$"
   },
 

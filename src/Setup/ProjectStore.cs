@@ -31,6 +31,8 @@ namespace SleevesOpenings.Setup
         public List<SleevesOpenings.Sheets.SoNote> SoNotes { get; set; } = new List<SleevesOpenings.Sheets.SoNote>();
         /// <summary>S&amp;O set: the PDF folder the user chose (null = the project's Structural folder).</summary>
         public string SoPdfFolder { get; set; }
+        /// <summary>S&amp;O set: this project's naming and PDF settings (null fields = rules.json).</summary>
+        public SleevesOpenings.Sheets.SoProjectSettings SoSettings { get; set; } = new SleevesOpenings.Sheets.SoProjectSettings();
     }
 
     public class RiserEnds

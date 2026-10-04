@@ -37,8 +37,11 @@ namespace SleevesOpenings.Rules
         [JsonProperty("soSheets")] public Sheets.SoSheetRules SoSheets { get; set; } = new Sheets.SoSheetRules();
         [JsonProperty("modelKind")] public Automation.ModelKindRules ModelKind { get; set; } = new Automation.ModelKindRules();
 
-        /// <summary>Where this rule set was loaded from (for display/debugging).</summary>
+        /// <summary>Where this rule set was loaded from (for display/debugging): the top layer's file.</summary>
         [JsonIgnore] public string SourcePath { get; set; }
+
+        /// <summary>Every layer that was read, lowest first (default, office, project).</summary>
+        [JsonIgnore] public List<string> Sources { get; set; } = new List<string>();
 
         public FamilyRule Family(string key) =>
             Families.TryGetValue(key, out var f) ? f : null;

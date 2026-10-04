@@ -62,7 +62,7 @@ namespace SleevesOpenings.Sheets
     public class SoSetResult
     {
         public List<string> Created = new List<string>(), Updated = new List<string>(), Problems = new List<string>();
-        public int Notes;
+        public int Notes, Fields;
         public string Pdf;
         public List<ElementId> SheetIds = new List<ElementId>();
 
@@ -72,6 +72,7 @@ namespace SleevesOpenings.Sheets
             if (Created.Count > 0) lines.Add($"S&O sheets made: {string.Join(", ", Created)}");
             if (Updated.Count > 0) lines.Add($"S&O sheets updated: {string.Join("; ", Updated)}");
             if (Created.Count == 0 && Updated.Count == 0) lines.Add($"S&O sheets: all {SheetIds.Count} up to date");
+            if (Fields > 0) lines.Add($"Title block / project fields written: {Fields}");
             if (Notes > 0) lines.Add($"Notes on the sheets: {Notes}");
             if (Pdf != null) lines.Add($"PDF: {Pdf}");
             lines.AddRange(Problems.Select(p => "! " + p));
@@ -89,9 +90,8 @@ namespace SleevesOpenings.Sheets
     {
         // ---------------------------------------------------------------- what to do
 
-        public static SoSetPlan Plan(Document doc, RuleSet rules, LevelMap levels)
+        public static SoSetPlan Plan(Document doc, RuleSet rules, SoSheetRules cfg, LevelMap levels)
         {
-            var cfg = rules.SoSheets ?? new SoSheetRules();
             string suffix = rules.SleeveViews?.NameSuffix ?? " Sleeves";
             var plan = new SoSetPlan { ProjectName = ProjectName(doc, cfg) };
             plan.Pattern = FindPattern(doc, cfg, suffix, plan.Problems);
@@ -137,7 +137,7 @@ namespace SleevesOpenings.Sheets
                 if (floor.Sheet != null)
                 {
                     floor.Number = floor.Sheet.SheetNumber;
-                    floor.Missing = Missing(doc, plan.Pattern, floor.Sheet, view, cfg);
+                    floor.Missing = Missing(doc, plan.Pattern, floor, cfg);
                 }
                 else
                 {
@@ -211,9 +211,11 @@ namespace SleevesOpenings.Sheets
         private static string Ord(int n) =>
             n + (n % 100 >= 11 && n % 100 <= 13 ? "th" : (n % 10) == 1 ? "st" : (n % 10) == 2 ? "nd" : (n % 10) == 3 ? "rd" : "th");
 
-        private static List<string> Missing(Document doc, SheetPattern p, ViewSheet sheet, ViewPlan view, SoSheetRules cfg)
+        private static List<string> Missing(Document doc, SheetPattern p, SoFloor f, SoSheetRules cfg)
         {
+            var sheet = f.Sheet; var view = f.View;
             var missing = new List<string>();
+            if (cfg.RenameExisting && !string.IsNullOrEmpty(f.Name) && sheet.Name != f.Name) missing.Add("name");
             if (!sheet.GetAllViewports().Select(id => doc.GetElement(id) as Viewport).Any(v => v?.ViewId == view.Id)) missing.Add("plan view");
             var onSheet = new FilteredElementCollector(doc, sheet.Id).WhereElementIsNotElementType().ToElements();
             if (p.TitleBlock != null && !onSheet.OfType<FamilyInstance>().Any(f => f.Category?.Id.Value == (long)BuiltInCategory.OST_TitleBlocks)) missing.Add("title block");
@@ -223,15 +225,15 @@ namespace SleevesOpenings.Sheets
             if (p.FloorLabel != null && !texts.Contains(TypeName(doc, p.FloorLabel))) missing.Add("floor label");
             foreach (var t in p.CopyTexts)
                 if (!texts.Contains(TypeName(doc, t))) missing.Add($"'{t.Text.Trim()}'");
+            if (LegendShift(doc, sheet) < 0) missing.Add(LegendBelow);
             return missing;
         }
 
         // ---------------------------------------------------------------- doing it
 
         /// <summary>Makes / completes the sheets and writes the notes. Opens its own transaction.</summary>
-        public static SoSetResult Apply(Document doc, RuleSet rules, SoSetPlan plan, IList<SoNote> notes)
+        public static SoSetResult Apply(Document doc, SoSheetRules cfg, SoSetPlan plan, IList<SoNote> notes, IList<SoField> fields = null)
         {
-            var cfg = rules.SoSheets ?? new SoSheetRules();
             var result = new SoSetResult();
             result.Problems.AddRange(plan.Problems);
             var p = plan.Pattern;
@@ -249,6 +251,7 @@ namespace SleevesOpenings.Sheets
                             f.Sheet = Create(doc, p, f, cfg);
                             result.Created.Add($"{f.Sheet.SheetNumber} {f.Sheet.Name}");
                             Complete(doc, p, f, new List<string> { "legend", "schedule", "floor label" }.Concat(p.CopyTexts.Select(x => $"'{x.Text.Trim()}'")).ToList(), result);
+                            Complete(doc, p, f, new List<string> { LegendBelow }, result);
                         }
                         else if (f.Missing.Count > 0)
                         {
@@ -263,7 +266,11 @@ namespace SleevesOpenings.Sheets
                         App.Log($"S&O sheets: {f.Level.Name} failed: {ex}");
                     }
                 }
-                try { result.Notes = WriteNotes(doc, cfg, plan.Floors.Where(f => f.Sheet != null).Select(f => f.Sheet).ToList(), notes ?? new List<SoNote>(), result.Problems); }
+                var setSheets = plan.Floors.Where(f => f.Sheet != null).Select(f => f.Sheet).ToList();
+                if (fields != null && fields.Any(x => x.Write))
+                    try { result.Fields = WriteFields(doc, setSheets.Concat(new[] { p.Sheet }).Distinct().ToList(), fields, result.Problems); }
+                    catch (Exception ex) { result.Problems.Add("Title block fields not written: " + ex.Message); App.Log("S&O sheets: fields failed: " + ex); }
+                try { result.Notes = WriteNotes(doc, cfg, setSheets, notes ?? new List<SoNote>(), result.Problems); }
                 catch (Exception ex) { result.Problems.Add("Notes not written: " + ex.Message); App.Log("S&O sheets: notes failed: " + ex); }
                 t.Commit();
             }
@@ -314,6 +321,8 @@ namespace SleevesOpenings.Sheets
 
         private static void Complete(Document doc, SheetPattern p, SoFloor f, List<string> missing, SoSetResult result)
         {
+            if (missing.Contains("name")) f.Sheet.Name = f.Name;
+
             if (missing.Contains("plan view"))
             {
                 // the sheet shows the other level of the same floor: its plan viewport is replaced by this level's, in place
@@ -359,6 +368,43 @@ namespace SleevesOpenings.Sheets
                     foreach (var id in ids)
                         if (doc.GetElement(id) is TextNote copied) copied.Text = text;
             }
+
+            if (missing.Contains(LegendBelow))
+            {
+                doc.Regenerate();
+                double shift = LegendShift(doc, f.Sheet);
+                var legend = LegendViewport(doc, f.Sheet);
+                if (shift < 0 && legend != null)
+                {
+                    legend.SetBoxCenter(legend.GetBoxCenter() + new XYZ(0, shift, 0));
+                    result.Problems.Add($"{f.Sheet.SheetNumber}: the schedule is longer than on the pattern sheet, so the legend moved down {Math.Abs(shift) * 12:0.##}\" under it; check it clears the notes table");
+                }
+            }
+        }
+
+        private const string LegendBelow = "legend below the schedule";
+
+        private static Viewport LegendViewport(Document doc, ViewSheet sheet) =>
+            sheet.GetAllViewports().Select(id => doc.GetElement(id) as Viewport).FirstOrDefault(v => v != null && doc.GetElement(v.ViewId) is View lv && lv.ViewType == ViewType.Legend);
+
+        /// <summary>
+        /// The floor's schedule grows down from where the pattern's starts; one with more sizes than the pattern's runs into
+        /// the legend under it. Returns how far the legend must go down (negative, feet) to clear it; 0 when they don't overlap.
+        /// </summary>
+        private static double LegendShift(Document doc, ViewSheet sheet)
+        {
+            var legend = LegendViewport(doc, sheet);
+            var ss = new FilteredElementCollector(doc, sheet.Id).OfClass(typeof(ScheduleSheetInstance)).Cast<ScheduleSheetInstance>().FirstOrDefault(x => !x.IsTitleblockRevisionSchedule);
+            if (legend == null || ss == null) return 0;
+            var box = ss.get_BoundingBox(sheet);
+            var o = legend.GetBoxOutline();
+            if (box == null || o == null) return 0;
+            const double gap = 0.125 / 12;                                                    // 1/8" between them
+            bool side = box.Max.X <= o.MinimumPoint.X || box.Min.X >= o.MaximumPoint.X;
+            bool clear = box.Min.Y >= o.MaximumPoint.Y;                                      // schedule wholly above the legend
+            bool under = box.Max.Y <= o.MinimumPoint.Y || box.Max.Y < o.MaximumPoint.Y;      // schedule under / starting inside: not this case
+            if (side || clear || under) return 0;
+            return Math.Min(0, box.Min.Y - gap - o.MaximumPoint.Y);
         }
 
         /// <summary>This floor's copy of the pattern schedule ("SL- 2nd floor"), its level filter set to the floor; an existing one by that name is reused.</summary>
@@ -408,6 +454,7 @@ namespace SleevesOpenings.Sheets
                     r.IssuedBy = tag;
                     r.RevisionDate = DateTime.Now.ToString(cfg.IssueDateFormat ?? "MM/dd/yy");
                 }
+                if (!string.IsNullOrWhiteSpace(n.Date) && r.RevisionDate != n.Date.Trim()) r.RevisionDate = n.Date.Trim();
                 byNote[n] = r;
             }
             var used = new HashSet<ElementId>(byNote.Values.Select(r => r.Id));
@@ -432,10 +479,176 @@ namespace SleevesOpenings.Sheets
             return wanted.Count;
         }
 
+        // ---------------------------------------------------------------- title block and project fields
+
+        private static readonly BuiltInParameter[] SheetFields =
+            { BuiltInParameter.SHEET_DRAWN_BY, BuiltInParameter.SHEET_CHECKED_BY, BuiltInParameter.SHEET_DESIGNED_BY, BuiltInParameter.SHEET_APPROVED_BY, BuiltInParameter.SHEET_ISSUE_DATE };
+
+        private static readonly BuiltInParameter[] ProjectFields =
+        {
+            BuiltInParameter.PROJECT_NAME, BuiltInParameter.PROJECT_ADDRESS, BuiltInParameter.CLIENT_NAME, BuiltInParameter.PROJECT_NUMBER,
+            BuiltInParameter.PROJECT_ISSUE_DATE, BuiltInParameter.PROJECT_STATUS, BuiltInParameter.PROJECT_AUTHOR,
+            BuiltInParameter.PROJECT_ORGANIZATION_NAME, BuiltInParameter.PROJECT_ORGANIZATION_DESCRIPTION, BuiltInParameter.PROJECT_BUILDING_NAME
+        };
+
+        /// <summary>
+        /// What the S&amp;O Set window lets the drafter change, read from the pattern sheet: the project's information
+        /// (name, address, client…), the sheet's fields (drawn / checked / designed by, issue date), and every text, number and
+        /// yes/no field of the title block and its type (contractor, revision lines… whatever the office's family has).
+        /// </summary>
+        public static List<SoField> ReadFields(Document doc, SheetPattern p)
+        {
+            var list = new List<SoField>();
+            if (p == null) return list;
+            void Add(string owner, Parameter prm, bool builtInOk)
+            {
+                if (prm?.Definition == null || prm.IsReadOnly) return;
+                if (prm.StorageType != StorageType.String && prm.StorageType != StorageType.Integer) return;
+                var bip = (prm.Definition as InternalDefinition)?.BuiltInParameter ?? BuiltInParameter.INVALID;
+                if (bip != BuiltInParameter.INVALID && !builtInOk) return;
+                bool yesNo = false;
+                try { yesNo = prm.StorageType == StorageType.Integer && prm.Definition.GetDataType() == SpecTypeId.Boolean.YesNo; } catch { }
+                if (list.Any(x => x.Owner == owner && x.Name == prm.Definition.Name)) return;
+                string value = ValueOf(prm, yesNo);
+                list.Add(new SoField { Owner = owner, Name = prm.Definition.Name, BuiltIn = (int)bip, YesNo = yesNo, Integer = prm.StorageType == StorageType.Integer && !yesNo, Value = value, Original = value });
+            }
+
+            var info = doc.ProjectInformation;
+            foreach (var bip in ProjectFields) Add(SoField.Project, info.get_Parameter(bip), true);
+            foreach (var prm in Sorted(info.Parameters)) Add(SoField.Project, prm, false);
+
+            foreach (var bip in SheetFields) Add(SoField.Sheet, p.Sheet.get_Parameter(bip), true);
+            foreach (var prm in Sorted(p.Sheet.Parameters)) Add(SoField.Sheet, prm, false);
+
+            if (p.TitleBlock != null)
+            {
+                foreach (var prm in Sorted(p.TitleBlock.Parameters)) Add(SoField.TitleBlock, prm, false);
+                foreach (var prm in Sorted(p.TitleBlock.Symbol.Parameters)) Add(SoField.TitleBlockType, prm, false);
+            }
+            return list;
+        }
+
+        private static IEnumerable<Parameter> Sorted(ParameterSet set) =>
+            set.Cast<Parameter>().Where(x => x?.Definition != null).OrderBy(x => x.Definition.Name, StringComparer.OrdinalIgnoreCase);
+
+        private static string ValueOf(Parameter prm, bool yesNo) =>
+            prm.StorageType == StorageType.String ? prm.AsString() ?? ""
+            : yesNo ? (prm.AsInteger() != 0 ? "Yes" : "No")
+            : prm.AsInteger().ToString();
+
+        /// <summary>Writes the ticked fields: project ones once, sheet and title block ones on every S&amp;O sheet, type ones on its type(s).</summary>
+        private static int WriteFields(Document doc, List<ViewSheet> sheets, IList<SoField> fields, List<string> problems)
+        {
+            var titleBlocks = sheets.SelectMany(s => new FilteredElementCollector(doc, s.Id).OfCategory(BuiltInCategory.OST_TitleBlocks).OfClass(typeof(FamilyInstance)).Cast<FamilyInstance>()).ToList();
+            var types = titleBlocks.Select(t => t.Symbol).GroupBy(t => t.Id).Select(g => g.First()).ToList();
+            int written = 0;
+            foreach (var f in fields.Where(x => x.Write))
+            {
+                IEnumerable<Element> owners =
+                    f.Owner == SoField.Project ? new Element[] { doc.ProjectInformation }
+                    : f.Owner == SoField.Sheet ? sheets
+                    : f.Owner == SoField.TitleBlock ? titleBlocks
+                    : (IEnumerable<Element>)types;
+                bool ok = false;
+                foreach (var e in owners)
+                {
+                    var prm = f.BuiltIn != (int)BuiltInParameter.INVALID ? e.get_Parameter((BuiltInParameter)f.BuiltIn) : e.LookupParameter(f.Name);
+                    if (prm == null || prm.IsReadOnly) continue;
+                    try
+                    {
+                        string v = f.Value ?? "";
+                        if (prm.StorageType == StorageType.String) { if ((prm.AsString() ?? "") != v) prm.Set(v); ok = true; }
+                        else if (prm.StorageType == StorageType.Integer)
+                        {
+                            int n = f.YesNo ? (Regex.IsMatch(v.Trim(), "^(yes|y|true|1|on|x)$", RegexOptions.IgnoreCase) ? 1 : 0)
+                                  : int.TryParse(v.Trim(), out int k) ? k : prm.AsInteger();
+                            if (prm.AsInteger() != n) prm.Set(n);
+                            ok = true;
+                        }
+                    }
+                    catch (Exception ex) { App.Log($"S&O sheets: {f.Owner} '{f.Name}' on {e.Id}: {ex.Message}"); }
+                }
+                if (ok) written++;
+                else problems.Add($"{f.Owner} field '{f.Name}' could not be written");
+            }
+            return written;
+        }
+
         // ---------------------------------------------------------------- PDF
 
+        private static readonly (ExportPaperFormat Format, double W, double H, string Name)[] Papers =
+        {
+            (ExportPaperFormat.ANSI_A, 11, 8.5, "ANSI A 8.5 x 11"), (ExportPaperFormat.ANSI_B, 17, 11, "ANSI B 11 x 17"),
+            (ExportPaperFormat.ANSI_C, 22, 17, "ANSI C 17 x 22"), (ExportPaperFormat.ARCH_C, 24, 18, "ARCH C 18 x 24"),
+            (ExportPaperFormat.ANSI_D, 34, 22, "ANSI D 22 x 34"), (ExportPaperFormat.ARCH_D, 36, 24, "ARCH D 24 x 36"),
+            (ExportPaperFormat.ARCH_E2, 38, 26, "ARCH E2 26 x 38"), (ExportPaperFormat.ARCH_E3, 39, 27, "ARCH E3 27 x 39"),
+            (ExportPaperFormat.ARCH_E1, 42, 30, "ARCH E1 30 x 42"), (ExportPaperFormat.ANSI_E, 44, 34, "ANSI E 34 x 44"),
+            (ExportPaperFormat.ARCH_E, 48, 36, "ARCH E 36 x 48"),
+            (ExportPaperFormat.ISO_A3, 16.54, 11.69, "ISO A3"), (ExportPaperFormat.ISO_A2, 23.39, 16.54, "ISO A2"),
+            (ExportPaperFormat.ISO_A1, 33.11, 23.39, "ISO A1"), (ExportPaperFormat.ISO_A0, 46.81, 33.11, "ISO A0"),
+        };
+
+        /// <summary>The PDF tab's paper list: (value saved, text shown).</summary>
+        public static List<(string Value, string Text)> PaperChoices() =>
+            new[] { ("auto", "Auto: the standard paper the title block fits on (100%, centred)"), ("sheet", "Revit's 'use sheet size' (page cut to the title block)") }
+            .Concat(Papers.Select(p => (p.Format.ToString(), p.Name + " in"))).ToList();
+
+        /// <summary>The title block's size on the sheets, inches (largest over the set); null when there is none.</summary>
+        private static (double W, double H)? SheetSize(Document doc, IList<ElementId> sheetIds)
+        {
+            double w = 0, h = 0;
+            foreach (var id in sheetIds)
+            {
+                if (!(doc.GetElement(id) is ViewSheet sheet)) continue;
+                foreach (var tb in new FilteredElementCollector(doc, id).OfCategory(BuiltInCategory.OST_TitleBlocks).WhereElementIsNotElementType())
+                {
+                    var box = tb.get_BoundingBox(sheet);
+                    if (box == null) continue;
+                    w = Math.Max(w, (box.Max.X - box.Min.X) * 12);
+                    h = Math.Max(h, (box.Max.Y - box.Min.Y) * 12);
+                }
+            }
+            return w > 0 && h > 0 ? (w, h) : ((double, double)?)null;
+        }
+
+        /// <summary>
+        /// Revit's "use sheet size" cuts the page to the title block's lines (35.5" x 23.2" on 24 Skillman, the edge lines
+        /// half off the page). The office's sets are on a whole sheet of paper: the smallest standard size the title block fits
+        /// on, at 100% and centred; when it is a little too big for every size, the closest one, fitted to the page.
+        /// </summary>
+        private static void SetPaper(SoSheetRules cfg, (double W, double H)? size, PDFExportOptions options)
+        {
+            string want = (cfg.PaperSize ?? "auto").Trim();
+            if (want.Equals("sheet", StringComparison.OrdinalIgnoreCase) || want.Equals("default", StringComparison.OrdinalIgnoreCase)) return;
+            bool portrait = size.HasValue && size.Value.H > size.Value.W;
+            double w = size.HasValue ? Math.Max(size.Value.W, size.Value.H) : 0, h = size.HasValue ? Math.Min(size.Value.W, size.Value.H) : 0;
+
+            int pick = -1;
+            if (!want.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                pick = Array.FindIndex(Papers, p => p.Format.ToString().Equals(want.Replace(" ", "_"), StringComparison.OrdinalIgnoreCase));
+                if (pick < 0) App.Log($"S&O PDF: paper '{want}' unknown, auto instead");
+            }
+            if (pick < 0)
+            {
+                if (!size.HasValue) return;                                                      // no title block: Revit's own
+                var order = Enumerable.Range(0, Papers.Length).OrderBy(i => Papers[i].W * Papers[i].H).ToList();
+                pick = order.Where(i => Papers[i].W + 0.01 >= w && Papers[i].H + 0.01 >= h).DefaultIfEmpty(-1).First();
+                if (pick < 0) pick = order.Where(i => Papers[i].W >= w * 0.9 && Papers[i].H >= h * 0.9).DefaultIfEmpty(-1).First();
+                if (pick < 0) return;
+            }
+            var paper = Papers[pick];
+            bool fit = !size.HasValue || w > paper.W + 0.01 || h > paper.H + 0.01;
+            options.PaperFormat = paper.Format;
+            options.PaperOrientation = portrait ? PageOrientationType.Portrait : PageOrientationType.Landscape;
+            options.PaperPlacement = PaperPlacementType.Center;
+            options.ZoomType = fit ? ZoomType.FitToPage : ZoomType.Zoom;
+            options.ZoomPercentage = 100;
+            App.Log($"S&O PDF: title block {(size.HasValue ? $"{size.Value.W:0.##} x {size.Value.H:0.##} in" : "unknown")} -> {paper.Name}, {(fit ? "fit to page" : "100%")}");
+        }
+
         /// <summary>Prints the sheets (in set order) to one PDF. Outside any transaction.</summary>
-        public static string ExportPdf(Document doc, RuleSet rules, IList<ElementId> sheetIds, string folder, string name)
+        public static string ExportPdf(Document doc, SoSheetRules cfg, IList<ElementId> sheetIds, string folder, string name)
         {
             Directory.CreateDirectory(folder);
             string file = name;
@@ -448,6 +661,7 @@ namespace SleevesOpenings.Sheets
                 PaperPlacement = PaperPlacementType.Center, ColorDepth = ColorDepthType.Color, RasterQuality = RasterQualityType.High,
                 HideCropBoundaries = true, HideScopeBoxes = true, HideReferencePlane = true, HideUnreferencedViewTags = true
             };
+            SetPaper(cfg, SheetSize(doc, sheetIds), options);
             if (!doc.Export(folder, sheetIds, options)) throw new InvalidOperationException("Revit did not print the PDF");
             return Path.Combine(folder, file + ".pdf");
         }

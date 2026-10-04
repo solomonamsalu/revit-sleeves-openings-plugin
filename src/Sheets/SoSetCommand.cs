@@ -22,19 +22,22 @@ namespace SleevesOpenings.Sheets
             try
             {
                 var rules = App.Rules(doc);
-                var cfg = rules.SoSheets ?? new SoSheetRules();
                 var state = ProjectStore.Load(doc);
+                var cfg = SoProjectSettings.Apply(rules.SoSheets, state.SoSettings);
                 var levels = LevelClassifier.Classify(doc, rules, state);
-                var plan = SoSheets.Plan(doc, rules, levels);
+                var plan = SoSheets.Plan(doc, rules, cfg, levels);
                 App.Log($"S&O set: pattern {(plan.Pattern != null ? plan.Pattern.Describe() : "none")}; " +
                         string.Join("; ", plan.Floors.Select(f => $"{f.Level.Name} -> {f.Number} {f.Action}")) +
                         (plan.Problems.Count > 0 ? "; problems: " + string.Join("; ", plan.Problems) : ""));
 
                 string folder = state.SoPdfFolder ?? DefaultFolder(doc, cfg, state);
-                using (var form = new SoSetForm(plan, state.SoNotes, folder, SoSheets.PdfName(cfg, plan.ProjectName)))
+                var fields = SoSheets.ReadFields(doc, plan.Pattern);
+                using (var form = new SoSetForm(plan, state.SoNotes, fields, rules.SoSheets, state.SoSettings, folder,
+                                                mine => SoSheets.Plan(doc, rules, SoProjectSettings.Apply(rules.SoSheets, mine), levels)))
                 {
                     if (form.ShowDialog(SleevesOpenings.UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
                     state.SoNotes = form.Notes;
+                    state.SoSettings = form.Settings;
                     if (form.PrintPdf && !string.Equals(form.PdfFolderPath, DefaultFolder(doc, cfg, state), StringComparison.OrdinalIgnoreCase))
                         state.SoPdfFolder = form.PdfFolderPath;
                     using (var t = new Transaction(doc, "Sleeves & Openings: S&O notes"))
@@ -44,9 +47,12 @@ namespace SleevesOpenings.Sheets
                         t.Commit();
                     }
 
-                    var result = SoSheets.Apply(doc, rules, plan, state.SoNotes);
+                    // the naming may have changed in the window: the set as it is now
+                    cfg = SoProjectSettings.Apply(rules.SoSheets, state.SoSettings);
+                    plan = SoSheets.Plan(doc, rules, cfg, levels);
+                    var result = SoSheets.Apply(doc, cfg, plan, state.SoNotes, form.Fields);
                     if (form.PrintPdf && result.SheetIds.Count > 0)
-                        try { result.Pdf = SoSheets.ExportPdf(doc, rules, Ordered(doc, result), form.PdfFolderPath, form.PdfFileName); }
+                        try { result.Pdf = SoSheets.ExportPdf(doc, cfg, Ordered(doc, result), form.PdfFolderPath, form.PdfFileName); }
                         catch (Exception ex) { result.Problems.Add("PDF not printed: " + ex.Message); App.Log("S&O set: PDF failed: " + ex); }
                     App.Log("S&O set: " + result.Summary().Replace("\n", "; "));
                     TaskDialog.Show("S&O Set", result.Summary());
@@ -62,15 +68,15 @@ namespace SleevesOpenings.Sheets
         /// </summary>
         public static string AfterAutoRun(Document doc, RuleSet rules, LevelMap levels, ProjectState state)
         {
-            var cfg = rules.SoSheets ?? new SoSheetRules();
+            var cfg = SoProjectSettings.Apply(rules.SoSheets, state.SoSettings);
             if (!cfg.Enabled || !cfg.AfterAutoRun) return null;
-            var plan = SoSheets.Plan(doc, rules, levels);
+            var plan = SoSheets.Plan(doc, rules, cfg, levels);
             if (plan.Pattern == null) return "S&O sheets not made: " + string.Join("; ", plan.Problems);
-            var result = SoSheets.Apply(doc, rules, plan, state.SoNotes);
+            var result = SoSheets.Apply(doc, cfg, plan, state.SoNotes);
             if (cfg.PdfAfterAutoRun && result.SheetIds.Count > 0)
             {
                 string folder = state.SoPdfFolder ?? DefaultFolder(doc, cfg, state);
-                try { result.Pdf = SoSheets.ExportPdf(doc, rules, Ordered(doc, result), folder, SoSheets.PdfName(cfg, plan.ProjectName)); }
+                try { result.Pdf = SoSheets.ExportPdf(doc, cfg, Ordered(doc, result), folder, SoSheets.PdfName(cfg, plan.ProjectName)); }
                 catch (Exception ex) { result.Problems.Add("PDF not printed: " + ex.Message); App.Log("AutoRun: S&O PDF failed: " + ex); }
             }
             App.Log("AutoRun: S&O set: " + result.Summary().Replace("\n", "; "));

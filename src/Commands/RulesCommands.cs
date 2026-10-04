@@ -1,6 +1,4 @@
 using System;
-using System.Diagnostics;
-using System.IO;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -23,7 +21,7 @@ namespace SleevesOpenings.Commands
                 string F(double inches) => Units.FormatInches(inches);
 
                 var summary =
-                    $"Loaded from:\n{rules.SourcePath}\n\n" +
+                    $"Loaded from (each on top of the one before):\n{string.Join("\n", rules.Sources)}\n\n" +
                     $"Exhaust: duct + {F(s.Exhaust.ClearanceEachSide)} each side; roof +{F(s.Exhaust.RoofIncreaseTotal)} total\n" +
                     $"Garbage chute: {F(s.GarbageChute.FixedWidth)} x {F(s.GarbageChute.FixedLength)} fixed\n" +
                     $"Dryer exhaust: {F(s.DryerExhaust.Diameter)} round '{rules.Naming.DryerExhaust}'; roof {F(s.DryerExhaust.RoofOpeningWidth)} x {F(s.DryerExhaust.RoofOpeningLength)}, min {F(s.DryerExhaust.MinSpacing)} apart\n" +
@@ -46,7 +44,7 @@ namespace SleevesOpenings.Commands
         }
     }
 
-    /// <summary>Opens the active rules.json in the default editor (creates the user copy if only the default exists).</summary>
+    /// <summary>Edit Rules window: every rule as fields and tables, saved as the office's or this project's rules.</summary>
     [Transaction(TransactionMode.ReadOnly)]
     public class EditRulesCommand : IExternalCommand
     {
@@ -55,28 +53,13 @@ namespace SleevesOpenings.Commands
             try
             {
                 var doc = data.Application.ActiveUIDocument?.Document;
-                var rules = App.Rules(doc);
-                var path = rules.SourcePath;
-
-                if (string.Equals(path, RuleLoader.DefaultRulesPath, StringComparison.OrdinalIgnoreCase))
-                {
-                    var td = new TaskDialog("Edit rules")
-                    {
-                        MainInstruction = "You are using the shipped default rules.",
-                        MainContent = "Create an editable copy?\n\n" + RuleLoader.UserRulesPath,
-                        CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No
-                    };
-                    if (td.Show() != TaskDialogResult.Yes) return Result.Cancelled;
-                    Directory.CreateDirectory(Path.GetDirectoryName(RuleLoader.UserRulesPath));
-                    File.Copy(RuleLoader.DefaultRulesPath, RuleLoader.UserRulesPath, overwrite: false);
-                    path = RuleLoader.UserRulesPath;
-                }
-
-                Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+                using (var form = new UI.RulesEditorForm(doc?.PathName, () => App.ReloadRules(doc)))
+                    form.ShowDialog(UI.RevitWindow.Instance);
                 return Result.Succeeded;
             }
             catch (Exception ex)
             {
+                App.Log("Edit Rules failed: " + ex);
                 message = ex.Message;
                 return Result.Failed;
             }

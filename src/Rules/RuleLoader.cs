@@ -1,15 +1,17 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace SleevesOpenings.Rules
 {
     /// <summary>
-    /// Loads rules.json. Lookup order (first found wins):
-    ///   1. &lt;model&gt;.sleeves-rules.json next to the open RVT (project override)
-    ///   2. %APPDATA%\SleevesOpenings\rules.json (user/office override)
-    ///   3. Rules\rules.json next to the add-in DLL (shipped default)
+    /// Loads rules.json as layers (see <see cref="RuleLayers"/>), each on top of the one before:
+    ///   1. Rules\rules.json next to the add-in DLL (shipped default)
+    ///   2. %APPDATA%\SleevesOpenings\rules.json (office rules)
+    ///   3. &lt;model&gt;.sleeves-rules.json next to the open RVT (this project's rules)
     /// </summary>
     public static class RuleLoader
     {
@@ -32,16 +34,17 @@ namespace SleevesOpenings.Rules
 
         public static RuleSet Load(string modelPath = null)
         {
-            foreach (var candidate in new[] { ProjectRulesPath(modelPath), UserRulesPath, DefaultRulesPath })
-            {
-                if (string.IsNullOrEmpty(candidate) || !File.Exists(candidate)) continue;
-                var rules = JsonConvert.DeserializeObject<RuleSet>(File.ReadAllText(candidate));
-                if (rules == null) continue;
-                rules.SourcePath = candidate;
-                return rules;
-            }
-            throw new FileNotFoundException("No rules.json found. Expected default at " + DefaultRulesPath);
+            var json = RuleLayers.Effective(modelPath, RuleLayers.Layer.Project, out var sources);
+            var rules = Parse(json);
+            rules.Sources = sources;
+            rules.SourcePath = sources.Last();
+            return rules;
         }
+
+        /// <summary>The rule set a merged rules JSON describes (throws when a value has the wrong type).</summary>
+        public static RuleSet Parse(JObject json) =>
+            JsonConvert.DeserializeObject<RuleSet>(json.ToString(Formatting.None))
+            ?? throw new InvalidDataException("The rules are empty.");
 
         /// <summary>Resolves a family file path from rules.json (relative paths are relative to the add-in folder).</summary>
         public static string ResolveFamilyFile(FamilyRule fam)
