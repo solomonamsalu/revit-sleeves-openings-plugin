@@ -344,6 +344,7 @@ namespace SleevesOpenings.Rules
                 .F("soSheets.numberPrefix", "Sheet number prefix", RuleKind.Text)
                 .F("soSheets.firstNumber", "First sheet number", RuleKind.Int)
                 .F("soSheets.patternSheet", "Pattern sheet", RuleKind.OptionalText, "Empty = the lowest prefix sheet that holds a Sleeves view.")
+                .F("soSheets.template", "Template when the model has no S&O sheet", RuleKind.OptionalText, "A template's name (S&O Set > Templates) or a path to its .rvt. Empty = the add-in's 'SO Template'.")
                 .F("soSheets.sheetName", "Sheet name", RuleKind.Text, "{Floor} = 1st Floor / Roof, {FLOOR} = upper case.")
                 .F("soSheets.scheduleName", "Schedule name", RuleKind.Text, "{index} = 1st, 2nd…; {kind} = floor / roof / bulkhead / cellar.")
                 .F("soSheets.floorLabel", "Floor label text", RuleKind.Text)

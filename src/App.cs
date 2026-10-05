@@ -108,6 +108,9 @@ namespace SleevesOpenings
                 "the floor's schedule and label. Notes for the notes table. Prints the set to one PDF (Structural folder)."));
             auto.AddItem(Button("LastReport", "Report", asm, typeof(Automation.LastReportCommand),
                 "Reopen the results of this model's latest Auto Run (placed, review, Final Check) without running it again. Double-click a row to zoom to it."));
+            auto.AddItem(Button("FinalCheck", "Final\nCheck", asm, typeof(Commands.FinalCheckCommand),
+                "Audit every opening in the model against the manual (sizes, clearances, shear walls/beams, wall edges, riser continuity, AD pairs, naming), " +
+                "including openings moved or added by hand after Auto Run."));
 
             // The manual tools (Workflow, Place, Plan, Risers, Check, Document...) are hidden while the automation is
             // finished: Auto Run does their work. Kept in the code; set ShowManualTools to bring them back.
@@ -156,10 +159,6 @@ namespace SleevesOpenings
                 "Copy the selected openings floor by floor to each riser's termination level (rules 45-51). Same location, same size."));
             risers.AddItem(Button("RiserManager", "Riser\nManager", asm, typeof(Commands.RiserManagerCommand),
                 "List every riser with its floors, sizes, gaps and offsets. Select or zoom to a riser in the model."));
-
-            var check = app.CreateRibbonPanel(TabName, "Check");
-            check.AddItem(Button("FinalCheck", "Final\nCheck", asm, typeof(Commands.FinalCheckCommand),
-                "Audit every opening against the manual: sizes, clearances, shear walls/beams, wall edges, riser continuity, AD pairs, naming."));
 
             var docs = app.CreateRibbonPanel(TabName, "Document");
             docs.AddStackedItems(

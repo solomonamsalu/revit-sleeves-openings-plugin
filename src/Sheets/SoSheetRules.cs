@@ -16,6 +16,11 @@ namespace SleevesOpenings.Sheets
         [JsonProperty("firstNumber")] public int FirstNumber { get; set; } = 101;
         /// <summary>The sheet copied for every floor (its number); null = the lowest-numbered sheet with numberPrefix that holds a Sleeves view.</summary>
         [JsonProperty("patternSheet")] public string PatternSheet { get; set; }
+        /// <summary>
+        /// The S&amp;O template used when the model has no S&amp;O sheet yet: a template's name (S&amp;O Set window, Templates tab) or
+        /// a path to an .rvt holding one S&amp;O sheet; null = the add-in's own "SO Template".
+        /// </summary>
+        [JsonProperty("template")] public string Template { get; set; }
         [JsonProperty("sheetName")] public string SheetName { get; set; } = "{Floor} Sleeves & Openings";
         [JsonProperty("scheduleName")] public string ScheduleName { get; set; } = "SL- {index} {kind}";
         /// <summary>The floor label text in each Sleeves view (the pattern's text of type floorLabelType, rewritten).</summary>
@@ -71,6 +76,8 @@ namespace SleevesOpenings.Sheets
         public string PdfName { get; set; }
         public string PaperSize { get; set; }
         public bool? RenameExisting { get; set; }
+        /// <summary>This project's S&amp;O template (a name from the Templates tab); null = the office default.</summary>
+        public string Template { get; set; }
 
         /// <summary>rules.json soSheets with this project's settings on top.</summary>
         public static SoSheetRules Apply(SoSheetRules office, SoProjectSettings mine)
@@ -85,6 +92,7 @@ namespace SleevesOpenings.Sheets
             if (!string.IsNullOrWhiteSpace(mine.PdfName)) cfg.PdfName = mine.PdfName;
             if (!string.IsNullOrWhiteSpace(mine.PaperSize)) cfg.PaperSize = mine.PaperSize;
             if (mine.RenameExisting.HasValue) cfg.RenameExisting = mine.RenameExisting.Value;
+            if (!string.IsNullOrWhiteSpace(mine.Template)) cfg.Template = mine.Template.Trim();
             return cfg;
         }
     }

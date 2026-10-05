@@ -47,13 +47,17 @@ namespace SleevesOpenings.Sheets
         public string Number, Name, ScheduleName, Label;
         public List<string> Missing = new List<string>();
         public bool IsPattern;
+        /// <summary>No S&amp;O sheet in the model yet: the first sheet made is built from the template.</summary>
+        public bool FromTemplate;
 
-        public string Action => Sheet == null ? "create" : Missing.Count == 0 ? "up to date" : "add " + string.Join(", ", Missing);
+        public string Action => Sheet == null ? (FromTemplate ? "create from the template" : "create") : Missing.Count == 0 ? "up to date" : "add " + string.Join(", ", Missing);
     }
 
     public class SoSetPlan
     {
         public SheetPattern Pattern;
+        /// <summary>The model has no S&amp;O sheet to copy: the set starts from this template (null = none found).</summary>
+        public SoTemplate Template;
         public List<SoFloor> Floors = new List<SoFloor>();
         public List<string> Problems = new List<string>();
         public string ProjectName;
@@ -94,8 +98,15 @@ namespace SleevesOpenings.Sheets
         {
             string suffix = rules.SleeveViews?.NameSuffix ?? " Sleeves";
             var plan = new SoSetPlan { ProjectName = ProjectName(doc, cfg) };
-            plan.Pattern = FindPattern(doc, cfg, suffix, plan.Problems);
-            if (plan.Pattern == null) return plan;
+            var patternProblems = new List<string>();
+            plan.Pattern = FindPattern(doc, cfg, suffix, patternProblems);
+            if (plan.Pattern == null)
+            {
+                // no S&O sheet in the model: the office's template, if there is one
+                plan.Template = SoTemplates.Resolve(cfg.Template, doc.PathName, out string why);
+                if (plan.Template == null) { plan.Problems.AddRange(patternProblems); plan.Problems.Add(why); return plan; }
+            }
+            else plan.Problems.AddRange(patternProblems);
 
             var plans = new FilteredElementCollector(doc).OfClass(typeof(ViewPlan)).Cast<ViewPlan>().Where(v => !v.IsTemplate).ToList();
             var viewports = new FilteredElementCollector(doc).OfClass(typeof(Viewport)).Cast<Viewport>().ToList();
@@ -131,13 +142,13 @@ namespace SleevesOpenings.Sheets
             foreach (var (cl, view, borrowed) in kept.OrderBy(x => x.Cl.Elevation))
             {
                 index++;
-                var floor = new SoFloor { Level = cl, View = view, IsPattern = view.Id == plan.Pattern.Plan.Id };
+                var floor = new SoFloor { Level = cl, View = view, IsPattern = plan.Pattern != null && view.Id == plan.Pattern.Plan.Id };
                 Names(cl, index, cfg, floor);
                 floor.Sheet = SheetOf(view) ?? borrowed;
                 if (floor.Sheet != null)
                 {
                     floor.Number = floor.Sheet.SheetNumber;
-                    floor.Missing = Missing(doc, plan.Pattern, floor, cfg);
+                    if (plan.Pattern != null) floor.Missing = Missing(doc, plan.Pattern, floor, cfg);
                 }
                 else
                 {
@@ -147,6 +158,7 @@ namespace SleevesOpenings.Sheets
                     if (n != cfg.FirstNumber + index - 1)
                         plan.Problems.Add($"{cl.Name}: {cfg.NumberPrefix}{cfg.FirstNumber + index - 1} is already used by another sheet, so this floor's sheet is {cfg.NumberPrefix}{n}");
                     floor.Number = cfg.NumberPrefix + n;
+                    floor.FromTemplate = plan.Pattern == null && !plan.Floors.Any(x => x.FromTemplate);
                     taken.Add(floor.Number);
                 }
                 plan.Floors.Add(floor);
@@ -155,7 +167,7 @@ namespace SleevesOpenings.Sheets
             return plan;
         }
 
-        private static SheetPattern FindPattern(Document doc, SoSheetRules cfg, string suffix, List<string> problems)
+        internal static SheetPattern FindPattern(Document doc, SoSheetRules cfg, string suffix, List<string> problems)
         {
             var sheets = new FilteredElementCollector(doc).OfClass(typeof(ViewSheet)).Cast<ViewSheet>().Where(s => !s.IsPlaceholder).ToList();
             IEnumerable<ViewSheet> candidates = !string.IsNullOrEmpty(cfg.PatternSheet)
@@ -415,22 +427,52 @@ namespace SleevesOpenings.Sheets
             if (f.IsPattern) return p.Schedule;
             var schedule = doc.GetElement(p.Schedule.Duplicate(ViewDuplicateOption.Duplicate)) as ViewSchedule;
             schedule.Name = f.ScheduleName;
+            if (!SetLevelFilter(schedule, f.Level.Level)) problems.Add($"{f.ScheduleName}: the pattern schedule has no Level filter, so it lists every floor");
+            return schedule;
+        }
+
+        /// <summary>
+        /// The schedule's Level filter set to this level. A schedule without one (a template's, whose filter Revit drops when
+        /// the level it named is not in the model) gets one, on its Level field (added hidden when missing). False = no Level
+        /// field can be scheduled.
+        /// </summary>
+        internal static bool SetLevelFilter(ViewSchedule schedule, Level level)
+        {
             var def = schedule.Definition;
+            var levelParam = new ElementId(BuiltInParameter.SCHEDULE_LEVEL_PARAM);
+            bool IsLevel(ScheduleField f) => f.ParameterId == levelParam || f.GetName().Equals("Level", StringComparison.OrdinalIgnoreCase);
             bool set = false;
             for (int i = 0; i < def.GetFilterCount(); i++)
             {
                 var filter = def.GetFilter(i);
-                var field = def.GetField(filter.FieldId);
-                bool level = field.ParameterId == new ElementId(BuiltInParameter.SCHEDULE_LEVEL_PARAM) || field.GetName().Equals("Level", StringComparison.OrdinalIgnoreCase);
-                if (!level) continue;
-                if (filter.IsElementIdValue) filter.SetValue(f.Level.Level.Id);
-                else if (filter.IsStringValue) filter.SetValue(f.Level.Name);
+                if (!IsLevel(def.GetField(filter.FieldId))) continue;
+                if (filter.IsElementIdValue) filter.SetValue(level.Id);
+                else if (filter.IsStringValue) filter.SetValue(level.Name);
                 else continue;
                 def.SetFilter(i, filter);
                 set = true;
             }
-            if (!set) problems.Add($"{f.ScheduleName}: the pattern schedule has no Level filter, so it lists every floor");
-            return schedule;
+            if (set) return true;
+
+            ScheduleField field = null;
+            for (int i = 0; i < def.GetFieldCount() && field == null; i++)
+                if (IsLevel(def.GetField(i))) field = def.GetField(i);
+            if (field == null)
+            {
+                var doc = schedule.Document;
+                var schedulable = def.GetSchedulableFields().FirstOrDefault(s => s.ParameterId == levelParam)
+                                  ?? def.GetSchedulableFields().FirstOrDefault(s => s.GetName(doc).Equals("Level", StringComparison.OrdinalIgnoreCase));
+                if (schedulable == null) return false;
+                field = def.AddField(schedulable);
+                field.IsHidden = true;
+            }
+            try { def.AddFilter(new ScheduleFilter(field.FieldId, ScheduleFilterType.Equal, level.Id)); }
+            catch (Exception)
+            {
+                try { def.AddFilter(new ScheduleFilter(field.FieldId, ScheduleFilterType.Equal, level.Name)); }
+                catch (Exception ex) { App.Log($"S&O sheets: Level filter not added to '{schedule.Name}': {ex.Message}"); return false; }
+            }
+            return true;
         }
 
         /// <summary>
@@ -716,9 +758,9 @@ namespace SleevesOpenings.Sheets
             return name.Length > 0 ? name : doc.Title;
         }
 
-        private static string TypeName(Document doc, Element e) => doc.GetElement(e.GetTypeId())?.Name ?? "";
+        internal static string TypeName(Document doc, Element e) => doc.GetElement(e.GetTypeId())?.Name ?? "";
 
-        private static void CopyParam(Parameter src, Parameter dst)
+        internal static void CopyParam(Parameter src, Parameter dst)
         {
             if (src == null || dst == null || dst.IsReadOnly || src.StorageType != dst.StorageType) return;
             try

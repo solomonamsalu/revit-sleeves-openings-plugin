@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
@@ -32,8 +33,13 @@ namespace SleevesOpenings.Sheets
 
                 string folder = state.SoPdfFolder ?? DefaultFolder(doc, cfg, state);
                 var fields = SoSheets.ReadFields(doc, plan.Pattern);
+                string suffix = rules.SleeveViews?.NameSuffix ?? " Sleeves";
+                // Templates tab: this model's S&O sheet saved as a template (only when it has one)
+                Func<string, List<string>> saveTemplate = plan.Pattern == null ? (Func<string, List<string>>)null
+                    : path => SoTemplates.Save(doc, plan.Pattern, suffix, path);
                 using (var form = new SoSetForm(plan, state.SoNotes, fields, rules.SoSheets, state.SoSettings, folder,
-                                                mine => SoSheets.Plan(doc, rules, SoProjectSettings.Apply(rules.SoSheets, mine), levels)))
+                                                mine => SoSheets.Plan(doc, rules, SoProjectSettings.Apply(rules.SoSheets, mine), levels),
+                                                doc.PathName, saveTemplate, () => { rules = App.ReloadRules(doc); return rules.SoSheets; }))
                 {
                     if (form.ShowDialog(SleevesOpenings.UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
                     state.SoNotes = form.Notes;
@@ -50,7 +56,10 @@ namespace SleevesOpenings.Sheets
                     // the naming may have changed in the window: the set as it is now
                     cfg = SoProjectSettings.Apply(rules.SoSheets, state.SoSettings);
                     plan = SoSheets.Plan(doc, rules, cfg, levels);
+                    var seedProblems = new List<string>();
+                    plan = SoTemplates.Seed(doc, rules, cfg, levels, plan, seedProblems);
                     var result = SoSheets.Apply(doc, cfg, plan, state.SoNotes, form.Fields);
+                    result.Problems.InsertRange(0, seedProblems);
                     if (form.PrintPdf && result.SheetIds.Count > 0)
                         try { result.Pdf = SoSheets.ExportPdf(doc, cfg, Ordered(doc, result), form.PdfFolderPath, form.PdfFileName); }
                         catch (Exception ex) { result.Problems.Add("PDF not printed: " + ex.Message); App.Log("S&O set: PDF failed: " + ex); }
@@ -71,8 +80,11 @@ namespace SleevesOpenings.Sheets
             var cfg = SoProjectSettings.Apply(rules.SoSheets, state.SoSettings);
             if (!cfg.Enabled || !cfg.AfterAutoRun) return null;
             var plan = SoSheets.Plan(doc, rules, cfg, levels);
-            if (plan.Pattern == null) return "S&O sheets not made: " + string.Join("; ", plan.Problems);
+            var seedProblems = new List<string>();
+            plan = SoTemplates.Seed(doc, rules, cfg, levels, plan, seedProblems);
+            if (plan.Pattern == null) return "S&O sheets not made: " + string.Join("; ", seedProblems.Concat(plan.Problems));
             var result = SoSheets.Apply(doc, cfg, plan, state.SoNotes);
+            result.Problems.InsertRange(0, seedProblems);
             if (cfg.PdfAfterAutoRun && result.SheetIds.Count > 0)
             {
                 string folder = state.SoPdfFolder ?? DefaultFolder(doc, cfg, state);

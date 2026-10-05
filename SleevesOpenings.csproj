@@ -65,5 +65,6 @@
     <None Include="Rules\rules.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Families\**\*.rfa" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Icons\*.png" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Templates\*.rvt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

@@ -280,6 +280,8 @@
     "numberPrefix": "SL",
     "firstNumber": 101,
     "patternSheet": null,
+    "_template": "Used when the model has no S&O sheet to copy: an .rvt holding one S&O sheet (title block, a '<level> Sleeves' plan, the legend, the SL- schedule, the floor label). A name looks in the project's 'SO Templates' folder, then %APPDATA%/SleevesOpenings/Templates, then the add-in's Templates folder; a path is used as it is (relative = from the model's folder). null = the add-in's 'SO Template'. The S&O Set window's Templates tab saves, adds and picks templates.",
+    "template": null,
     "sheetName": "{Floor} Sleeves & Openings",
     "scheduleName": "SL- {index} {kind}",
     "floorLabel": "{FLOOR}",

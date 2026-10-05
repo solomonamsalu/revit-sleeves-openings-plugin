@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 
@@ -8,12 +10,12 @@ namespace SleevesOpenings.Sheets
 {
     /// <summary>
     /// S&amp;O Set: what will happen to each floor's sheet, the title block and project fields, the notes for the notes table,
-    /// this project's sheet naming, and the PDF (folder, name, paper). Notes and settings are saved in the model; the fields
-    /// live in the model itself.
+    /// this project's sheet naming, the PDF (folder, name, paper) and the S&amp;O templates (what the set starts from when the
+    /// model has no S&amp;O sheet). Notes and settings are saved in the model; the fields live in the model itself.
     /// </summary>
     public class SoSetForm : Form
     {
-        private readonly SoSheetRules _office;
+        private SoSheetRules _office;
         private readonly Func<SoProjectSettings, SoSetPlan> _replan;
         private readonly string _project;
         private SoSetPlan _plan;
@@ -30,6 +32,15 @@ namespace SleevesOpenings.Sheets
         private readonly List<(string Value, string Text)> _papers = SoSheets.PaperChoices();
         private string _namingShown;
         private bool _nameTyped;
+        private readonly Button _ok;
+
+        // Templates tab
+        private readonly string _modelPath;
+        private readonly Func<string, List<string>> _saveTemplate;
+        private readonly Func<SoSheetRules> _officeChanged;
+        private string _projectTemplate;
+        private ListView _templates;
+        private Label _templateStatus;
 
         public List<SoNote> Notes { get; private set; } = new List<SoNote>();
         public List<SoField> Fields => _allFields;
@@ -39,9 +50,13 @@ namespace SleevesOpenings.Sheets
         public string PdfFileName => _name.Text.Trim();
 
         public SoSetForm(SoSetPlan plan, IList<SoNote> notes, List<SoField> fields, SoSheetRules office, SoProjectSettings mine,
-                         string pdfFolder, Func<SoProjectSettings, SoSetPlan> replan)
+                         string pdfFolder, Func<SoProjectSettings, SoSetPlan> replan,
+                         string modelPath = null, Func<string, List<string>> saveTemplate = null, Func<SoSheetRules> officeChanged = null)
         {
             _plan = plan; _office = office ?? new SoSheetRules(); _replan = replan; _project = plan.ProjectName;
+            _modelPath = string.IsNullOrEmpty(modelPath) ? null : modelPath;
+            _saveTemplate = saveTemplate; _officeChanged = officeChanged;
+            _projectTemplate = string.IsNullOrWhiteSpace(mine?.Template) ? null : mine.Template.Trim();
             _allFields = fields ?? new List<SoField>();
             var cfg = SoProjectSettings.Apply(_office, mine);
 
@@ -173,12 +188,14 @@ namespace SleevesOpenings.Sheets
                 "Auto paper: the smallest standard size the title block fits on, printed at 100% and centred (24 Skillman: ARCH D 24 x 36, as the office's sets)."), 1, pdf.RowCount++);
             _print.CheckedChanged += (s, e) => { _folder.Enabled = _name.Enabled = browse.Enabled = _pdfPattern.Enabled = _paper.Enabled = _print.Checked; };
 
+            BuildTemplatesTab(Page(tabs, "Templates"));
+
             tabs.SelectedIndexChanged += (s, e) => { if (tabs.SelectedTab == sheetsPage) Replan(); };
 
             // ---------------------------------------------------------------- buttons
             var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(0, 8, 0, 0) };
             var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
-            var ok = new Button { Text = "Make / update the sheets", AutoSize = true, Enabled = plan.Pattern != null && plan.Floors.Count > 0 };
+            var ok = _ok = new Button { Text = "Make / update the sheets", AutoSize = true, Enabled = CanMake };
             ok.Click += (s, e) =>
             {
                 _fields.EndEdit(); _notes.EndEdit();
@@ -217,7 +234,9 @@ namespace SleevesOpenings.Sheets
 
         private void FillFloors()
         {
-            string head = _plan.Pattern != null ? $"Pattern: {_plan.Pattern.Describe()}" : "No pattern sheet: nothing can be made.";
+            string head = _plan.Pattern != null ? $"Pattern: {_plan.Pattern.Describe()}"
+                : _plan.Template != null ? $"No S&O sheet in this model yet: the first sheet is made from the template '{_plan.Template.Name}' ({_plan.Template.Where}), the others copy it.\n{_plan.Template.Path}"
+                : "No pattern sheet and no template: nothing can be made.";
             if (_plan.Problems.Count > 0) head += "\n" + string.Join("\n", _plan.Problems.Select(p => "! " + p));
             _head.Text = head;
             _floors.Rows.Clear();
@@ -229,14 +248,16 @@ namespace SleevesOpenings.Sheets
             }
         }
 
-        private string NamingKey() => string.Join("|", _prefix.Text, _first.Text, _sheetName.Text, _scheduleName.Text, _floorLabel.Text, _rename.Checked);
+        private bool CanMake => (_plan.Pattern != null || _plan.Template != null) && _plan.Floors.Count > 0;
+
+        private string NamingKey() => string.Join("|", _prefix.Text, _first.Text, _sheetName.Text, _scheduleName.Text, _floorLabel.Text, _rename.Checked, _projectTemplate);
 
         /// <summary>The naming changed: the sheets tab shows the set as it will be made with it.</summary>
         private void Replan()
         {
             if (_replan == null || NamingKey() == _namingShown || !int.TryParse(_first.Text.Trim(), out _)) return;
             _namingShown = NamingKey();
-            try { _plan = _replan(ReadSettings()); FillFloors(); }
+            try { _plan = _replan(ReadSettings()); FillFloors(); if (_ok != null) _ok.Enabled = CanMake; }
             catch (Exception ex) { App.Log("S&O set: replan failed: " + ex); }
         }
 
@@ -255,8 +276,188 @@ namespace SleevesOpenings.Sheets
                 FloorLabel = Own(_floorLabel.Text, _office.FloorLabel),
                 PdfName = Own(_pdfPattern.Text, _office.PdfName),
                 PaperSize = Own(paper, _office.PaperSize ?? "auto"),
-                RenameExisting = _rename.Checked != _office.RenameExisting ? _rename.Checked : (bool?)null
+                RenameExisting = _rename.Checked != _office.RenameExisting ? _rename.Checked : (bool?)null,
+                Template = _projectTemplate
             };
+        }
+
+        // ---------------------------------------------------------------- templates tab
+
+        private void BuildTemplatesTab(TabPage page)
+        {
+            var layout = Stack(page, 4);
+            layout.Controls.Add(Note(
+                "A template is a small Revit file holding one S&O sheet: the title block, a Sleeves plan, the legend, the SL- schedule and the floor label. " +
+                "It is used when this model has no S&O sheet yet: the first sheet is built from it (title block, legend and schedule copied into the model), " +
+                "the others copy that sheet. A model that already has an S&O sheet always uses its own.\n" +
+                "Built-in = installed with the add-in (every computer). Office = this computer's template folder. This project = the 'SO Templates' folder " +
+                "next to the model (everyone opening the project has it)."), 0, 0);
+            _templateStatus = Note("");
+            layout.Controls.Add(_templateStatus, 0, 1);
+
+            var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+            var tips = new ToolTip();
+            Button Btn(string text, Action click, string tip = null)
+            {
+                var b = new Button { Text = text, AutoSize = true };
+                b.Click += (s, e) =>
+                {
+                    try { click(); }
+                    catch (Exception ex) { App.Log("S&O templates: " + ex); MessageBox.Show(this, ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+                };
+                if (tip != null) tips.SetToolTip(b, tip);
+                buttons.Controls.Add(b);
+                return b;
+            }
+            Btn("Use for this project", UseForProject, "This project starts from the selected template. An office template is copied next to the model so everyone opening the project has it.");
+            Btn("Follow the office default", () => { _projectTemplate = null; TemplatesChanged(); });
+            Btn("Make office default", MakeOfficeDefault, "Every project without its own choice uses the selected template.");
+            var save = Btn("Save this model's S&O sheet as template…", SaveTemplate, "A new template from this model's S&O sheet (SL101): title block, legend, schedule, floor label, positions.");
+            save.Enabled = _saveTemplate != null;
+            Btn("Add template file…", AddTemplate, "Add an .rvt holding one S&O sheet (sent by someone else) to the office templates.");
+            Btn("Remove", RemoveTemplate);
+            Btn("Open folder", () => { Directory.CreateDirectory(SoTemplates.OfficeFolder); Process.Start(new ProcessStartInfo(SoTemplates.OfficeFolder) { UseShellExecute = true }); });
+            layout.Controls.Add(buttons, 0, 2);
+
+            _templates = new ListView { Dock = DockStyle.Fill, View = System.Windows.Forms.View.Details, FullRowSelect = true, MultiSelect = false, HideSelection = false };
+            _templates.Columns.Add("Template", 240);
+            _templates.Columns.Add("Where", 100);
+            _templates.Columns.Add("Used", 200);
+            _templates.Columns.Add("File", 600);
+            _templates.DoubleClick += (s, e) => UseForProject();
+            layout.Controls.Add(_templates, 0, 3);
+            FillTemplates();
+        }
+
+        private SoTemplate Selected => _templates.SelectedItems.Count > 0 ? _templates.SelectedItems[0].Tag as SoTemplate : null;
+
+        private SoTemplate SelectedOrSay()
+        {
+            var t = Selected;
+            if (t == null) MessageBox.Show(this, "Select a template in the list first.", Text);
+            return t;
+        }
+
+        private void FillTemplates()
+        {
+            string keep = Selected?.Path;
+            var used = SoTemplates.Resolve(_projectTemplate ?? _office.Template, _modelPath, out string why);
+            var officeDefault = SoTemplates.Resolve(_office.Template, _modelPath, out _);
+            _templates.Items.Clear();
+            foreach (var t in SoTemplates.List(_modelPath))
+            {
+                var marks = new List<string>();
+                bool here = used != null && Same(used.Path, t.Path);
+                if (here) marks.Add("● this project");
+                if (officeDefault != null && Same(officeDefault.Path, t.Path)) marks.Add("office default");
+                var item = new ListViewItem(new[] { t.Name, t.Where, string.Join(", ", marks), t.Path }) { Tag = t };
+                if (here) item.Font = new Font(_templates.Font, FontStyle.Bold);
+                _templates.Items.Add(item);
+                if (keep != null && Same(keep, t.Path)) item.Selected = true;
+            }
+            string whose = _projectTemplate != null ? "chosen for this project" : "the office default";
+            _templateStatus.Text = (_plan.Pattern != null ? $"This model has its own S&O sheet ({_plan.Pattern.Sheet.SheetNumber}): it is the pattern, no template is needed.\n" : "") +
+                                   (used != null ? $"Template used here ({whose}): {used.Name} ({used.Where})" : "No template: " + why);
+        }
+
+        private static bool Same(string a, string b) => string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
+
+        private void TemplatesChanged()
+        {
+            FillTemplates();
+            Replan();
+        }
+
+        private void UseForProject()
+        {
+            var t = SelectedOrSay();
+            if (t == null) return;
+            if (t.Where == SoTemplate.Office && SoTemplates.ProjectFolder(_modelPath) is string folder)
+            {
+                // next to the model: everyone opening the project has it, not only this computer
+                Directory.CreateDirectory(folder);
+                File.Copy(t.Path, Path.Combine(folder, Path.GetFileName(t.Path)), true);
+            }
+            _projectTemplate = t.Name;
+            TemplatesChanged();
+        }
+
+        private void MakeOfficeDefault()
+        {
+            var t = SelectedOrSay();
+            if (t == null) return;
+            if (t.Where == SoTemplate.Project)
+            {
+                Directory.CreateDirectory(SoTemplates.OfficeFolder);
+                File.Copy(t.Path, Path.Combine(SoTemplates.OfficeFolder, Path.GetFileName(t.Path)), true);
+            }
+            bool builtInDefault = t.Where == SoTemplate.BuiltIn && t.Name.Equals(SoTemplates.DefaultName, StringComparison.OrdinalIgnoreCase);
+            var rules = Rules.RuleLayers.Effective(_modelPath, Rules.RuleLayers.Layer.Office);
+            Rules.RuleLayers.Set(rules, "soSheets.template", builtInDefault ? null : new Newtonsoft.Json.Linq.JValue(t.Name));
+            Rules.RuleLayers.Save(rules, _modelPath, Rules.RuleLayers.Layer.Office);
+            _office = _officeChanged?.Invoke() ?? _office;
+            if (!builtInDefault && _office.Template != t.Name)
+                MessageBox.Show(this, "Saved as the office default, but this project's own rules name another template (Edit Rules > This project only > S&O sheets).", Text);
+            TemplatesChanged();
+        }
+
+        private void SaveTemplate()
+        {
+            if (_saveTemplate == null) return;
+            string name = Ask("Save as template", "Template name:", string.IsNullOrEmpty(_project) ? SoTemplates.DefaultName : _project + " S&O");
+            if (string.IsNullOrWhiteSpace(name)) return;
+            name = string.Join("_", name.Trim().Split(Path.GetInvalidFileNameChars()));
+            var path = Path.Combine(SoTemplates.OfficeFolder, name + ".rvt");
+            if (File.Exists(path) && MessageBox.Show(this, $"'{name}' already exists. Replace it?", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            List<string> problems;
+            Cursor = Cursors.WaitCursor;
+            try { problems = _saveTemplate(path); }
+            finally { Cursor = Cursors.Default; }
+            FillTemplates();
+            foreach (ListViewItem item in _templates.Items) item.Selected = Same(((SoTemplate)item.Tag).Path, path);
+            var msg = $"Template saved:\n{path}" + (problems.Count > 0 ? "\n\nPlease check:\n• " + string.Join("\n• ", problems) : "") +
+                      "\n\nMake it the office default (projects with no S&O sheet start from it)?";
+            if (MessageBox.Show(this, msg, Text, MessageBoxButtons.YesNo, problems.Count > 0 ? MessageBoxIcon.Warning : MessageBoxIcon.Information) == DialogResult.Yes)
+                MakeOfficeDefault();
+        }
+
+        private void AddTemplate()
+        {
+            using (var dlg = new OpenFileDialog { Filter = "Revit project (*.rvt)|*.rvt", Title = "An .rvt holding one S&O sheet" })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                Directory.CreateDirectory(SoTemplates.OfficeFolder);
+                var to = Path.Combine(SoTemplates.OfficeFolder, Path.GetFileName(dlg.FileName));
+                if (File.Exists(to) && MessageBox.Show(this, $"'{Path.GetFileNameWithoutExtension(to)}' already exists. Replace it?", Text, MessageBoxButtons.YesNo) != DialogResult.Yes) return;
+                File.Copy(dlg.FileName, to, true);
+                FillTemplates();
+            }
+        }
+
+        private void RemoveTemplate()
+        {
+            var t = SelectedOrSay();
+            if (t == null) return;
+            if (t.Where == SoTemplate.BuiltIn) { MessageBox.Show(this, "The built-in template comes with the add-in and cannot be removed.", Text); return; }
+            if (MessageBox.Show(this, $"Delete the template '{t.Name}' ({t.Where})?\n{t.Path}", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            File.Delete(t.Path);
+            if (_projectTemplate != null && !SoTemplates.List(_modelPath).Any(x => x.Name.Equals(_projectTemplate, StringComparison.OrdinalIgnoreCase)))
+                _projectTemplate = null;
+            TemplatesChanged();
+        }
+
+        private string Ask(string title, string prompt, string value)
+        {
+            using (var f = new Form { Text = title, Font = Font, FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false, Width = 460, Height = 160 })
+            {
+                var label = new Label { Text = prompt, Left = 12, Top = 14, AutoSize = true };
+                var box = new TextBox { Left = 12, Top = 38, Width = 420, Text = value };
+                var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Left = 266, Top = 74, Width = 80 };
+                var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Left = 352, Top = 74, Width = 80 };
+                f.Controls.AddRange(new Control[] { label, box, ok, cancel });
+                f.AcceptButton = ok; f.CancelButton = cancel;
+                return f.ShowDialog(this) == DialogResult.OK ? box.Text : null;
+            }
         }
 
         // ---------------------------------------------------------------- fields tab
