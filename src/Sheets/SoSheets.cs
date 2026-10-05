@@ -233,12 +233,39 @@ namespace SleevesOpenings.Sheets
             if (p.TitleBlock != null && !onSheet.OfType<FamilyInstance>().Any(f => f.Category?.Id.Value == (long)BuiltInCategory.OST_TitleBlocks)) missing.Add("title block");
             if (p.Legend != null && !sheet.GetAllViewports().Select(id => doc.GetElement(id) as Viewport).Any(v => v?.ViewId == p.Legend.Id)) missing.Add("legend");
             if (p.Schedule != null && !onSheet.OfType<ScheduleSheetInstance>().Any(s => !s.IsTitleblockRevisionSchedule)) missing.Add("schedule");
+            missing.AddRange(MissingTexts(doc, p, view));
+            if (Math.Abs(LegendShift(doc, sheet).Shift) > 1e-6) missing.Add(LegendBelow);
+            return missing;
+        }
+
+        /// <summary>The floor label and the copied texts the view has none of (by text type: a view keeps its own label where it is).</summary>
+        private static List<string> MissingTexts(Document doc, SheetPattern p, View view)
+        {
+            var missing = new List<string>();
             var texts = new FilteredElementCollector(doc, view.Id).OfClass(typeof(TextNote)).Cast<TextNote>().Where(t => t.OwnerViewId == view.Id).Select(t => TypeName(doc, t)).ToList();
             if (p.FloorLabel != null && !texts.Contains(TypeName(doc, p.FloorLabel))) missing.Add("floor label");
             foreach (var t in p.CopyTexts)
                 if (!texts.Contains(TypeName(doc, t))) missing.Add($"'{t.Text.Trim()}'");
-            if (LegendShift(doc, sheet) < 0) missing.Add(LegendBelow);
             return missing;
+        }
+
+        /// <summary>
+        /// The same floor label / copied text twice in a view (the view's own and the add-in's copy, laid over each other):
+        /// the oldest stays, the others go. Only texts of those types with the very same words. Returns how many went.
+        /// </summary>
+        private static int RemoveDoubleTexts(Document doc, SheetPattern p, View view)
+        {
+            var types = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (p.FloorLabel != null) types.Add(TypeName(doc, p.FloorLabel));
+            foreach (var t in p.CopyTexts) types.Add(TypeName(doc, t));
+            if (types.Count == 0) return 0;
+            var doubles = new FilteredElementCollector(doc, view.Id).OfClass(typeof(TextNote)).Cast<TextNote>()
+                .Where(t => t.OwnerViewId == view.Id && types.Contains(TypeName(doc, t)))
+                .GroupBy(t => TypeName(doc, t).ToUpperInvariant() + "|" + System.Text.RegularExpressions.Regex.Replace(t.Text ?? "", @"\s+", " ").Trim().ToUpperInvariant())
+                .SelectMany(g => g.OrderBy(t => t.Id.Value).Skip(1))
+                .Select(t => t.Id).ToList();
+            if (doubles.Count > 0) doc.Delete(doubles);
+            return doubles.Count;
         }
 
         // ---------------------------------------------------------------- doing it
@@ -254,21 +281,32 @@ namespace SleevesOpenings.Sheets
             using (var t = new Transaction(doc, "Sleeves & Openings: S&O sheets"))
             {
                 t.Start();
+                var sizedOnly = new List<string>();
+                var doubled = new List<string>();
                 foreach (var f in plan.Floors)
                 {
                     try
                     {
+                        // a label the add-in laid over the view's own (before it looked): the copy goes
+                        int gone = RemoveDoubleTexts(doc, p, f.View);
+                        if (gone > 0) doubled.Add($"{f.View.Name} ({gone})");
                         if (f.Sheet == null)
                         {
                             f.Sheet = Create(doc, p, f, cfg);
                             result.Created.Add($"{f.Sheet.SheetNumber} {f.Sheet.Name}");
-                            Complete(doc, p, f, new List<string> { "legend", "schedule", "floor label" }.Concat(p.CopyTexts.Select(x => $"'{x.Text.Trim()}'")).ToList(), result);
+                            // the view may have its label already (a set made before, its sheets deleted): only what it lacks
+                            Complete(doc, p, f, new List<string> { "legend", "schedule" }.Concat(MissingTexts(doc, p, f.View)).ToList(), result);
+                            SizedOnly(doc, cfg, f.Sheet, sizedOnly, result.Problems);
                             Complete(doc, p, f, new List<string> { LegendBelow }, result);
                         }
-                        else if (f.Missing.Count > 0)
+                        else
                         {
-                            Complete(doc, p, f, f.Missing, result);
-                            result.Updated.Add($"{f.Sheet.SheetNumber}: added {string.Join(", ", f.Missing)}");
+                            SizedOnly(doc, cfg, f.Sheet, sizedOnly, result.Problems);
+                            if (f.Missing.Count > 0)
+                            {
+                                Complete(doc, p, f, f.Missing, result);
+                                result.Updated.Add($"{f.Sheet.SheetNumber}: added {string.Join(", ", f.Missing)}");
+                            }
                         }
                         result.SheetIds.Add(f.Sheet.Id);
                     }
@@ -278,6 +316,13 @@ namespace SleevesOpenings.Sheets
                         App.Log($"S&O sheets: {f.Level.Name} failed: {ex}");
                     }
                 }
+                if (doubled.Count > 0)
+                    result.Problems.Add($"Floor label / street name was in the view twice (one over the other); the copy was removed: {string.Join(", ", doubled)}");
+                if (sizedOnly.Count > 0)
+                    result.Problems.Add($"Schedules now list sized sleeves only (rows with no size left out, e.g. rectangular openings): {string.Join(", ", sizedOnly)}");
+                if (cfg.UnstackGrids)
+                    try { SoGrids.Unstack(doc, plan.Floors.Where(f => f.Sheet != null).Select(f => f.View).ToList(), result.Problems); }
+                    catch (Exception ex) { result.Problems.Add("Stacked grid bubbles not checked: " + ex.Message); App.Log("S&O sheets: grids failed: " + ex); }
                 var setSheets = plan.Floors.Where(f => f.Sheet != null).Select(f => f.Sheet).ToList();
                 if (fields != null && fields.Any(x => x.Write))
                     try { result.Fields = WriteFields(doc, setSheets.Concat(new[] { p.Sheet }).Distinct().ToList(), fields, result.Problems); }
@@ -384,12 +429,16 @@ namespace SleevesOpenings.Sheets
             if (missing.Contains(LegendBelow))
             {
                 doc.Regenerate();
-                double shift = LegendShift(doc, f.Sheet);
+                var (shift, squeezed) = LegendShift(doc, f.Sheet);
                 var legend = LegendViewport(doc, f.Sheet);
-                if (shift < 0 && legend != null)
+                if (Math.Abs(shift) > 1e-6 && legend != null)
                 {
                     legend.SetBoxCenter(legend.GetBoxCenter() + new XYZ(0, shift, 0));
-                    result.Problems.Add($"{f.Sheet.SheetNumber}: the schedule is longer than on the pattern sheet, so the legend moved down {Math.Abs(shift) * 12:0.##}\" under it; check it clears the notes table");
+                    result.Problems.Add(squeezed
+                        ? $"{f.Sheet.SheetNumber}: the schedule and the legend only just fit above the notes table: the legend sits right on it, close under the schedule; check they don't touch"
+                        : shift < 0
+                            ? $"{f.Sheet.SheetNumber}: the schedule is longer than on the pattern sheet, so the legend moved down {Math.Abs(shift) * 12:0.##}\" under it (it still clears the notes table)"
+                            : $"{f.Sheet.SheetNumber}: the legend ran into the notes table; moved up {shift * 12:0.##}\"");
                 }
             }
         }
@@ -401,22 +450,61 @@ namespace SleevesOpenings.Sheets
 
         /// <summary>
         /// The floor's schedule grows down from where the pattern's starts; one with more sizes than the pattern's runs into
-        /// the legend under it. Returns how far the legend must go down (negative, feet) to clear it; 0 when they don't overlap.
+        /// the legend under it. Returns how far the legend must move (feet, negative = down) to clear it, but never down
+        /// past the title block line under it (the top of the notes table): a legend already over that line goes back up.
+        /// Squeezed = it would have to go lower to clear the schedule (the two only just fit; the outlines carry some margin).
         /// </summary>
-        private static double LegendShift(Document doc, ViewSheet sheet)
+        private static (double Shift, bool Squeezed) LegendShift(Document doc, ViewSheet sheet)
         {
             var legend = LegendViewport(doc, sheet);
-            var ss = new FilteredElementCollector(doc, sheet.Id).OfClass(typeof(ScheduleSheetInstance)).Cast<ScheduleSheetInstance>().FirstOrDefault(x => !x.IsTitleblockRevisionSchedule);
-            if (legend == null || ss == null) return 0;
-            var box = ss.get_BoundingBox(sheet);
-            var o = legend.GetBoxOutline();
-            if (box == null || o == null) return 0;
+            var o = legend?.GetBoxOutline();
+            if (o == null) return (0, false);
             const double gap = 0.125 / 12;                                                    // 1/8" between them
-            bool side = box.Max.X <= o.MinimumPoint.X || box.Min.X >= o.MaximumPoint.X;
-            bool clear = box.Min.Y >= o.MaximumPoint.Y;                                      // schedule wholly above the legend
-            bool under = box.Max.Y <= o.MinimumPoint.Y || box.Max.Y < o.MaximumPoint.Y;      // schedule under / starting inside: not this case
-            if (side || clear || under) return 0;
-            return Math.Min(0, box.Min.Y - gap - o.MaximumPoint.Y);
+            double shift = 0;
+            var ss = new FilteredElementCollector(doc, sheet.Id).OfClass(typeof(ScheduleSheetInstance)).Cast<ScheduleSheetInstance>().FirstOrDefault(x => !x.IsTitleblockRevisionSchedule);
+            var box = ss?.get_BoundingBox(sheet);
+            if (box != null)
+            {
+                bool side = box.Max.X <= o.MinimumPoint.X || box.Min.X >= o.MaximumPoint.X;
+                bool clear = box.Min.Y >= o.MaximumPoint.Y;                                      // schedule wholly above the legend
+                bool under = box.Max.Y <= o.MinimumPoint.Y || box.Max.Y < o.MaximumPoint.Y;      // schedule under / starting inside: not this case
+                if (!(side || clear || under)) shift = Math.Min(0, box.Min.Y - gap - o.MaximumPoint.Y);
+            }
+            var floor = LineUnder(doc, sheet, o);
+            if (floor == null) return (shift, false);
+            double lowest = floor.Value + 0.0625 / 12 - o.MinimumPoint.Y;                       // legend bottom 1/16" above the line
+            if (shift >= lowest) return (shift, false);
+            return (lowest, shift < 0 && lowest > shift);
+        }
+
+        /// <summary>
+        /// The highest horizontal title block line under the legend's top that runs across it (the top of the notes table):
+        /// the legend must stay above it. Null when the title block has none.
+        /// </summary>
+        private static double? LineUnder(Document doc, ViewSheet sheet, Outline legend)
+        {
+            var tb = new FilteredElementCollector(doc, sheet.Id).OfCategory(BuiltInCategory.OST_TitleBlocks).OfClass(typeof(FamilyInstance)).FirstOrDefault();
+            if (tb == null) return null;
+            double minX = legend.MinimumPoint.X, maxX = legend.MaximumPoint.X, mid = (minX + maxX) / 2, top = legend.MaximumPoint.Y;
+            double? best = null;
+            void Walk(GeometryElement ge)
+            {
+                if (ge == null) return;
+                foreach (var g in ge)
+                {
+                    if (g is GeometryInstance gi) { Walk(gi.GetInstanceGeometry()); continue; }
+                    if (!(g is Line line)) continue;
+                    XYZ a = line.GetEndPoint(0), b = line.GetEndPoint(1);
+                    if (Math.Abs(a.Y - b.Y) > 1e-4) continue;
+                    double lo = Math.Min(a.X, b.X), hi = Math.Max(a.X, b.X);
+                    // across the legend: under its middle and at least half as long as it is wide
+                    if (lo > mid || hi < mid || Math.Min(hi, maxX) - Math.Max(lo, minX) < (maxX - minX) / 2) continue;
+                    if (a.Y < top - 1e-4 && (best == null || a.Y > best)) best = a.Y;
+                }
+            }
+            try { Walk(tb.get_Geometry(new Options { View = sheet })); }
+            catch (Exception ex) { App.Log($"S&O sheets: {sheet.SheetNumber} title block lines not read: {ex.Message}"); }
+            return best;
         }
 
         /// <summary>This floor's copy of the pattern schedule ("SL- 2nd floor"), its level filter set to the floor; an existing one by that name is reused.</summary>
@@ -432,6 +520,44 @@ namespace SleevesOpenings.Sheets
         }
 
         /// <summary>
+        /// rules.json soSheets.scheduleSizedOnly: the sheet's schedule lists sleeves only. Its size column (the first field it
+        /// sorts / groups by that is not the Level or the Count) gets a "has a value" filter, so what has no size (rectangular
+        /// openings) is no longer a blank row. Once per schedule; the names of the schedules changed go to <paramref name="changed"/>.
+        /// </summary>
+        private static void SizedOnly(Document doc, SoSheetRules cfg, ViewSheet sheet, List<string> changed, List<string> problems)
+        {
+            if (!cfg.ScheduleSizedOnly) return;
+            var ss = new FilteredElementCollector(doc, sheet.Id).OfClass(typeof(ScheduleSheetInstance)).Cast<ScheduleSheetInstance>().FirstOrDefault(x => !x.IsTitleblockRevisionSchedule);
+            if (ss == null || !(doc.GetElement(ss.ScheduleId) is ViewSchedule schedule)) return;
+            var def = schedule.Definition;
+            ScheduleField size = null;
+            for (int i = 0; i < def.GetSortGroupFieldCount() && size == null; i++)
+            {
+                var field = def.GetField(def.GetSortGroupField(i).FieldId);
+                if (field.FieldType != ScheduleFieldType.Count && !IsLevelField(field)) size = field;
+            }
+            if (size == null) return;
+            for (int i = 0; i < def.GetFilterCount(); i++)
+            {
+                var filter = def.GetFilter(i);
+                if (filter.FieldId == size.FieldId && filter.FilterType == ScheduleFilterType.HasValue) return;
+            }
+            try
+            {
+                def.AddFilter(new ScheduleFilter(size.FieldId, ScheduleFilterType.HasValue));
+                changed.Add(schedule.Name);
+            }
+            catch (Exception ex)
+            {
+                problems.Add($"{schedule.Name}: rows with no {size.GetName()} not left out ({ex.Message})");
+                App.Log($"S&O sheets: '{schedule.Name}' has-value filter on '{size.GetName()}': {ex}");
+            }
+        }
+
+        private static bool IsLevelField(ScheduleField f) =>
+            f.ParameterId == new ElementId(BuiltInParameter.SCHEDULE_LEVEL_PARAM) || f.GetName().Equals("Level", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
         /// The schedule's Level filter set to this level. A schedule without one (a template's, whose filter Revit drops when
         /// the level it named is not in the model) gets one, on its Level field (added hidden when missing). False = no Level
         /// field can be scheduled.
@@ -440,7 +566,7 @@ namespace SleevesOpenings.Sheets
         {
             var def = schedule.Definition;
             var levelParam = new ElementId(BuiltInParameter.SCHEDULE_LEVEL_PARAM);
-            bool IsLevel(ScheduleField f) => f.ParameterId == levelParam || f.GetName().Equals("Level", StringComparison.OrdinalIgnoreCase);
+            bool IsLevel(ScheduleField f) => IsLevelField(f);
             bool set = false;
             for (int i = 0; i < def.GetFilterCount(); i++)
             {

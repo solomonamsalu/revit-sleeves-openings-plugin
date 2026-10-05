@@ -32,6 +32,11 @@ namespace SleevesOpenings.Sheets
         /// <summary>Sheet Issue Date written on new sheets (.NET date format).</summary>
         [JsonProperty("issueDateFormat")] public string IssueDateFormat { get; set; } = "MM/dd/yy";
 
+        /// <summary>The sheets' schedules list sized sleeves only: rows with no size (rectangular openings) are left out.</summary>
+        [JsonProperty("scheduleSizedOnly")] public bool ScheduleSizedOnly { get; set; } = true;
+        /// <summary>Grid bubbles drawn on top of each other in the Sleeves views (grids a few inches apart): all but one hidden.</summary>
+        [JsonProperty("unstackGrids")] public bool UnstackGrids { get; set; } = true;
+
         /// <summary>Revisions the add-in writes as notes (the title block's NOTES TO ARCH, ENG, &amp; G.C. table) carry this in "Issued By".</summary>
         [JsonProperty("notesTag")] public string NotesTag { get; set; } = "S&O notes";
 

@@ -351,6 +351,8 @@ namespace SleevesOpenings.Rules
                 .F("soSheets.floorLabelType", "Floor label text type", RuleKind.Text)
                 .F("soSheets.copyTextTypes", "Also copy texts of type", RuleKind.Words)
                 .F("soSheets.renameExisting", "Rename existing sheets", B)
+                .F("soSheets.scheduleSizedOnly", "Schedules list sized sleeves only", B, "Rows with no size (rectangular openings) are left out.")
+                .F("soSheets.unstackGrids", "Hide grid bubbles drawn on top of each other", B, "Grids of this model only; stacked grids of a link are reported.")
                 .H("Notes")
                 .F("soSheets.notesTag", "Notes are marked (Issued By)", RuleKind.Text)
                 .F("soSheets.issueDateFormat", "Issue date format", RuleKind.Text, "MM/dd/yy")
