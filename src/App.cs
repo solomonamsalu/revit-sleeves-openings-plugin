@@ -113,6 +113,13 @@ namespace SleevesOpenings
                 "Audit every opening in the model against the manual (sizes, clearances, shear walls/beams, wall edges, riser continuity, AD pairs, naming), " +
                 "including openings moved or added by hand after Auto Run."));
 
+            // greyed out until the startup check finds a newer version (UpdateChecker)
+            var add = app.CreateRibbonPanel(TabName, "Add-in");
+            var update = Button("Update", "Update", asm, typeof(UpdateCommand),
+                "Download a new version of Sleeves & Openings. Available only when a newer version is out (checked when Revit starts).");
+            update.AvailabilityClassName = typeof(UpdateAvailability).FullName;
+            UpdateChecker.SetButton(add.AddItem(update) as PushButton);
+
             // The manual tools (Workflow, Place, Plan, Risers, Check, Document...) are hidden while the automation is
             // finished: Auto Run does their work. Kept in the code; set ShowManualTools to bring them back.
             if (!ShowManualTools) return;

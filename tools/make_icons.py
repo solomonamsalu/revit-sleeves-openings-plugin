@@ -292,6 +292,14 @@ def sync():
     return im
 icons['SyncParams'] = sync
 
+# ---------------- Add-in update (greyed out by Revit until an update is found)
+def update():
+    im, d = base(COL['riser'])
+    arrow_down(d, 64, 20, 74, w=14, head=22)
+    line(d, [(26, 82), (26, 104), (102, 104), (102, 82)], 10)
+    return im
+icons['Update'] = update
+
 for name, fn in icons.items():
     save(fn(), name)
 print(f'{len(icons)} icons -> {os.path.abspath(OUT)}')

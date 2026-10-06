@@ -4,6 +4,8 @@ using System.Net;
 using System.Net.Http;
 using System.Reflection;
 using System.Threading.Tasks;
+using Autodesk.Revit.Attributes;
+using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Events;
 using Newtonsoft.Json.Linq;
@@ -12,7 +14,8 @@ namespace SleevesOpenings
 {
     /// <summary>
     /// On startup reads latest.json from the update bucket in the background; when its major version is newer than
-    /// this add-in's, shows a popup once Revit is idle with a link to download the installer.
+    /// this add-in's, shows a popup once Revit is idle with a link to download the installer, and turns on the ribbon's
+    /// Update button (greyed out until then).
     /// latest.json: { "version": "2.0.0", "url": "https://storage.googleapis.com/.../SleevesOpenings-Setup.exe" }
     /// </summary>
     internal static class UpdateChecker
@@ -23,6 +26,32 @@ namespace SleevesOpenings
         private static Version _latest;
         private static string _downloadUrl;
         private static bool _done;
+        private static PushButton _button;
+
+        private static Version Current => Assembly.GetExecutingAssembly().GetName().Version;
+
+        /// <summary>A newer major version with a download link was found.</summary>
+        public static bool Available => _latest != null && !string.IsNullOrEmpty(_downloadUrl) && _latest.Major > Current.Major;
+
+        /// <summary>The ribbon's Update button: its text and tooltip change once an update is found.</summary>
+        public static void SetButton(PushButton button) => _button = button;
+
+        /// <summary>Asks to download the new version and opens the link in the browser.</summary>
+        public static void Offer()
+        {
+            var td = new TaskDialog("Sleeves & Openings")
+            {
+                MainInstruction = $"Version {_latest.ToString(3)} is available",
+                MainContent = $"You have {Current.ToString(3)}. Download the installer, close Revit, then run it.",
+                CommonButtons = TaskDialogCommonButtons.Close
+            };
+            td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Download the new version");
+            if (td.Show() == TaskDialogResult.CommandLink1)
+            {
+                try { Process.Start(new ProcessStartInfo(_downloadUrl) { UseShellExecute = true }); }
+                catch (Exception ex) { App.Log("Open download link failed: " + ex.Message); }
+            }
+        }
 
         public static void Start(UIControlledApplication app)
         {
@@ -54,23 +83,31 @@ namespace SleevesOpenings
             ((UIApplication)sender).Idling -= OnIdling;
             if (_latest == null) return;
 
-            var current = Assembly.GetExecutingAssembly().GetName().Version;
-            App.Log($"Update check: installed {current}, latest {_latest}");
-            if (_latest.Major <= current.Major) return;   // only a new major version is announced
+            App.Log($"Update check: installed {Current}, latest {_latest}");
+            if (!Available) return;   // only a new major version is announced
 
-            var td = new TaskDialog("Sleeves & Openings")
+            if (_button != null)
             {
-                MainInstruction = $"Version {_latest.ToString(3)} is available",
-                MainContent = $"You have {current.ToString(3)}. Download the installer, close Revit, then run it.",
-                CommonButtons = TaskDialogCommonButtons.Close
-            };
-            if (!string.IsNullOrEmpty(_downloadUrl))
-                td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Download the new version");
-            if (td.Show() == TaskDialogResult.CommandLink1)
-            {
-                try { Process.Start(new ProcessStartInfo(_downloadUrl) { UseShellExecute = true }); }
-                catch (Exception ex) { App.Log("Open download link failed: " + ex.Message); }
+                _button.ItemText = "Update\nAvailable";
+                _button.ToolTip = $"Version {_latest.ToString(3)} is available (you have {Current.ToString(3)}). Click to download the installer.";
             }
+            Offer();
+        }
+    }
+
+    /// <summary>The ribbon's Update button: clickable only when a newer version was found at startup.</summary>
+    public class UpdateAvailability : IExternalCommandAvailability
+    {
+        public bool IsCommandAvailable(UIApplication app, CategorySet selected) => UpdateChecker.Available;
+    }
+
+    [Transaction(TransactionMode.ReadOnly)]
+    public class UpdateCommand : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements)
+        {
+            if (UpdateChecker.Available) UpdateChecker.Offer();
+            return Result.Succeeded;
         }
     }
 }
