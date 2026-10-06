@@ -23,6 +23,8 @@ namespace SleevesOpenings.Setup
         public Dictionary<string, Placement.FamilyMapEntry> FamilyMap { get; set; } = new Dictionary<string, Placement.FamilyMapEntry>();
         /// <summary>Where each riser is meant to end (tap-outs, bulkheads, setbacks) so the auditor does not flag them.</summary>
         public Dictionary<string, RiserEnds> RiserEnds { get; set; } = new Dictionary<string, RiserEnds>();
+        /// <summary>Riser offsets the drawings show (Auto Run): Final Check notes them instead of warning while both sleeves stay put.</summary>
+        public List<DrawnOffset> DrawnOffsets { get; set; } = new List<DrawnOffset>();
         /// <summary>"PTAC", "Split" or "VRF" once the refrigeration planner has been run.</summary>
         public string AcSystem { get; set; }
         /// <summary>Auto Run: drawing files, floor-to-level overrides, existing-openings choice.</summary>
@@ -40,6 +42,24 @@ namespace SleevesOpenings.Setup
         public string Top { get; set; }       // level name where the riser legitimately ends going up (null = roof expected)
         public string Bottom { get; set; }    // level name where it legitimately ends going down (null = lowest expected)
         public string Note { get; set; }      // e.g. "KX-3 tap-out", "to bulkhead"
+    }
+
+    /// <summary>One step of a riser that the plans draw: the sleeve on <see cref="Level"/> and the one on the floor below (Revit feet).</summary>
+    public class DrawnOffset
+    {
+        public string Riser { get; set; }
+        public string Level { get; set; }
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double BelowX { get; set; }
+        public double BelowY { get; set; }
+
+        /// <summary>The two sleeves are still where Auto Run put them (within 1").</summary>
+        public bool Matches(XYZ below, XYZ here)
+        {
+            double tol = 1.0 / 12;
+            return Math.Abs(here.X - X) <= tol && Math.Abs(here.Y - Y) <= tol && Math.Abs(below.X - BelowX) <= tol && Math.Abs(below.Y - BelowY) <= tol;
+        }
     }
 
     public class WorkConfirmation

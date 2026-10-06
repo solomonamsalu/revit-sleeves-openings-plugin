@@ -67,6 +67,12 @@ namespace SleevesOpenings.Automation.Assembly
         /// <summary>" +MD", " +FSD" for the tables; empty without dampers.</summary>
         public string DamperSuffix => Dampers.Count == 0 ? "" : " +" + string.Join("-", Dampers);
 
+        /// <summary>
+        /// The plans draw this pipe at another spot on the floor below (the riser offsets in the ceiling below): the step
+        /// from the sleeve below to this one is the engineer's, Final Check notes it instead of warning (manual 22-23).
+        /// </summary>
+        public bool DrawnOffset;
+
         /// <summary>Sleeves already in the model that serve this crossing (element id values), found before placing (fixture sleeves).</summary>
         public List<long> ExistingIds = new List<long>();
         /// <summary>What <see cref="ExistingIds"/> are and how far from the drawing's point, for the report.</summary>

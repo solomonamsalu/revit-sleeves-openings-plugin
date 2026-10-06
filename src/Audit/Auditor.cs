@@ -365,11 +365,18 @@ namespace SleevesOpenings.Audit
                     };
                 }
 
-                int offsets = r.OffsetCount;
+                // offsets the plumbing plans draw (recorded by Auto Run, both sleeves still where it put them) are noted, not warned
+                var steps = r.OffsetSteps;
+                var drawn = r.System == "GarbageChute" ? new List<(OpeningRecord Below, OpeningRecord Here)>()
+                    : steps.Where(s => _state.DrawnOffsets.Any(d => d.Riser == r.Riser && d.Level == s.Here.Level.Name && d.Matches(s.Below.Point, s.Here.Point))).ToList();
+                int offsets = steps.Count - drawn.Count;
                 if (offsets > 0)
                     Add(r.System == "GarbageChute" ? Severity.Error : Severity.Warning,
                         r.System == "GarbageChute" ? "Rule 42-43" : "Rule 22-23",
-                        $"Riser {r.Riser} offsets {offsets} time(s) between floors", top, others);
+                        $"Riser {r.Riser} offsets {offsets} time(s) between floors (at {string.Join(", ", steps.Except(drawn).Select(s => s.Here.Level.Name))})", top, others);
+                if (drawn.Count > 0)
+                    Add(Severity.Info, "Rule 22-23",
+                        $"Riser {r.Riser} offsets on {string.Join(", ", drawn.Select(s => s.Here.Level.Name))} as the plans draw it (check the riser diagram)", top, others);
 
                 // exhaust risers start small and grow toward the roof fan (rule 3): only a size that gets smaller going up is flagged
                 bool grows = (r.System == "Exhaust" || r.System == "ERV" || r.System == "MotorizedDamper") && r.GrowsUpward;

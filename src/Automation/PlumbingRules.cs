@@ -82,6 +82,13 @@ namespace SleevesOpenings.Automation
         /// <summary>Clear space (inches) kept between the sleeves of one pipe group; the engineer draws the pipes 5" apart, closer than the sleeves.</summary>
         [JsonProperty("sleeveGap")] public double SleeveGap { get; set; } = 1;
 
+        /// <summary>
+        /// A riser's sleeve this close (inches) to where the same pipe's sleeve sits on the floors next to it is lined up with
+        /// them (the plans draw one pipe a few inches apart floor to floor; manual 22-23: risers run straight). Farther = an
+        /// offset the plans draw, kept. 0 = off.
+        /// </summary>
+        [JsonProperty("stackSnap")] public double StackSnap { get; set; } = 12;
+
         /// <summary>The lowest level's slab is on grade (the pipes run underground below it): no sleeves there.</summary>
         [JsonProperty("skipLowestSlab")] public bool SkipLowestSlab { get; set; } = true;
 

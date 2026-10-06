@@ -180,6 +180,8 @@ namespace SleevesOpenings.Automation
                         App.Log($"AutoRun: {o.Result} {o.Crossing.Floor} {o.Crossing.Name} {o.Size} on {o.Crossing.Level}" +
                                 $"{(o.Ids.Count > 0 ? " [" + string.Join(",", o.Ids.Select(i => i.ToString())) + "]" : "")}" +
                                 $"{(o.Detail != null ? ": " + o.Detail : "")}{(o.Warnings.Count > 0 ? " | warnings: " + string.Join("; ", o.Warnings) : "")}");
+                    try { SaveDrawnOffsets(doc, outcomes); }
+                    catch (Exception ex) { App.Log("AutoRun: drawn offsets not saved: " + ex); }
                 }
 
                 SleeveViewResult views = null;
@@ -293,6 +295,42 @@ namespace SleevesOpenings.Automation
             var options = new Dictionary<string, PlumbingRules> { [AutomationInputs.Plumbing] = rules.Plumbing };
             if (rules.Sprinkler != null && rules.Sprinkler.Enabled) options[AutomationInputs.Sprinkler] = rules.Sprinkler;
             return options;
+        }
+
+        /// <summary>
+        /// The riser offsets the plans draw (<see cref="Crossing.DrawnOffset"/>), saved in the model with where both sleeves
+        /// ended up: Final Check notes them instead of warning until someone moves either sleeve.
+        /// </summary>
+        private static void SaveDrawnOffsets(Document doc, List<PlacementOutcome> outcomes)
+        {
+            XYZ At(PlacementOutcome o) => o.Ids.Select(id => ((doc.GetElement(id) as FamilyInstance)?.Location as LocationPoint)?.Point).FirstOrDefault(p => p != null);
+            // the sleeve's own level (a hand-placed sleeve can be on the floor's other level: "06.6-TH FLOOR" / "06.6 TH FLOOR NEW")
+            string LevelOf(PlacementOutcome o) => o.Ids.Select(id => doc.GetElement(id) as FamilyInstance).Where(i => i != null)
+                                                      .Select(i => SleevesOpenings.Risers.RiserIndex.LevelOf(doc, i)?.Name).FirstOrDefault(n => n != null) ?? o.Crossing.Level;
+            var kept = outcomes.Where(o => o.Crossing?.Tag != null && o.Ids.Count > 0 &&
+                                           (o.Result == PlacementOutcome.Placed || o.Result == PlacementOutcome.Resized || o.Result == PlacementOutcome.Existing)).ToList();
+            var found = new List<DrawnOffset>();
+            foreach (var o in kept.Where(o => o.Crossing.DrawnOffset))
+            {
+                var below = kept.Where(b => b.Crossing.Tag == o.Crossing.Tag && FloorKey.Order(b.Crossing.Floor) < FloorKey.Order(o.Crossing.Floor))
+                                .OrderByDescending(b => FloorKey.Order(b.Crossing.Floor)).FirstOrDefault();
+                XYZ here = At(o), under = below != null ? At(below) : null;
+                if (here == null || under == null) continue;
+                found.Add(new DrawnOffset { Riser = o.Crossing.Tag, Level = LevelOf(o), X = here.X, Y = here.Y, BelowX = under.X, BelowY = under.Y });
+            }
+            // this run's risers: what an earlier run saved for them is replaced
+            var risers = new HashSet<string>(kept.Select(o => o.Crossing.Tag));
+            var state = ProjectStore.Load(doc);
+            if (found.Count == 0 && !state.DrawnOffsets.Any(d => risers.Contains(d.Riser))) return;
+            state.DrawnOffsets.RemoveAll(d => risers.Contains(d.Riser));
+            state.DrawnOffsets.AddRange(found);
+            using (var t = new Transaction(doc, "Sleeves & Openings: Auto Run - riser offsets drawn on the plans"))
+            {
+                t.Start();
+                ProjectStore.Save(doc, state);
+                t.Commit();
+            }
+            App.Log($"AutoRun: {found.Count} riser offset(s) drawn on the plans saved: " + string.Join(", ", found.Select(f => $"{f.Riser} at {f.Level}")));
         }
 
         /// <summary>Final Check on the openings one run placed (issues touching them); safe fixes (size, name, riser id) applied once, then checked again.</summary>

@@ -107,8 +107,12 @@ namespace SleevesOpenings.Automation
             foreach (var role in list.Select(c => Spec(c, 0).Role).Distinct()) Family(role);
 
             var levels = new FilteredElementCollector(_doc).OfClass(typeof(Level)).Cast<Level>().ToList();
-            var claimed = new HashSet<ElementId>();
+            // sleeves a fixture already uses (matched before placing) serve no riser: a stack pipe must not take the same one
+            var claimed = new HashSet<ElementId>(list.SelectMany(c => c.ExistingIds).Select(id => new ElementId(id)));
+            // per pipe (S-3), its sleeve on the last floor done: the list goes up floor by floor
+            var below = new Dictionary<string, (double X, double Y, XYZ At, bool Office)>();
             var pipeSystems = new HashSet<string>(_rules.Plumbing?.Services?.Values.Select(v => v.System) ?? Enumerable.Empty<string>());
+            MoveStacks(list, levels);
             using (var group = new TransactionGroup(_doc, "Sleeves & Openings: Auto Run - place openings"))
             {
                 group.Start();
@@ -117,6 +121,10 @@ namespace SleevesOpenings.Automation
                     _done.Add(c);
                     var outcome = new PlacementOutcome { Crossing = c };
                     outcomes.Add(outcome);
+                    bool stackPipe = c.Tag != null && GroupOf(c) != null && !c.IsFixture;
+                    double ox = c.X, oy = c.Y;
+                    var under = stackPipe && below.TryGetValue(c.Tag, out var u) ? u : ((double X, double Y, XYZ At, bool Office)?)null;
+                    if (stackPipe) below[c.Tag] = (ox, oy, null, false);
                     var level = levels.FirstOrDefault(l => l.Name == c.Level);
                     if (level == null) { outcome.Result = PlacementOutcome.Skipped; outcome.Detail = $"level '{c.Level}' not found"; continue; }
 
@@ -147,12 +155,30 @@ namespace SleevesOpenings.Automation
                     foreach (var e in here) claimed.Add(e.Id);
                     if (here.Count > 0)
                     {
+                        if (stackPipe) below[c.Tag] = (ox, oy, here[0].Point, true);
                         outcome.Result = PlacementOutcome.Existing;
                         outcome.Ids.AddRange(here.Select(e => e.Id));
                         outcome.Detail = $"{here[0].Family} ({here[0].Source}) {Units.FormatInches(Dist(here[0].Point, points[0]) * 12)} away";
                         Drop(outcome, here, level);
                         if (_policy == ExistingPolicy.Update) Update(outcome, here, spec0, map);
                         continue;
+                    }
+
+                    // the floor below kept the office's own sleeve for this pipe, a little off the plans' spot, and the plans run the
+                    // pipe straight up from there: this sleeve goes straight above that one (manual 22-23)
+                    bool followed = false;
+                    if (under?.Office == true && under.Value.At != null && points.Count == 1 &&
+                        Math.Sqrt(Math.Pow(ox - under.Value.X, 2) + Math.Pow(oy - under.Value.Y, 2)) <= Units.InchesToFeet(1))
+                    {
+                        double off = Dist(under.Value.At, points[0]);
+                        if (off > Units.InchesToFeet(1) && off <= Units.InchesToFeet(PipeChaseInches))
+                        {
+                            points[0] = new XYZ(under.Value.At.X, under.Value.At.Y, 0);
+                            c.X = points[0].X; c.Y = points[0].Y;
+                            c.Notes.Add($"placed straight above the sleeve already in the model for {c.Tag} on the floor below " +
+                                        $"({Units.FormatInches(Math.Round(off * 12, 1))} from where the plans draw it; manual 22-23)");
+                        }
+                        followed = off <= Units.InchesToFeet(PipeChaseInches);
                     }
 
                     // rules check at the spot (structure from links too)
@@ -204,7 +230,11 @@ namespace SleevesOpenings.Automation
                             var placer = new Placer(_doc, PlanOf(level));
                             foreach (var p in points)
                                 outcome.Ids.Add(placer.Place(Spec(c, points.Count), symbol, map, level, p).Id);
-                            if (t.Commit() == TransactionStatus.Committed) outcome.Result = PlacementOutcome.Placed;
+                            if (t.Commit() == TransactionStatus.Committed)
+                            {
+                                outcome.Result = PlacementOutcome.Placed;
+                                if (stackPipe) below[c.Tag] = (ox, oy, points[0], followed);     // the next floor keeps following the office's sleeve
+                            }
                             else { outcome.Result = PlacementOutcome.Failed; outcome.Detail = "Revit did not accept it"; outcome.Ids.Clear(); }
                         }
                         catch (Exception ex)
@@ -369,6 +399,85 @@ namespace SleevesOpenings.Automation
             var result = Accept(c, pc, sc.W, sc.L, null, off, warn, now);
             c.Notes[c.Notes.Count - 1] += " (the whole pipe group moved with it)";
             return result;
+        }
+
+        /// <summary>
+        /// Before anything is placed: a pipe group that runs straight up several floors (each pipe within 1" floor to floor)
+        /// and hits structure, a column or a wall edge on any of them moves as one stack, the same move on every floor, so the
+        /// riser stays straight (manual 22-23). Only a move that clears every floor and is better than staying; otherwise each
+        /// floor's group is moved on its own when it is placed (<see cref="AvoidAsGroup"/>) and Final Check reports the offset.
+        /// </summary>
+        private void MoveStacks(List<Crossing> all, List<Level> levels)
+        {
+            var d = _rules.Automation.Decisions;
+            if (d?.AvoidStructure != true || d.ShiftStep <= 0) return;
+            double tight = Units.InchesToFeet(1);
+            var pipes = all.Where(c => GroupOf(c) != null && c.MergedInto == null && c.ExistingIds.Count == 0 && c.HasPosition &&
+                                       !(c.EachPoint && c.Points.Count > 1) && levels.Any(l => l.Name == c.Level)).ToList();
+            foreach (var g in pipes.GroupBy(c => c.Tag.Substring(c.Tag.IndexOf('-') + 1)))
+            {
+                var floors = g.GroupBy(c => c.Level).Select(f => f.ToList())
+                              .OrderBy(f => levels.First(l => l.Name == f[0].Level).Elevation).ToList();
+                var stacks = new List<List<List<Crossing>>>();
+                foreach (var floor in floors)
+                {
+                    var below = stacks.LastOrDefault()?.Last();
+                    bool straight = below != null && floor.Any(c => below.Any(o => o.Tag == c.Tag)) &&
+                                    floor.All(c => below.All(o => o.Tag != c.Tag || Math.Sqrt(Math.Pow(o.X - c.X, 2) + Math.Pow(o.Y - c.Y, 2)) <= tight));
+                    if (straight) stacks[stacks.Count - 1].Add(floor);
+                    else stacks.Add(new List<List<Crossing>> { floor });
+                }
+                foreach (var stack in stacks.Where(s => s.Count > 1)) MoveStack(stack, levels, d, all);
+            }
+        }
+
+        private void MoveStack(List<List<Crossing>> stack, List<Level> levels, DecisionRules d, List<Crossing> all)
+        {
+            var members = stack.SelectMany(f => f).ToList();
+            var moving = new HashSet<Crossing>(members);
+            var guards = stack.ToDictionary(f => f[0].Level, f => Guard(levels.First(l => l.Name == f[0].Level)));
+            List<string> Warn(Crossing m, double ox, double oy)
+            {
+                var s = OpeningSize(_rules, m);
+                return s.HasValue ? guards[m.Level].Check(new XYZ(m.X + ox / 12, m.Y + oy / 12, 0), s.Value.W / 2, s.Value.L / 2, Spec(m, 1).System) : new List<string>();
+            }
+            var now = members.SelectMany(m => Warn(m, 0, 0).Select(w => (Level: m.Level, W: w))).Distinct().ToList();
+            int bad0 = now.Count(x => Avoidable(x.W));
+            if (bad0 == 0) return;
+            bool hardNow = now.Any(x => PlacementGuard.IsHard(x.W));
+
+            (double X, double Y)? best = null; int bestBad = int.MaxValue;
+            for (double r = d.ShiftStep; r <= d.MaxShift + 1e-6 && bestBad > 0; r += d.ShiftStep)
+                foreach (var (ux, uy) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1) })
+                {
+                    double ox = ux * r, oy = uy * r;
+                    int bad = 0; bool ok = true;
+                    foreach (var m in members)
+                    {
+                        var s = OpeningSize(_rules, m);
+                        if (!s.HasValue) continue;
+                        if (OnAnother(m, new XYZ(m.X + ox / 12, m.Y + oy / 12, 0), s.Value.W, s.Value.L, all, moving)) { ok = false; break; }
+                        var w = Warn(m, ox, oy);
+                        if (w.Any(PlacementGuard.IsHard)) { ok = false; break; }
+                        bad += w.Count(Avoidable);
+                        if (bad >= bestBad) { ok = false; break; }
+                    }
+                    if (!ok) continue;
+                    best = (ox, oy); bestBad = bad;
+                    if (bad == 0) break;
+                }
+            if (!best.HasValue || bestBad >= bad0 || (bestBad > 0 && !hardNow)) return;
+
+            var off = best.Value;
+            string dir = (off.Y > 0 ? "north" : off.Y < 0 ? "south" : "") + (off.X > 0 ? "east" : off.X < 0 ? "west" : "");
+            string floorsText = $"{stack.First()[0].Level} to {stack.Last()[0].Level}";
+            string why = string.Join("; ", now.Where(x => Avoidable(x.W)).Select(x => $"{PlacementGuard.Clean(x.W)} on {x.Level}").Distinct());
+            foreach (var m in members)
+            {
+                m.X += off.X / 12; m.Y += off.Y / 12;
+                m.Notes.Add($"moved {Math.Sqrt(off.X * off.X + off.Y * off.Y):0.#}\" {dir} with its whole stack ({floorsText}) so the riser stays straight " +
+                            $"(manual 22-23; the stack was in the way of: {why})");
+            }
         }
 
         /// <summary>The avoidable warnings (columns, wall edges, structure) of the sleeves of this crossing's group still to place.</summary>

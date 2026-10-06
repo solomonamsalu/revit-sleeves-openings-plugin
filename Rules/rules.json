@@ -354,6 +354,7 @@
     "sleeveOverPipe": 2,
     "sleeveSizes": [ 3, 4, 5, 6, 8, 10, 12 ],
     "sleeveGap": 1,
+    "stackSnap": 12,
     "skipLowestSlab": true,
     "namePattern": "{service}-{riser}"
   },

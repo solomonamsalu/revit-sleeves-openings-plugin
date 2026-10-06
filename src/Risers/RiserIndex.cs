@@ -47,15 +47,18 @@ namespace SleevesOpenings.Risers
         }
 
         /// <summary>Openings whose XY differs from the one above by more than 1" (manual: avoid offsets).</summary>
-        public int OffsetCount
+        public int OffsetCount => OffsetSteps.Count;
+
+        /// <summary>Each step where an opening's XY differs from the one below it by more than 1": (below, here).</summary>
+        public List<(OpeningRecord Below, OpeningRecord Here)> OffsetSteps
         {
             get
             {
                 var ordered = Openings.OrderBy(o => o.Level.Elevation).ToList();
-                int n = 0;
+                var steps = new List<(OpeningRecord, OpeningRecord)>();
                 for (int i = 1; i < ordered.Count; i++)
-                    if (Dist(ordered[i].Point, ordered[i - 1].Point) > Units.InchesToFeet(1)) n++;
-                return n;
+                    if (Dist(ordered[i].Point, ordered[i - 1].Point) > Units.InchesToFeet(1)) steps.Add((ordered[i - 1], ordered[i]));
+                return steps;
             }
         }
 

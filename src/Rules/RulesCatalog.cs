@@ -275,6 +275,8 @@ namespace SleevesOpenings.Rules
                 .F("plumbing.sleeveOverPipe", "Added to the pipe for the sleeve", In, "Then rounded up to the next size below.")
                 .F("plumbing.sleeveSizes", "Sleeve sizes available", RuleKind.Numbers, "Comma-separated, inches.")
                 .F("plumbing.sleeveGap", "Clear gap between sleeves of one group", In)
+                .F("plumbing.stackSnap", "Line up a riser's sleeves closer than", In,
+                    "A sleeve this close to the same pipe's sleeve on the floors next to it is moved in line with them; farther = an offset the plans draw. 0 = off.")
                 .F("plumbing.namePattern", "Sleeve name", RuleKind.Text, "{service} = S, V, ST…; {riser} = the bubble's tag (P3).")
                 .F("plumbing.skipLowestSlab", "No sleeves in the lowest slab (on grade)", B)
                 .F("plumbing.fixtureSleeves", "Fixture sleeves", RuleKind.Choice, null,

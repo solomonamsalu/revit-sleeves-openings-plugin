@@ -176,6 +176,7 @@ namespace SleevesOpenings.Automation.Assembly
                         string note = $"the {FloorKey.Describe(Below(c.Floor) ?? "floor below")} plan sends it up {Math.Sqrt(Math.Pow(c.X - same.X, 2) + Math.Pow(c.Y - same.Y, 2)):0.#} ft from where the " +
                                       $"{FloorKey.Describe(c.Floor)} plan draws it: the riser offsets in the ceiling below; one sleeve, where this floor's plan shows it";
                         if (!same.Notes.Contains(note)) same.Notes.Add(note);
+                        same.DrawnOffset = true;
                     }
                 }
                 if (same == null) { result.Crossings.Add(c); continue; }
@@ -242,10 +243,16 @@ namespace SleevesOpenings.Automation.Assembly
             //      sit together only: an offset pipe drawn elsewhere keeps its place)
             //      in one order on every floor (the stack runs straight): the order drawn on the floors where every pipe of the
             //      group has its own circle, the most complete one first
+            //      a pipe that ends at this slab (the cellar's storm pipe going up to the 1ST FLOOR only) goes at the end of the
+            //      row, so the pipes that carry on sit as they do on the floors next to it
             var orders = RowOrders(result.Crossings);
+            var floorsOf = result.Crossings.Where(c => c.Tag != null).GroupBy(c => c.Tag).ToDictionary(g => g.Key, g => new HashSet<string>(g.Select(c => c.Floor)));
+            bool Continues(Crossing c) => c.Tag != null && floorsOf[c.Tag] is var on && (on.Contains(Above(c.Floor) ?? "") || on.Contains(Below(c.Floor) ?? ""));
             foreach (var g in result.Crossings.Where(c => c.HasPosition).GroupBy(c => (c.Floor, Riser: RiserOf(c.Tag))))
                 foreach (var row in Clusters(g.ToList(), 36.0 / 12))
-                    Spread(row, rules, orders.TryGetValue(g.Key.Riser, out var order) ? order : null);
+                    Spread(row, rules, orders.TryGetValue(g.Key.Riser, out var order) ? order : null, Continues);
+            // ---- 4b. each pipe straight up the building: drawn a few inches apart floor to floor, its sleeves are lined up
+            Straighten(result.Crossings, rules, floors);
             Overlaps(result.Crossings, rules);
 
             // ---- 5. fixtures named on the plans: for review (the text is next to the fixture, not on its drain)
@@ -383,7 +390,7 @@ namespace SleevesOpenings.Automation.Assembly
         /// The sleeves of one group on one slab, drawn as pipes 5" apart: kept in the order drawn along the row, centred
         /// where the pipes are, spread so neighbours keep <see cref="PlumbingRules.SleeveGap"/> between them.
         /// </summary>
-        private static void Spread(List<Crossing> group, PlumbingRules rules, List<string> order = null)
+        private static void Spread(List<Crossing> group, PlumbingRules rules, List<string> order = null, Func<Crossing, bool> continues = null)
         {
             if (group.Count < 2) return;
             double cx = group.Average(c => c.X), cy = group.Average(c => c.Y);
@@ -393,6 +400,7 @@ namespace SleevesOpenings.Automation.Assembly
             var ordered = order != null && group.All(c => order.Contains(c.System))
                 ? group.OrderBy(c => order.IndexOf(c.System)).ToList()
                 : group.OrderBy(c => alongX ? c.X : c.Y).ToList();
+            if (continues != null) ordered = ordered.OrderBy(c => continues(c) ? 0 : 1).ToList();     // stable: the others keep their order
             double R(Crossing c) => rules.SleeveFor(c.Size?.Diameter ?? 0) / 2 / 12;
             double gap = rules.SleeveGap / 12;
             bool overlap = false;
@@ -438,6 +446,91 @@ namespace SleevesOpenings.Automation.Assembly
                 if (best != null) result[g.Key] = best.First();
             }
             return result;
+        }
+
+        /// <summary>
+        /// One pipe (S-P3) floor by floor: the plans draw it a few inches apart from floor to floor, and its group's row is
+        /// spread on each floor on its own, so the sleeves step by an inch or a foot where the pipe runs straight (manual
+        /// 22-23). Floors whose sleeves are within <see cref="PlumbingRules.StackSnap"/> of the next are one straight run,
+        /// cut where the plans draw an offset; each run's sleeves go to the spot most of its floors share (only those within
+        /// StackSnap of it, never onto a neighbour of its group). A step still left where both floors' own plans draw the pipe
+        /// is the engineer's offset: <see cref="Crossing.DrawnOffset"/>.
+        /// </summary>
+        private static void Straighten(List<Crossing> all, PlumbingRules rules, List<string> floors)
+        {
+            double snap = rules.StackSnap / 12, tight = 1.0 / 12;
+            double Dist(Crossing a, Crossing b) => Math.Sqrt(Math.Pow(a.X - b.X, 2) + Math.Pow(a.Y - b.Y, 2));
+            double R(Crossing c) => rules.SleeveFor(c.Size?.Diameter ?? 0) / 2 / 12;
+            bool Own(Crossing c) => c.Plans.Contains(c.Floor);
+            var live = all.Where(c => c.HasPosition && c.Status != Crossing.Skip && c.MergedInto == null && c.Tag != null).ToList();
+            var stacks = live.GroupBy(c => c.Tag).Select(p => p.OrderBy(c => floors.IndexOf(c.Floor)).ToList())
+                             .Where(s => s.Count > 1 && s.Select(c => c.Floor).Distinct().Count() == s.Count).ToList();   // drawn twice on a floor: leave it
+            // where each pipe should be: the spot most floors of its straight run already share (ties: the one closest to all)
+            var want = new Dictionary<Crossing, (double X, double Y, string Floor)>();
+            foreach (var stack in snap > 0 ? stacks : new List<List<Crossing>>())
+            {
+                var runs = new List<List<Crossing>> { new List<Crossing> { stack[0] } };
+                for (int i = 1; i < stack.Count; i++)
+                {
+                    if (stack[i].DrawnOffset || Dist(stack[i], stack[i - 1]) > snap) runs.Add(new List<Crossing>());
+                    runs[runs.Count - 1].Add(stack[i]);
+                }
+                foreach (var run in runs.Where(r => r.Count > 1))
+                {
+                    var target = run.OrderByDescending(t => run.Count(o => Dist(o, t) <= tight)).ThenBy(t => run.Sum(o => Dist(o, t))).First();
+                    foreach (var c in run.Where(c => Dist(c, target) <= snap)) want[c] = (target.X, target.Y, target.Floor);
+                }
+            }
+
+            var moved = new Dictionary<Crossing, (double X, double Y, string Note)>();
+            void Move(Crossing c, double x, double y, string note)
+            {
+                moved[c] = (c.X, c.Y, note);
+                c.X = x; c.Y = y;
+                c.Notes.Add(note);
+            }
+            string Inches(double feet) => Units.FormatInches(Math.Round(feet * 12 * 2) / 2);
+            const string Why = "the plans draw it a little apart from floor to floor, the riser runs straight (manual 22-23)";
+            // a group's row on one slab moves as one when its pipes all need the same move (it keeps its spacing, and a pipe
+            // that ends at this slab moves with the row); otherwise each pipe on its own
+            foreach (var row in want.Keys.GroupBy(c => (c.Floor, Group: RiserOf(c.Tag))))
+            {
+                var members = row.ToList();
+                var moves = members.Select(c => (C: c, Dx: want[c].X - c.X, Dy: want[c].Y - c.Y)).ToList();
+                if (moves.All(m => Math.Sqrt(m.Dx * m.Dx + m.Dy * m.Dy) <= tight / 4)) continue;
+                bool together = moves.All(a => moves.All(b => Math.Sqrt(Math.Pow(a.Dx - b.Dx, 2) + Math.Pow(a.Dy - b.Dy, 2)) <= tight));
+                if (together)
+                {
+                    double mx = moves.Average(m => m.Dx), my = moves.Average(m => m.Dy);
+                    var riders = live.Where(o => o.Floor == row.Key.Floor && RiserOf(o.Tag) == row.Key.Group && !want.ContainsKey(o)).ToList();
+                    foreach (var c in members)
+                        Move(c, c.X + mx, c.Y + my, $"lined up with {c.Tag} on the {FloorKey.Describe(want[c].Floor)} (moved {Inches(Math.Sqrt(mx * mx + my * my))}): {Why}");
+                    foreach (var c in riders)
+                        Move(c, c.X + mx, c.Y + my, $"moved {Inches(Math.Sqrt(mx * mx + my * my))} with its row so the pipes going on up stay straight (manual 22-23)");
+                }
+                else
+                    foreach (var m in moves.Where(m => Math.Sqrt(m.Dx * m.Dx + m.Dy * m.Dy) > tight / 4))
+                        Move(m.C, want[m.C].X, want[m.C].Y, $"lined up with {m.C.Tag} on the {FloorKey.Describe(want[m.C].Floor)} (moved {Inches(Math.Sqrt(m.Dx * m.Dx + m.Dy * m.Dy))}): {Why}");
+            }
+
+            // its group's other sleeves on the slab keep their gap: a sleeve lined up onto a neighbour goes back where it was
+            bool Clashes(Crossing c) => live.Any(o => o != c && o.Floor == c.Floor && RiserOf(o.Tag) == RiserOf(c.Tag) && Dist(o, c) < R(o) + R(c) + rules.SleeveGap / 12 - 1e-6);
+            for (var back = moved.Keys.FirstOrDefault(Clashes); back != null; back = moved.Keys.FirstOrDefault(Clashes))
+            {
+                var was = moved[back];
+                back.X = was.X; back.Y = was.Y;
+                back.Notes.Remove(was.Note);
+                moved.Remove(back);
+            }
+
+            foreach (var stack in stacks)
+                for (int i = 1; i < stack.Count; i++)
+                    if (!stack[i].DrawnOffset && Dist(stack[i], stack[i - 1]) > tight && Own(stack[i]) && Own(stack[i - 1]))
+                    {
+                        stack[i].DrawnOffset = true;
+                        stack[i].Notes.Add($"offset from the {FloorKey.Describe(stack[i - 1].Floor)} by {Units.FormatInches(Math.Round(Dist(stack[i], stack[i - 1]) * 12))}: " +
+                                           "both floors' plans draw it there (check the riser diagram)");
+                    }
         }
 
         /// <summary>Sleeves of different groups on one slab that still overlap: review.</summary>
