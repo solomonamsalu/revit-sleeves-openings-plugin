@@ -52,6 +52,8 @@
       <HintPath>$(RevitAPIPath)\RevitAPIUI.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <!-- HttpClient for the update check (built into .NET 10) -->
+    <Reference Include="System.Net.Http" Condition="'$(TargetFramework)' == 'net48'" />
   </ItemGroup>
 
   <ItemGroup>

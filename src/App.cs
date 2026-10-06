@@ -32,6 +32,7 @@ namespace SleevesOpenings
 #endif
 
                 BuildRibbon(application);
+                UpdateChecker.Start(application);
                 return Result.Succeeded;
             }
             catch (Exception ex)
