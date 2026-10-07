@@ -159,7 +159,12 @@ namespace SleevesOpenings.Automation.Assembly
                 if (size0 == null) continue;
                 var box = c.Shaft ? size0 : null;
                 double hw = size0.Value.W / 2, hl = size0.Value.L / 2;
-                List<(double X, double Y)> Points() => box.HasValue || c.Points.Count == 0 ? new List<(double X, double Y)> { (c.X, c.Y) } : c.Points.Select(p => (X: p[0], Y: p[1])).ToList();
+                // A single dryer crossing follows its resolved slab position. Its Points collection can still hold the
+                // symbol position from the floor below, while c.X/c.Y have been updated to the position shown on this
+                // floor's plan. Only a multi-duct dryer group needs every individual symbol point.
+                List<(double X, double Y)> Points() => box.HasValue || c.Ducts <= 1 || c.Points.Count == 0
+                    ? new List<(double X, double Y)> { (c.X, c.Y) }
+                    : c.Points.Select(p => (X: p[0], Y: p[1])).ToList();
                 (Crossing O, (double W, double L)? S) Hit() => others.FirstOrDefault(x => Points().Any(p => Math.Abs(p.X - x.O.X) * 12 < x.S.Value.W / 2 + hw &&
                                                                                                         Math.Abs(p.Y - x.O.Y) * 12 < x.S.Value.L / 2 + hl));
                 var hit = Hit();
