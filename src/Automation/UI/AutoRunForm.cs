@@ -978,6 +978,7 @@ namespace SleevesOpenings.Automation.UI
         {
             foreach (var c in assembly.Crossings)
             {
+                if (c.FromModel) continue;                                   // fixture sleeves placed from the modelled fixture
                 var fa = Alignment?.For(c.Floor);
                 string how = fa?.Status == FloorAlignment.Confirmed ? "lined up by its columns"
                            : fa?.Usable == true ? (fa.Notes.Any(n => n.Contains("sheet frame")) ? "lined up in the sheet frame the other floors share"

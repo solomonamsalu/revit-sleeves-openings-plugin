@@ -281,6 +281,14 @@ namespace SleevesOpenings.Rules
                 .F("plumbing.skipLowestSlab", "No sleeves in the lowest slab (on grade)", B)
                 .F("plumbing.fixtureSleeves", "Fixture sleeves", RuleKind.Choice, null,
                     C("model", "Place at the Revit fixture"), C("review", "List for review"), C("off", "Ignore"))
+                .F("plumbing.modelFixtures", "Sleeve modelled fixtures the plans do not label", B)
+                .F("plumbing.fixtureGaps", "Fixture on the plans, not in the model", RuleKind.Choice, null,
+                    C("place", "Place: floor above/below, else the drawing"), C("report", "Report, place nothing"))
+                .F("plumbing.dwgFixtures", "Read fixtures from the architect's DWGs in the model", B)
+                .F("plumbing.dwgFixtureLayers", "DWG fixture layers", RuleKind.Regex, "Layers with the toilets, tubs and sinks (Scan DWG Fixtures lists the layers).")
+                .F("plumbing.dwgWallLayers", "DWG wall layers", RuleKind.Regex)
+                .F("plumbing.dwgNewLayers", "DWG new-work layers", RuleKind.Regex, "Alteration drawings: the layer the new layout is drawn on (\"TO ADD\"); its curves and short lines are fixtures, its long lines walls.")
+                .F("plumbing.dwgRemoveLayers", "DWG removal layers", RuleKind.Regex, "Alteration drawings: fixtures drawn or inserted on these layers (\"TO REMOVE\") get no sleeve.")
                 .H("Words on the plans")
                 .F("plumbing.upWords", "Means up (slab above)", RuleKind.Words)
                 .F("plumbing.downWords", "Means down (this slab)", RuleKind.Words)

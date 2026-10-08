@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -61,11 +61,11 @@ namespace SleevesOpenings.Automation
             ["WC"] = new FixtureSleeve { Name = "toilet", Pipe = 4 },
             ["LAV"] = new FixtureSleeve { Name = "lavatory", Pipe = 1.5 },
             ["BT"] = new FixtureSleeve { Name = "bathtub", Pipe = 4, Count = 2, Spacing = 7 },      // two 6" sleeves, 1" clear
-            ["SH"] = new FixtureSleeve { Name = "shower", Pipe = 2 },
+            ["SH"] = new FixtureSleeve { Name = "shower", Pipe = 4 },                                // 6" sleeve (office S&O sets)
             ["KS"] = new FixtureSleeve { Name = "kitchen sink", Pipe = 2 },
             ["LS"] = new FixtureSleeve { Name = "laundry sink", Pipe = 2 },
-            ["W/D"] = new FixtureSleeve { Name = "washer", Pipe = 2 },
-            ["WD"] = new FixtureSleeve { Name = "washer", Pipe = 2 },
+            ["W/D"] = new FixtureSleeve { Name = "washer", Pipe = 3 },                               // 5" sleeve (office S&O sets)
+            ["WD"] = new FixtureSleeve { Name = "washer", Pipe = 3 },
             ["FD"] = new FixtureSleeve { Name = "floor drain", Pipe = 2 }
         };
 
@@ -74,6 +74,32 @@ namespace SleevesOpenings.Automation
         /// (ambiguous or connector-less fixtures stay in review); "review" = list at the plan text; "off" = not listed.
         /// </summary>
         [JsonProperty("fixtureSleeves")] public string FixtureSleeves { get; set; } = "model";
+
+        /// <summary>With fixtureSleeves "model": fixtures in the model (or its links) that no plan label names get their sleeves from the model too, flagged for a check.</summary>
+        [JsonProperty("modelFixtures")] public bool ModelFixtures { get; set; } = true;
+
+        /// <summary>
+        /// A fixture label with no Revit fixture (the architecture only in DWG links): "place" = the same fixture's sleeve on
+        /// the floor above/below at that spot, else the fixture drawn on the plan, flagged for a check; "report" = model/PDF gap, not placed.
+        /// </summary>
+        [JsonProperty("fixtureGaps")] public string FixtureGaps { get; set; } = "place";
+
+        /// <summary>
+        /// Read the fixtures from the architect's DWGs imported/linked on each level (the architecture is not a Revit model):
+        /// a labelled fixture takes its drawing's drain spot, and toilets, tubs and showers drawn with no label are found by shape.
+        /// </summary>
+        [JsonProperty("dwgFixtures")] public bool DwgFixtures { get; set; } = true;
+        /// <summary>Regex on the DWG layers holding the fixtures (toilets, tubs, sinks).</summary>
+        [JsonProperty("dwgFixtureLayers")] public string DwgFixtureLayers { get; set; } = @"FIXT|PLUMB|PLMB|TOILET|SANIT|KITCHEN|BATH|LAV\b";
+        /// <summary>Regex on the DWG layers holding the walls (a sink's sleeve goes in the wall behind it; a toilet's 1'-1" from it).</summary>
+        [JsonProperty("dwgWallLayers")] public string DwgWallLayers { get; set; } = @"WALL";
+        /// <summary>
+        /// Regex on the DWG layers of an alteration drawing that hold the new work (fixtures, walls and everything else of the
+        /// new layout on one layer, "TO ADD"): their curves and short lines are read as fixtures, their long straight lines as walls.
+        /// </summary>
+        [JsonProperty("dwgNewLayers")] public string DwgNewLayers { get; set; } = @"TO ADD|NEW WORK|NEW-WORK";
+        /// <summary>Regex on the DWG layers of what an alteration removes ("TO REMOVE"): a fixture block inserted on one is never sleeved.</summary>
+        [JsonProperty("dwgRemoveLayers")] public string DwgRemoveLayers { get; set; } = @"TO REMOVE|REMOVE|DEMO";
 
         /// <summary>Sleeve = pipe + this (inches), rounded up to the next size in <see cref="SleeveSizes"/> (storm and standpipe rule).</summary>
         [JsonProperty("sleeveOverPipe")] public double SleeveOverPipe { get; set; } = 2;

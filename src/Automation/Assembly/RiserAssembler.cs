@@ -77,6 +77,8 @@ namespace SleevesOpenings.Automation.Assembly
         public List<long> ExistingIds = new List<long>();
         /// <summary>What <see cref="ExistingIds"/> are and how far from the drawing's point, for the report.</summary>
         public string ExistingDetail;
+        /// <summary>Fixture sleeves: the position comes from the modelled fixture, not the PDF (the plans may show it elsewhere).</summary>
+        public bool FromModel;
     }
 
     /// <summary>Something the drawings show that will not be placed, with the reason.</summary>
@@ -96,6 +98,9 @@ namespace SleevesOpenings.Automation.Assembly
         public List<Crossing> Crossings = new List<Crossing>();
         public List<AssemblyIssue> Issues = new List<AssemblyIssue>();
         public int NotRisers;                // tagged risers that need no opening (fans, grilles…)
+        /// <summary>Plumbing: floor key -> Revit level of every floor the run covers, and the lowest floor (slab on grade).</summary>
+        public IDictionary<string, string> FloorLevels;
+        public string Lowest;
 
         public IEnumerable<Crossing> ToPlace => Crossings.Where(c => c.Status == Crossing.Place);
     }

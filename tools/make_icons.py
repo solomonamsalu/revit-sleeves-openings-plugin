@@ -292,6 +292,16 @@ def sync():
     return im
 icons['SyncParams'] = sync
 
+# ---------------- Extract fixtures: a toilet seen from above under a magnifier
+def extract_fixtures():
+    im, d = base(COL['doc'])
+    d.rounded_rectangle((26, 18, 74, 36), radius=6, fill=W)          # tank
+    d.ellipse((30, 34, 70, 84), outline=W, width=9)                   # bowl
+    ring(d, 82, 78, 22, 9)                                            # magnifier
+    line(d, [(98, 94), (114, 110)], 12)
+    return im
+icons['ExtractFixtures'] = extract_fixtures
+
 # ---------------- Add-in update (greyed out by Revit until an update is found)
 def update():
     im, d = base(COL['riser'])

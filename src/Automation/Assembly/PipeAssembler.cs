@@ -74,6 +74,7 @@ namespace SleevesOpenings.Automation.Assembly
             string Above(string floor) { int i = floors.IndexOf(floor); return i >= 0 && i + 1 < floors.Count ? floors[i + 1] : null; }
             string Below(string floor) { int i = floors.IndexOf(floor); return i > 0 ? floors[i - 1] : null; }
             string lowest = floors.FirstOrDefault();
+            result.FloorLevels = floorLevels; result.Lowest = lowest;
             double far = drift / 12;
 
             // ---- 1. every sleeved service of every group, as the crossings its words describe

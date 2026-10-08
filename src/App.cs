@@ -113,6 +113,12 @@ namespace SleevesOpenings
                 "Audit every opening in the model against the manual (sizes, clearances, shear walls/beams, wall edges, riser continuity, AD pairs, naming), " +
                 "including openings moved or added by hand after Auto Run."));
 
+            var extract = app.CreateRibbonPanel(TabName, "Extract");
+            extract.AddItem(Button("ExtractFixtures", "Extract\nFixtures", asm, typeof(Commands.ExtractFixturesCommand),
+                "Choose a floor and list every fixture on it: toilets, lavatories, sinks, tubs, showers and washers from the architect's DWG (by shape) " +
+                "and Revit plumbing fixtures of this model and its links, with each one's location (X/Y and nearest grids) and sleeve point. " +
+                "Zoom to one, mark them in the plan, export CSV or place their sleeves."));
+
             // greyed out until the startup check finds a newer version (UpdateChecker)
             var add = app.CreateRibbonPanel(TabName, "Add-in");
             var update = Button("Update", "Update", asm, typeof(UpdateCommand),

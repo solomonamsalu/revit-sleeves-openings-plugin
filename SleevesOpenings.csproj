@@ -69,4 +69,10 @@
     <None Include="Icons\*.png" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Templates\*.rvt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- the offline DWG fixture harness (tools/dwg-fixture-harness) is its own project -->
+    <Compile Remove="tools\**" />
+    <None Remove="tools\**" />
+    <EmbeddedResource Remove="tools\**" />
+  </ItemGroup>
 </Project>

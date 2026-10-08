@@ -6,43 +6,72 @@ using Autodesk.Revit.DB;
 using SleevesOpenings.Automation.Assembly;
 using SleevesOpenings.Automation.Drawings;
 using SleevesOpenings.Placement;
+using SleevesOpenings.Risers;
 
 namespace SleevesOpenings.Automation
 {
     /// <summary>
     /// Settles the fixture labels read from a plan (WC, LAV, BT...) against the model, in this order:
     /// 1. a sleeve already in the model under the fixture -> already in the model (nothing placed);
-    /// 2. the matching Revit fixture with one sanitary connector -> sleeve on that connector;
-    /// 3. no sleeve and no Revit fixture nearby -> a model/PDF gap, reported and not placed (the model lacks the fixture);
-    /// 4. a Revit fixture without a usable connector -> the fixture as drawn on the PDF (tub drain circle, toilet 1'-1"
-    ///    from its wall, sink in the wall behind it);
-    /// 5. anything else stays review, grouped by stack (one decision covers every floor of a stacked bathroom/kitchen),
-    ///    and a floor whose modelled fixtures mostly disagree with the plan is reported once as out of sync.
+    /// 2. the matching Revit fixture (one label, one fixture, nearest pairs first, up to <see cref="MismatchRadiusFeet"/>
+    ///    away: the model wins when the plans show the fixture somewhere else) -> sleeve from that fixture: its sanitary
+    ///    connector, else its shape (toilet 1'-1" from its back, sink in the wall behind it, tub at its piped end); the
+    ///    fixture drawn on the plan is used instead when it sits on the modelled one and the model has no connector;
+    /// 2b. no Revit fixture, but the architect's DWG in the model draws it (plumbing.dwgFixtures) -> its drawing's drain spot;
+    /// 3. no sleeve, no Revit fixture, no DWG drawing (plumbing.fixtureGaps "place") -> the same fixture's sleeve on the floor
+    ///    above/below at that spot, else the fixture drawn on the plan, else review; flagged for a check
+    ///    ("report" = a model/PDF gap, reported and not placed);
+    /// 4. a matched fixture whose shape gives no spot -> the fixture as drawn on the PDF, else review, grouped by stack;
+    /// 5. a Revit fixture no plan label names (plumbing.modelFixtures) -> its sleeve from the model all the same,
+    ///    flagged for a check; a floor whose modelled fixtures mostly disagree with the plan is reported once as out of sync.
     /// Plan text is deliberately used only to select nearby elements; it is never used as the sleeve centre.
     /// </summary>
     public static class FixtureSleeveLocator
     {
         private const double MatchRadiusFeet = 6.0;
-        private const double ClearNearestFeet = 1.0;
+        /// <summary>A modelled fixture this far from its plan label is still the label's fixture (the plans are out of date there).</summary>
+        private const double MismatchRadiusFeet = 15.0;
+        /// <summary>The fixture drawn on the plan is the modelled one when their sleeve points are this close.</summary>
+        private const double SameSpotFeet = 1.5;
         /// <summary>How far from the plan label a sleeve already in the model can be and still be the fixture's sleeve.</summary>
         private const double ExistingRadiusFeet = 4.0;
         /// <summary>The same, from the drain point of the fixture drawn on the plan (a closer, surer spot than the label).</summary>
         private const double ExistingFromDrainFeet = 2.5;
+        /// <summary>The same, from a modelled fixture's sleeve point (no plan label).</summary>
+        private const double ExistingFromModelFeet = 1.5;
+        /// <summary>A label with no Revit fixture takes the sleeve of the same fixture this close on another floor (the stack).</summary>
+        private const double StackCopyFeet = 3.0;
+        /// <summary>Two fixture sleeves this close are one (a shower base and its drain modelled as two families).</summary>
+        private const double DuplicateFeet = 1.0;
         /// <summary>A sleeve this close to a riser crossing belongs to the riser, not to a fixture.</summary>
         private const double RiserSleeveFeet = 1.0;
         /// <summary>Fixture labels on different floors this close (plan position) are one stack.</summary>
         private const double StackFeet = 1.5;
         /// <summary>Share of a floor's fixture labels with no modelled fixture, on a floor that has fixtures, that makes it out of sync.</summary>
         private const double OutOfSyncShare = 0.6;
+        /// <summary>Toilet sleeve centre from the back of the toilet (manual: 1'-1" from the wall).</summary>
+        private const double ToiletFromWallFeet = 13.0 / 12;
+        /// <summary>Sink, lavatory, washer and wall-hung toilet sleeves: this far into the wall behind the fixture (half a stud wall).</summary>
+        private const double IntoWallFeet = 2.5 / 12;
+        /// <summary>A tub without a drain connector: its drain this far in from the piped end, on its centre line.</summary>
+        private const double TubDrainFromEndFeet = 1.0;
 
-        /// <summary>Sleeve and opening families are never fixtures (the office tub sleeve "MPI - Double Sleeve for Tub" matched "tub").</summary>
-        private static readonly Regex NotFixture = new Regex(@"sleeve|opening|penetration", RegexOptions.IgnoreCase);
+        /// <summary>Sleeve and opening families are never fixtures (the office tub sleeve "MPI - Double Sleeve for Tub" matched "tub"), nor fixture accessories.</summary>
+        private static readonly Regex NotFixture = new Regex(@"sleeve|opening|penetration|dish.?washer|grab.?bar|curtain|shower.?rod|accessor|mirror|faucet|\bvalve\b", RegexOptions.IgnoreCase);
+        private static readonly Regex WallHung = new Regex(@"wall.?(hung|mount)", RegexOptions.IgnoreCase);
+        private static readonly HashSet<string> IntoWall = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "LAV", "KS", "LS", "W/D", "WD" };
 
         private class Fixture
         {
             public string Name, Source, Level;
             public XYZ Point;
             public List<XYZ> Drains = new List<XYZ>();
+            /// <summary>The other piping connectors (water): a tub with no drain connector drains at the end they are on.</summary>
+            public List<XYZ> Pipes = new List<XYZ>();
+            public XYZ Min, Max;                 // plan box, host coordinates
+            /// <summary>Out of the wall the fixture stands against (host plan); null when the family has no facing.</summary>
+            public XYZ Facing;
+            public bool WallHung;
         }
 
         /// <summary>Resolve fixture-review crossings in place. Returns reader-friendly results for the check summary.</summary>
@@ -53,62 +82,81 @@ namespace SleevesOpenings.Automation
                 !string.Equals(rules.FixtureSleeves, "model", StringComparison.OrdinalIgnoreCase)) return messages;
 
             var labels = assembly.Crossings.Where(IsFixtureReview).Where(c => rules.Fixtures.ContainsKey(c.Tag)).ToList();
-            if (labels.Count == 0) return messages;
+            if (labels.Count == 0 && !rules.ModelFixtures) return messages;
 
             int inModel = ClaimExisting(labels, assembly, existing);
 
-            var fixtures = ReadFixtures(host, existing);
-            int placed = 0, drawn = 0, noMatch = 0, ambiguous = 0, noDrain = 0;
+            var fixtures = ReadFixtures(host, existing, rules, messages);
+            int connector = 0, shape = 0, drawn = 0, moved = 0, noSpot = 0;
             var gaps = new List<Crossing>();
-            // the model has no usable fixture here: the fixture drawn on the plan gives the spot, else review
-            void Fallback(Crossing c, string why, ref int counter)
+
+            // one label, one modelled fixture, nearest pairs first: two toilets side by side each keep their own, and a
+            // fixture the plans show somewhere else is still the label's fixture (the model is what gets built)
+            var open = labels.Where(c => c.ExistingIds.Count == 0).ToList();
+            var pairs = (from c in open
+                         where c.HasPosition
+                         from f in fixtures
+                         where AutoPlacer.SameFloor(f.Level, c.Level) && Matches(c.Tag, f.Name, true)
+                         let d = Dist(c.X, c.Y, f.Point)
+                         where d <= MismatchRadiusFeet
+                         orderby d
+                         select (C: c, F: f, D: d)).ToList();
+            var match = new Dictionary<Crossing, (Fixture F, double D)>();
+            var used = new HashSet<Fixture>();
+            foreach (var p in pairs)
+                if (!match.ContainsKey(p.C) && !used.Contains(p.F)) { match[p.C] = (p.F, p.D); used.Add(p.F); }
+
+            foreach (var c in open)
             {
-                if (c.DrawnDrain != null) { FromDrawing(c, why); drawn++; }
-                else { counter++; c.Notes.Add(why + "; review required"); }
-            }
-            foreach (var c in labels.Where(c => c.ExistingIds.Count == 0))
-            {
+                // the plan shows a fixture the model does not have (architecture only in DWG links): step 3
+                if (!match.TryGetValue(c, out var m)) { gaps.Add(c); continue; }
                 var sleeve = rules.Fixtures[c.Tag];
-                var candidates = fixtures.Where(f => AutoPlacer.SameFloor(f.Level, c.Level) && Matches(c.Tag, sleeve, f.Name))
-                                         .Select(f => new { Fixture = f, Distance = Dist(c.X, c.Y, f.Point) })
-                                         .Where(x => x.Distance <= MatchRadiusFeet)
-                                         .OrderBy(x => x.Distance).ToList();
-                // the plan shows a fixture the model does not have: a gap between model and drawings, never a sleeve placed by guess
-                if (candidates.Count == 0) { gaps.Add(c); noMatch++; continue; }
-                if (candidates.Count > 1 && candidates[1].Distance - candidates[0].Distance < ClearNearestFeet)
+                var (points, how, sure) = SleevePoints(m.F, c.Tag, sleeve);
+                string away = m.D > MatchRadiusFeet ? $"{m.D:0.#} ft from where the plan shows it (the plan looks out of date here)" : $"{m.D * 12:0.#}\" from the plan label";
+                if (points == null)
                 {
-                    Fallback(c, "more than one matching Revit fixture is near the plan label", ref ambiguous); continue;
+                    if (c.DrawnDrain != null) { FromDrawing(c, $"matched Revit fixture '{m.F.Name}' ({m.F.Source}): {how}"); drawn++; }
+                    else { noSpot++; c.Notes.Add($"matched Revit fixture '{m.F.Name}' ({m.F.Source}), {away}: {how}; review required"); }
+                    continue;
+                }
+                // the fixture drawn on the plan is laid out by the manual: better than the model's shape when both are at one spot
+                if (!sure && c.DrawnDrain != null && Dist(c.X, c.Y, Mean(points)) <= SameSpotFeet)
+                {
+                    FromDrawing(c, $"matched Revit fixture '{m.F.Name}' ({m.F.Source}) is at the drawn fixture");
+                    drawn++; continue;
                 }
 
-                var found = candidates[0].Fixture;
-                if (found.Drains.Count == 0)
-                {
-                    Fallback(c, $"matched Revit fixture '{found.Name}' ({found.Source}) has no sanitary connector", ref noDrain); continue;
-                }
-
-                int wanted = Math.Max(1, sleeve.Count);
-                // Multiple sleeves below one fixture need a project-specific layout rule (for example a tub's two
-                // sleeves).  A connector alone does not state which side/orientation the office expects, so retain
-                // these for review instead of making a plausible-looking but wrong layout.
-                if (wanted != 1)
-                {
-                    Fallback(c, $"matched Revit fixture '{found.Name}' needs {wanted} sleeve point(s); its connector does not give the multi-sleeve layout", ref noDrain); continue;
-                }
-                if (found.Drains.Count != wanted)
-                {
-                    Fallback(c, $"matched Revit fixture '{found.Name}' has {found.Drains.Count} sanitary connector(s); {wanted} sleeve point(s) are required", ref noDrain); continue;
-                }
-
-                c.X = found.Drains[0].X; c.Y = found.Drains[0].Y;
-                c.Points.Clear(); c.EachPoint = false;
+                SetPoints(c, points);
                 c.Status = Crossing.Place;
-                c.Confidence = "high";
+                c.Confidence = sure ? "high" : "medium";
+                c.FromModel = true;
+                c.Check = !sure || m.D > MatchRadiusFeet;
                 c.Notes.RemoveAll(n => n.Contains("position is the engineer's fixture text"));
-                c.Notes.Add($"position from sanitary connector of Revit fixture '{found.Name}' ({found.Source}), {candidates[0].Distance * 12:0.#}\" from the plan label");
-                placed++;
+                c.Notes.Add($"position from {how} of Revit fixture '{m.F.Name}' ({m.F.Source}), {away}");
+                if (sure) connector++; else shape++;
+                if (m.D > MatchRadiusFeet) moved++;
             }
 
-            int served = Served(labels.Where(c => c.Status == Crossing.Place && c.ExistingIds.Count == 0 && c.DrawnDrain != null).ToList(), assembly, rules);
+            // step 2b: no Revit fixture, but the architect's DWG in the model draws it
+            var dwgShapes = new List<(DwgFixtureReader.Plan Plan, FixtureDrains.Shape Shape)>();
+            var dwgLevels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int fromDwg = 0;
+            if (rules.DwgFixtures && (gaps.Count > 0 || rules.ModelFixtures))
+            {
+                try { fromDwg = FromDwg(DwgFixtureReader.Read(host, rules), gaps, labels, rules, dwgShapes, dwgLevels); }
+                catch (Exception ex) { App.Log("AutoRun DWG fixtures failed: " + ex); messages.Add("Fixtures in the architect's DWGs not read: " + ex.Message); }
+            }
+
+            // step 3: no Revit fixture and no DWG drawing for the label
+            int stacked = 0, fromPdf = 0, textOnly = 0;
+            if (string.Equals(rules.FixtureGaps, "place", StringComparison.OrdinalIgnoreCase))
+            {
+                (stacked, fromPdf, textOnly) = PlaceWithoutFixture(gaps, labels, fixtures, existing, rules, dwgLevels);
+                gaps.Clear();
+                drawn += fromPdf;
+            }
+            int duplicates = Duplicates(labels.Where(c => c.Status == Crossing.Place && c.ExistingIds.Count == 0).ToList(), assembly);
+            int served = Served(labels.Where(c => c.Status == Crossing.Place && c.ExistingIds.Count == 0).ToList(), assembly, rules);
 
             var outOfSync = OutOfSync(labels, fixtures);
             ReportGaps(gaps, assembly);
@@ -116,12 +164,281 @@ namespace SleevesOpenings.Automation
             var left = labels.Where(c => c.Status == Crossing.Review).ToList();
             int stacks = GroupStacks(left);
 
-            messages.Add($"Fixture sleeves: {inModel} already in the model, {placed} resolved from Revit sanitary connectors, {drawn} from the fixtures drawn on the plans ({served} of them served by a sleeve already there); " +
-                         $"{noMatch} on the plans but not in the model (reported as model/PDF gaps, not placed); " +
-                         $"{left.Count} left for review in {stacks} stack(s) ({ambiguous} ambiguous, {noDrain} without matching connector(s)).");
+            messages.Add($"Fixture sleeves: {inModel} already in the model, {connector} from Revit sanitary connectors, {shape} from the modelled fixture's shape, " +
+                         $"{fromDwg} from the fixture drawn in the architect's DWG, {stacked} from the same fixture's sleeve on the floor above/below, {drawn} from the fixtures drawn on the plans " +
+                         $"({served} served by a sleeve already there, {duplicates} on another label's sleeve)" +
+                         (moved > 0 ? $"; {moved} modelled more than {MatchRadiusFeet:0} ft from the plan (model position used, flagged for a check)" : "") +
+                         (gaps.Count > 0 ? $"; {gaps.Count} on the plans but not in the model (reported as model/PDF gaps, not placed)" : "") +
+                         $"; {left.Count} left for review in {stacks} stack(s) ({textOnly} not in the architect's DWG or with only the label text, {noSpot} with no usable spot on the modelled fixture).");
+            if (rules.ModelFixtures)
+                messages.Add(ModelOnly(fixtures.Where(f => !used.Contains(f)).ToList(), dwgShapes, assembly, rules, existing));
             foreach (var level in outOfSync)
                 messages.Add($"  ! {level}: most fixture labels on the plan have no modelled fixture nearby — the drawings and the model look out of sync on this floor (which is newer?).");
+            foreach (var line in messages) App.Log("AutoRun " + line.Trim());
             return messages;
+        }
+
+        /// <summary>
+        /// Step 3 (plumbing.fixtureGaps "place"): a label no Revit fixture answers (the architecture is only in DWG links)
+        /// takes, in order, the position of the same fixture's sleeve already in the model on the nearest floor at that spot
+        /// (bathrooms stack: the office's own sleeve), else the fixture drawn on the plan, else stays for review. Placed
+        /// ones are flagged for a check. Returns (from the stack, from the drawing, label text only).
+        /// </summary>
+        private static (int Stacked, int Drawn, int TextOnly) PlaceWithoutFixture(List<Crossing> gaps, List<Crossing> labels, List<Fixture> fixtures,
+                                                                                ExistingReport existing, PlumbingRules rules, HashSet<string> dwgLevels)
+        {
+            // a floor whose architect's DWG shows its fixtures: a label the DWG does not confirm is not guessed (the floor
+            // above may be laid out differently, the PDF's background may be older): review, with the guesses as notes
+            var onDwg = gaps.Where(c => dwgLevels.Any(l => AutoPlacer.SameFloor(l, c.Level))).ToList();
+            foreach (var c in onDwg)
+            {
+                c.Notes.RemoveAll(n => n.Contains("position is the engineer's fixture text"));
+                c.Notes.Add($"not found in the architect's DWG within {DwgSearchInches / 12:0} ft of where the plan shows it" +
+                            (c.DrawnDrain != null ? $" (the plumbing PDF draws it: {c.DrawnDrain})" : "") + "; review required");
+            }
+            int review = onDwg.Count;
+            gaps = gaps.Except(onDwg).ToList();
+
+            var sleeveAt = existing?.Items.Where(e => e.Point != null).GroupBy(e => e.Id.Value).ToDictionary(g => g.Key, g => g.First().Point)
+                           ?? new Dictionary<long, XYZ>();
+            int stacked = 0, drawn = 0, textOnly = 0;
+            foreach (var c in gaps)
+            {
+                bool modelled = fixtures.Any(f => AutoPlacer.SameFloor(f.Level, c.Level) && Classify(f.Name, rules) != null);
+                string why = modelled ? $"no {c.Tag} in the model within {MismatchRadiusFeet:0} ft" : "no Revit fixtures on this floor (the architecture is only in the DWG)";
+                var stack = !c.HasPosition ? null : labels
+                    .Where(o => o != c && o.Tag == c.Tag && o.Floor != c.Floor && o.ExistingIds.Count > 0 && o.ExistingIds.All(sleeveAt.ContainsKey) &&
+                                Dist(o.X, o.Y, c.X, c.Y) <= StackCopyFeet)
+                    .OrderBy(o => Math.Abs(FloorKey.Order(o.Floor) - FloorKey.Order(c.Floor))).ThenBy(o => Dist(o.X, o.Y, c.X, c.Y))
+                    .FirstOrDefault();
+                c.Notes.RemoveAll(n => n.Contains("position is the engineer's fixture text"));
+                if (stack != null)
+                {
+                    SetPoints(c, stack.ExistingIds.Select(id => Flat(sleeveAt[id])).ToList());
+                    c.Status = Crossing.Place;
+                    c.Confidence = "medium";
+                    c.FromModel = true;
+                    c.Check = true;
+                    c.Notes.Add($"{why}; position of the {c.Tag} sleeve already in the model on the {FloorKey.Describe(stack.Floor)} at this spot (the bathrooms stack)");
+                    stacked++;
+                }
+                else if (c.DrawnDrain != null)
+                {
+                    FromDrawing(c, why);
+                    c.Check = true;
+                    drawn++;
+                }
+                else
+                {
+                    c.Notes.Add($"{why}; the plan gives only the label text (no fixture drawn, no sleeve on the floors above/below at this spot); review required");
+                    textOnly++;
+                }
+            }
+            return (stacked, drawn, textOnly + review);
+        }
+
+        /// <summary>
+        /// Two labels of one fixture (a double sink read twice, a label repeated) that end on the same spot: the second is
+        /// served by the first. Returns how many.
+        /// </summary>
+        private static int Duplicates(List<Crossing> placed, RiserAssembly assembly)
+        {
+            int n = 0;
+            foreach (var c in placed.Where(c => c.Status == Crossing.Place))
+            {
+                var other = assembly.Crossings.FirstOrDefault(o => o != c && o.IsFixture && o.Tag == c.Tag && o.Floor == c.Floor && o.Status == Crossing.Place &&
+                                                                   o.MergedInto == null && o.HasPosition && Dist(o.X, o.Y, c.X, c.Y) <= DuplicateFeet);
+                if (other == null) continue;
+                c.MergedInto = other;
+                c.Status = Crossing.Skip;
+                c.Notes.Add($"lands on the {other.Tag} sleeve {Dist(other, c) * 12:0.#}\" away: the same fixture, one sleeve");
+                n++;
+            }
+            return n;
+        }
+
+        private static double Dist(Crossing o, Crossing c) => Dist(o.X, o.Y, c.X, c.Y);
+
+        /// <summary>A labelled fixture's drawing this far (inches) from where the plan puts it, in the architect's DWG.</summary>
+        private const double DwgSearchInches = 36;
+
+        /// <summary>
+        /// Step 2b: the architect's DWGs in the model, level by level. Every label of the level claims its drawing (so a
+        /// fixture already sleeved is never guessed again); the labels with no Revit fixture take their drawing's drain
+        /// spot. The drawings no label claims that are a toilet, tub or shower by shape go to <paramref name="shapes"/>.
+        /// Returns how many labels were placed.
+        /// </summary>
+        private static int FromDwg(List<DwgFixtureReader.Plan> plans, List<Crossing> gaps, List<Crossing> labels, PlumbingRules rules,
+                                   List<(DwgFixtureReader.Plan, FixtureDrains.Shape)> shapes, HashSet<string> dwgLevels)
+        {
+            int n = 0;
+            (int, double) Sleeves(string code) => rules.Fixtures.TryGetValue(code, out var fs) ? (fs.Count, fs.Spacing) : (1, 0);
+            foreach (var plan in plans.Where(p => p.Strokes.Count > 0))
+            {
+                var here = labels.Where(c => c.HasPosition && AutoPlacer.SameFloor(plan.Level, c.Level)).ToList();
+                var marks = here.Select(c => new FixtureMark { Code = c.Tag, X = c.X * 12, Y = c.Y * 12 }).ToList();
+                FixtureDrains.Recognise(marks, plan.Strokes, plan.Walls, Sleeves, DwgSearchInches, ToiletFromWallFeet * 12, 72, false);
+
+                // every fixture the drawing shows (Extract Fixtures): those no label is on are the fixtures the plans do not label
+                var all = FixtureDrains.Extract(plan.Strokes, plan.Walls, Sleeves, ToiletFromWallFeet * 12, 72);
+                if (all.Count > 0) dwgLevels.Add(plan.Level);
+                bool Labelled(FixtureDrains.Shape s) =>
+                    here.Any(c => Dist(c.X * 12, c.Y * 12, s.Cx, s.Cy) <= DwgSearchInches || s.Points.Any(p => Dist(c.X * 12, c.Y * 12, p.X, p.Y) <= DwgSearchInches)) ||
+                    marks.Any(m => m.Drains.Any(d => s.Points.Any(p => Dist(d.X, d.Y, p.X, p.Y) <= 12)));
+                var found = all.Where(s => !Labelled(s)).Select(s => { if (s.Code == "LAV/SINK") s.Code = "LAV"; return s; }).ToList();
+                for (int i = 0; i < here.Count; i++)
+                {
+                    var c = here[i]; var m = marks[i];
+                    if (!gaps.Contains(c) || m.Drains.Count == 0) continue;
+                    SetPoints(c, m.Drains.Select(d => new XYZ(d.X / 12, d.Y / 12, 0)).ToList());
+                    c.Status = Crossing.Place;
+                    c.Confidence = "high";
+                    c.FromModel = true;
+                    c.Notes.RemoveAll(t => t.Contains("position is the engineer's fixture text"));
+                    c.Notes.Add($"position from the {c.Tag} drawn in the architect's DWG in the model ({plan.Source}): {m.DrainHow}");
+                    gaps.Remove(c);
+                    n++;
+                }
+                shapes.AddRange(found.Select(s => (plan, s)));
+            }
+            return n;
+        }
+
+        /// <summary>
+        /// Step 5: fixtures no plan label names, modelled (Revit families) or drawn in the architect's DWG (toilets, tubs,
+        /// showers by shape), get their sleeve all the same, unless a sleeve is already there, another fixture's sleeve is
+        /// on the same spot, or a riser in the wall behind serves the sink. Flagged for a check.
+        /// </summary>
+        private static string ModelOnly(List<Fixture> fixtures, List<(DwgFixtureReader.Plan Plan, FixtureDrains.Shape Shape)> shapes,
+                                        RiserAssembly assembly, PlumbingRules rules, ExistingReport existing)
+        {
+            if (assembly.FloorLevels == null) return "Fixtures not on the plans: not checked (no floor list).";
+            int placed = 0, fromDwg = 0, already = 0, duplicate = 0, review = 0, lowest = 0, noFloor = 0;
+            var made = new List<Crossing>();
+
+            var candidates = new List<(string Code, string Level, List<XYZ> Points, string How, bool Sure, XYZ At, string Name, bool Dwg)>();
+            foreach (var f in fixtures)
+            {
+                string code = Classify(f.Name, rules);
+                if (code == null) continue;                                  // not a sleeved fixture (cabinet, counter...)
+                var (points, how, sure) = SleevePoints(f, code, rules.Fixtures[code]);
+                candidates.Add((code, f.Level, points, how + " of the Revit fixture", sure, points != null ? Mean(points) : f.Point, $"modelled as '{f.Name}' ({f.Source})", false));
+            }
+            foreach (var (plan, s) in shapes.Where(x => rules.Fixtures.ContainsKey(x.Shape.Code)))
+            {
+                var points = s.Points.Select(p => new XYZ(p.X / 12, p.Y / 12, 0)).ToList();
+                candidates.Add((s.Code, plan.Level, points, s.How + " of the fixture drawn in the DWG", false, Mean(points), $"drawn in {plan.Source} (found by its shape)", true));
+            }
+
+            foreach (var (code, level, points, how, sure, at, name, dwg) in candidates)
+            {
+                var floor = assembly.FloorLevels.FirstOrDefault(kv => AutoPlacer.SameFloor(kv.Value, level));
+                if (floor.Key == null) { noFloor++; continue; }
+                if (rules.SkipLowestSlab && floor.Key == assembly.Lowest) { lowest++; continue; }
+
+                var sleeve = rules.Fixtures[code];
+                if (existing != null && existing.Items.Any(e => e.Point != null && e.Source != "native opening" && AutoPlacer.SameFloor(e.Level, floor.Value) &&
+                                                               SystemRank(code, e.System) >= 0 && Dist(at.X, at.Y, e.Point) <= ExistingFromModelFeet))
+                { already++; continue; }
+                if (assembly.Crossings.Any(o => o.IsFixture && o.Floor == floor.Key && o.Status != Crossing.Skip && o.HasPosition && Dist(o.X, o.Y, at) <= DuplicateFeet))
+                { duplicate++; continue; }
+
+                var c = new Crossing
+                {
+                    Floor = floor.Key, Level = floor.Value, Tag = code, System = sleeve.System, Size = new DuctSize { Diameter = sleeve.Pipe },
+                    HasPosition = true, Pdf = "not in the PDF", FromModel = true, Check = true
+                };
+                c.From.Add($"{FloorKey.Describe(floor.Key)}: fixture '{code}' ({sleeve.Name}) {name}");
+                c.Notes.Add($"{sleeve.Name}: in the model but not labelled on the plan");
+                if (points == null)
+                {
+                    c.X = at.X; c.Y = at.Y;
+                    c.Status = Crossing.Review; c.Confidence = "low";
+                    c.Notes.Add($"{how}; review required");
+                    review++;
+                }
+                else
+                {
+                    SetPoints(c, points);
+                    c.Status = Crossing.Place; c.Confidence = sure ? "high" : "medium";
+                    c.Notes.Add($"position from {how}");
+                    placed++;
+                    if (dwg) fromDwg++;
+                }
+                assembly.Crossings.Add(c);
+                made.Add(c);
+            }
+            int served = Served(made.Where(c => c.Status == Crossing.Place).ToList(), assembly, rules);
+            return $"Fixtures not on the plans: {placed - served} sleeve(s) placed ({fromDwg} of the {placed} found by shape in the architect's DWG; flagged for a check), {served} served by a sleeve next to them, " +
+                   $"{already} already sleeved, {duplicate} on another fixture's sleeve, {review} for review (no usable spot)" +
+                   (lowest > 0 ? $", {lowest} on the lowest level (slab on grade)" : "") +
+                   (noFloor > 0 ? $", {noFloor} on levels the run does not cover" : "") + ".";
+        }
+
+        /// <summary>
+        /// Where a modelled fixture's sleeve(s) go: its sanitary connector(s) when it has them (sure), else from its shape.
+        /// Null points with the reason when neither gives a spot.
+        /// </summary>
+        private static (List<XYZ> Points, string How, bool Sure) SleevePoints(Fixture f, string code, FixtureSleeve sleeve)
+        {
+            int n = Math.Max(1, sleeve.Count);
+            var centre = new XYZ((f.Min.X + f.Max.X) / 2, (f.Min.Y + f.Max.Y) / 2, 0);
+            // the back of the fixture: the side of its box against the wall, on the fixture's centre line
+            XYZ Back() => f.Facing == null ? null
+                : centre - f.Facing * (Math.Abs(f.Facing.X) * (f.Max.X - f.Min.X) / 2 + Math.Abs(f.Facing.Y) * (f.Max.Y - f.Min.Y) / 2);
+
+            switch (code.ToUpperInvariant())
+            {
+                case "BT":
+                    {
+                        bool alongX = f.Max.X - f.Min.X >= f.Max.Y - f.Min.Y;
+                        var along = alongX ? XYZ.BasisX : XYZ.BasisY;
+                        XYZ drain; string how; bool sure;
+                        if (f.Drains.Count > 0) { drain = Flat(f.Drains[0]); how = "the sanitary connector"; sure = true; }
+                        else if (f.Pipes.Count > 0)
+                        {
+                            // the drain is at the end the faucet (water connectors) is on
+                            double half = (alongX ? f.Max.X - f.Min.X : f.Max.Y - f.Min.Y) / 2;
+                            int end = (Mean(f.Pipes) - centre).DotProduct(along) >= 0 ? 1 : -1;
+                            drain = centre + along * (end * Math.Max(0, half - TubDrainFromEndFeet));
+                            how = "the piped end of the tub (1'-0\" in, on its centre line)"; sure = false;
+                        }
+                        else return (null, "the tub has no piping connectors to tell its drain end", false);
+                        var pts = Enumerable.Range(0, n).Select(i => drain + along * ((i - (n - 1) / 2.0) * sleeve.Spacing / 12)).ToList();
+                        return (pts, how + (n > 1 ? $" ({n} sleeves {sleeve.Spacing:0.#}\" c-c along the tub)" : ""), sure);
+                    }
+                case "SH":
+                case "FD":
+                    if (f.Drains.Count > 0) return (new List<XYZ> { Flat(f.Drains[0]) }, "the sanitary connector", true);
+                    return code == "FD" ? (new List<XYZ> { Flat(f.Point) }, "the drain's insertion point", false)
+                                        : (new List<XYZ> { centre }, "the shower's centre", false);
+                case "WC":
+                    {
+                        if (f.Drains.Count > 0) return (new List<XYZ> { Flat(f.Drains.OrderBy(d => Dist(d.X, d.Y, centre)).First()) }, "the sanitary connector", true);
+                        var back = Back();
+                        if (back == null) return (null, "the toilet has no sanitary connector and no facing to find its back", false);
+                        return f.WallHung
+                            ? (new List<XYZ> { back - f.Facing * IntoWallFeet }, "the wall behind the wall-hung toilet (carrier)", false)
+                            : (new List<XYZ> { back + f.Facing * ToiletFromWallFeet }, "1'-1\" from the back of the toilet (manual)", false);
+                    }
+                default:
+                    {
+                        // sinks, lavatories, washers: into the wall behind; a double sink's connectors share one sleeve
+                        if (f.Drains.Count > 0) return (new List<XYZ> { Flat(Mean(f.Drains)) }, f.Drains.Count > 1 ? "the sanitary connectors (one sleeve)" : "the sanitary connector", true);
+                        var back = Back();
+                        if (back == null) return (null, "the fixture has no sanitary connector and no facing to find the wall behind it", false);
+                        return (new List<XYZ> { back - f.Facing * IntoWallFeet }, "the wall behind the fixture, on its centre line", false);
+                    }
+            }
+        }
+
+        private static void SetPoints(Crossing c, List<XYZ> points)
+        {
+            var mid = Mean(points);
+            c.X = mid.X; c.Y = mid.Y;
+            c.Points.Clear();
+            c.EachPoint = points.Count > 1;
+            if (c.EachPoint) c.Points.AddRange(points.Select(p => new[] { p.X, p.Y }));
         }
 
         /// <summary>
@@ -176,16 +493,15 @@ namespace SleevesOpenings.Automation
         }
 
         /// <summary>
-        /// Sinks, lavatories and washers drain into the wall behind them. A sleeve from the drawing that lands on another
-        /// sleeve there (a riser stack in that wall, a sleeve already in the model, the other sink of a double sink) is served
-        /// by it: nothing of its own is placed. Returns how many.
+        /// Sinks, lavatories and washers drain into the wall behind them. A sleeve that lands on another sleeve there (a
+        /// riser stack in that wall, a sleeve already in the model, the other sink of a double sink) is served by it:
+        /// nothing of its own is placed. Returns how many.
         /// </summary>
-        private static int Served(List<Crossing> drawn, RiserAssembly assembly, PlumbingRules rules)
+        private static int Served(List<Crossing> fixtures, RiserAssembly assembly, PlumbingRules rules)
         {
-            var intoWall = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "LAV", "KS", "LS", "W/D", "WD" };
             double Radius(Crossing o) => rules.SleeveFor(o.Size?.Diameter ?? 2) / 2 / 12;
             int n = 0;
-            foreach (var c in drawn.Where(c => intoWall.Contains(c.Tag) && !c.EachPoint))
+            foreach (var c in fixtures.Where(c => IntoWall.Contains(c.Tag) && !c.EachPoint))
             {
                 var host = assembly.Crossings
                     .Where(o => o != c && o.MergedInto == null && o.Status == Crossing.Place && o.Floor == c.Floor && !o.EachPoint && o.HasPosition)
@@ -215,7 +531,7 @@ namespace SleevesOpenings.Automation
                 {
                     Floor = c.Floor, Tag = c.Tag, Level = c.Level, Type = AssemblyIssue.ModelGap,
                     X = c.HasPosition ? c.X : (double?)null, Y = c.HasPosition ? c.Y : (double?)null,
-                    Detail = $"{c.Tag} is on the {FloorKey.Describe(c.Floor)} plan but not in the model: no sleeve and no Revit fixture within {MatchRadiusFeet:0} ft" +
+                    Detail = $"{c.Tag} is on the {FloorKey.Describe(c.Floor)} plan but not in the model: no sleeve and no Revit fixture within {MismatchRadiusFeet:0} ft" +
                              (c.DrawnDrain != null ? $" (the plan draws it: {c.DrawnDrain})" : "") +
                              (floors > 0 ? $"; the same gap on {floors} other floor(s) at this spot" : "") +
                              ". Not placed: add the fixture to the model or place the sleeve by hand."
@@ -224,7 +540,7 @@ namespace SleevesOpenings.Automation
             assembly.Crossings.RemoveAll(gaps.Contains);
         }
 
-        /// <summary>Step 3: the sleeve point(s) from the fixture drawn on the plan (set by the plan reader), placed.</summary>
+        /// <summary>Step 4: the sleeve point(s) from the fixture drawn on the plan (set by the plan reader), placed.</summary>
         private static void FromDrawing(Crossing c, string why)
         {
             c.Status = Crossing.Place;
@@ -291,37 +607,80 @@ namespace SleevesOpenings.Automation
             return Math.Sqrt(dx * dx + dy * dy);
         }
 
-        private static bool Matches(string code, FixtureSleeve sleeve, string name)
+        private static XYZ Flat(XYZ p) => new XYZ(p.X, p.Y, 0);
+
+        private static XYZ Mean(IList<XYZ> points) =>
+            new XYZ(points.Average(p => p.X), points.Average(p => p.Y), 0);
+
+        /// <summary>
+        /// The fixture code a modelled family is (WC, LAV, BT...), the specific names first; a plain "sink" is a
+        /// lavatory. Null when it is no fixture the rules sleeve.
+        /// </summary>
+        internal static string Classify(string name, PlumbingRules rules)
+        {
+            return rules.Fixtures.Keys.FirstOrDefault(code => Matches(code, name, false))
+                ?? rules.Fixtures.Keys.FirstOrDefault(code => Matches(code, name, true));
+        }
+
+        /// <summary>A modelled family's name fits the fixture code; <paramref name="anySink"/> = a plain "sink" fits any sink code.</summary>
+        private static bool Matches(string code, string name, bool anySink)
         {
             string pattern = code.ToUpperInvariant() switch
             {
                 "WC" => @"toilet|water.?closet|\bwc\b",
-                "LAV" => @"lavatory|\blav\b",
+                "LAV" => @"lavatory|\blav\b|vanity|basin",
                 "BT" => @"bathtub|\btub\b",
-                "KS" => @"kitchen.?sink|\bks\b",
-                "LS" => @"laundry.?sink|\bls\b",
+                "KS" => @"kitchen.*sink|sink.*kitchen|\bks\b",
+                "LS" => @"laundry.*sink|sink.*laundry|utility.*sink|\bls\b",
                 "W/D" => @"washer|washing.?machine|\bw/d\b|\bwd\b",
                 "WD" => @"washer|washing.?machine|\bwd\b",
                 "SH" => @"shower",
                 "FD" => @"floor.?drain|\bfd\b",
-                _ => Regex.Escape(sleeve?.Name ?? code)
+                _ => Regex.Escape(code)
             };
+            if (anySink && (code == "LAV" || code == "KS" || code == "LS")) pattern += @"|\bsinks?\b";
             return Regex.IsMatch(name ?? "", pattern, RegexOptions.IgnoreCase);
         }
 
-        private static List<Fixture> ReadFixtures(Document host, ExistingReport existing)
+        private static List<Fixture> ReadFixtures(Document host, ExistingReport existing, PlumbingRules rules, List<string> messages)
         {
+            // the floor of a fixture is the host level it stands on (by height): a linked architect's model names its
+            // levels its own way ("Level 2", "L02"), which never matches "02.SECOND FLOOR"
+            var levels = new FilteredElementCollector(host).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.ProjectElevation).ToList();
+            string HostLevel(double z, string own) =>
+                levels.LastOrDefault(l => l.ProjectElevation <= z + LevelToleranceFeet)?.Name ?? own;
+
             var sleeves = new HashSet<ElementId>(existing?.Items.Select(i => i.Id) ?? Enumerable.Empty<ElementId>());
-            var result = Read(host, Transform.Identity, "this model", sleeves);
+            var result = new List<Fixture>();
+            void Add(string source, List<Fixture> read)
+            {
+                result.AddRange(read);
+                var known = read.Select(f => Classify(f.Name, rules)).Where(c => c != null).GroupBy(c => c).Select(g => $"{g.Count()} {g.Key}");
+                var unknown = read.Where(f => Classify(f.Name, rules) == null).Select(f => f.Name.Trim()).Distinct().Take(15).ToList();
+                App.Log($"AutoRun fixtures in {source}: {read.Count} read, {string.Join(", ", known)}" +
+                        (unknown.Count > 0 ? $"; not fixtures by name: {string.Join(" | ", unknown)}" : ""));
+                foreach (var g in read.Where(f => Classify(f.Name, rules) != null).GroupBy(f => f.Level ?? "?"))
+                    App.Log($"AutoRun fixtures in {source} on {g.Key}: {g.Count()}");
+            }
+            Add("this model", Read(host, Transform.Identity, "this model", sleeves, HostLevel));
+            int links = 0, unloaded = 0;
             foreach (var link in new FilteredElementCollector(host).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>())
             {
                 var linked = link.GetLinkDocument();
-                if (linked != null) result.AddRange(Read(linked, link.GetTotalTransform(), $"link '{link.Name}'", null));
+                if (linked == null) { unloaded++; App.Log($"AutoRun fixtures: link '{link.Name}' is not loaded"); continue; }
+                links++;
+                Add($"link '{link.Name}'", Read(linked, link.GetTotalTransform(), $"link '{link.Name}'", null, HostLevel));
             }
+            int fixtures = result.Count(f => Classify(f.Name, rules) != null);
+            messages.Add($"Fixtures found in the model: {fixtures} (this model and {links} Revit link(s)" + (unloaded > 0 ? $", {unloaded} link(s) not loaded" : "") + ")" +
+                         (fixtures == 0 ? " — none: fixtures drawn only in linked DWGs are not read yet; see the log for the families seen" : "") + ".");
             return result;
         }
 
-        private static List<Fixture> Read(Document doc, Transform transform, string source, HashSet<ElementId> sleeves)
+        /// <summary>A fixture this far below a level (feet) still stands on it (floor drains, tubs set into the slab).</summary>
+        private const double LevelToleranceFeet = 1.0;
+
+        private static List<Fixture> Read(Document doc, Transform transform, string source, HashSet<ElementId> sleeves, Func<double, string, string> hostLevel)
         {
             var result = new List<Fixture>();
             foreach (var category in new[] { BuiltInCategory.OST_PlumbingFixtures, BuiltInCategory.OST_Casework, BuiltInCategory.OST_GenericModel,
@@ -337,20 +696,37 @@ namespace SleevesOpenings.Automation
                 var box = instance.get_BoundingBox(null);
                 var local = (instance.Location as LocationPoint)?.Point ?? (box == null ? null : (box.Min + box.Max) / 2);
                 if (local == null) continue;
+                var point = transform.OfPoint(local);
                 var fixture = new Fixture
                 {
                     Name = name,
                     Source = source,
-                    Level = (doc.GetElement(instance.LevelId) as Level)?.Name,
-                    Point = transform.OfPoint(local)
+                    Level = hostLevel(point.Z, RiserIndex.LevelOf(doc, instance)?.Name),
+                    Point = point,
+                    Min = point, Max = point,
+                    WallHung = instance.Host is Wall || WallHung.IsMatch(name)
                 };
+                if (box != null)
+                {
+                    var corners = new[] { box.Min, new XYZ(box.Max.X, box.Min.Y, box.Min.Z), new XYZ(box.Min.X, box.Max.Y, box.Min.Z), box.Max }
+                                  .Select(transform.OfPoint).ToList();
+                    fixture.Min = new XYZ(corners.Min(p => p.X), corners.Min(p => p.Y), 0);
+                    fixture.Max = new XYZ(corners.Max(p => p.X), corners.Max(p => p.Y), 0);
+                }
+                try
+                {
+                    var facing = transform.OfVector(instance.FacingOrientation);
+                    facing = new XYZ(facing.X, facing.Y, 0);
+                    if (facing.GetLength() > 1e-6) fixture.Facing = facing.Normalize();
+                }
+                catch (Exception) { }                                         // families without a facing
                 var manager = instance.MEPModel?.ConnectorManager;
                 if (manager != null)
                     foreach (Connector connector in manager.Connectors)
                     {
                         if (connector.Domain != Domain.DomainPiping || connector.ConnectorType != ConnectorType.End) continue;
-                        if (connector.PipeSystemType.ToString().IndexOf("Sanitary", StringComparison.OrdinalIgnoreCase) < 0) continue;
-                        fixture.Drains.Add(transform.OfPoint(connector.Origin));
+                        bool sanitary = connector.PipeSystemType.ToString().IndexOf("Sanitary", StringComparison.OrdinalIgnoreCase) >= 0;
+                        (sanitary ? fixture.Drains : fixture.Pipes).Add(transform.OfPoint(connector.Origin));
                     }
                 result.Add(fixture);
             }
