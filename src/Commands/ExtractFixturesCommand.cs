@@ -61,6 +61,8 @@ namespace SleevesOpenings.Commands
             /// <summary>What it is: the shape found ("LAV/SINK") or the family and type name.</summary>
             public string Name;
             public string Source, How, Level, Grid;
+            /// <summary>The DWG block it is (null for shapes and Revit families).</summary>
+            public string Block;
             public double X0, Y0, X1, Y1;             // feet, model coordinates
             public List<XYZ> Points = new List<XYZ>();
             /// <summary>The family instance in this model (null for DWG drawings and linked families).</summary>
@@ -75,23 +77,56 @@ namespace SleevesOpenings.Commands
         public static List<Level> Levels(Document doc) =>
             new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.ProjectElevation).ThenBy(l => l.Name).ToList();
 
-        public static List<Row> Extract(Document doc, Level level, PlumbingRules rules, bool dwg, bool revit, out List<DwgFixtureReader.Plan> plans)
+        /// <param name="allShapes">Also guess toilets, sinks and washers from loose lines (off: only the named blocks, and tubs
+        /// and showers from loose lines, which are seldom blocks).</param>
+        /// <param name="blocks">Every fixture block the DWG files hold (named or not), for naming them.</param>
+        /// <param name="notes">What to tell the user (a file not found, blocks not named yet).</param>
+        public static List<Row> Extract(Document doc, Level level, PlumbingRules rules, bool dwg, bool revit, bool allShapes,
+                                        out List<DwgFixtureReader.Plan> plans, out List<DwgFixtureCatalog.Item> blocks, out List<string> notes)
         {
             (int, double) Sleeves(string code) => rules.Fixtures.TryGetValue(code, out var fs) ? (fs.Count, fs.Spacing) : (1, 0);
             var rows = new List<Row>();
             plans = new List<DwgFixtureReader.Plan>();
+            blocks = new List<DwgFixtureCatalog.Item>();
+            notes = new List<string>();
 
             if (dwg)
             {
                 plans = DwgFixtureReader.Read(doc, rules, level.Name);
+                // the plumbing plans' fixture labels (from this model's latest Auto Run) vote on what each block is
+                var labels = DwgFixtureCatalog.LabelsFromLastRun(doc, rules);
                 foreach (var p in plans)
-                    foreach (var s in FixtureDrains.Extract(p.Strokes, p.Walls, Sleeves, 13, 72))
+                {
+                    var cat = DwgFixtureCatalog.ForPlan(p, rules, labels, notes);
+                    if (cat.Note != null) { notes.Add(cat.Note); App.Log("Extract fixtures: " + cat.Note); }
+                    IEnumerable<FixtureDrains.Shape> shapes;
+                    if (cat.Used)
+                    {
+                        blocks.AddRange(cat.Items);
+                        // fixtures, and the blocks it could not tell (never placed); ranges, doors... are left out
+                        foreach (var i in cat.Items.Where(i => i.Code != null || (i.Why ?? "").StartsWith("unclear")))
+                            rows.Add(new Row
+                            {
+                                Code = i.Code ?? "?", Name = $"block '{i.Name}'" + (i.Code == null ? " (unclear)" : i.Check ? " (check)" : ""), Block = i.Name,
+                                Source = p.Source, Level = level.Name, FromDwg = true,
+                                How = i.Code == null ? i.Why : $"{i.How}  [{i.Why}]",
+                                X0 = i.X0 / 12, Y0 = i.Y0 / 12, X1 = i.X1 / 12, Y1 = i.Y1 / 12,
+                                Points = (i.Points ?? new List<(double X, double Y)> { (i.Cx, i.Cy) }).Select(q => new XYZ(q.X / 12, q.Y / 12, 0)).ToList()
+                            });
+                        // what is not a block: tubs and showers drawn line by line (and the rest only when asked)
+                        shapes = FixtureDrains.Extract(DwgFixtureCatalog.Loose(p, cat), p.Walls, Sleeves, 13, 72)
+                                              .Where(s => allShapes || s.Code == "BT" || s.Code == "SH");
+                    }
+                    else shapes = FixtureDrains.Extract(p.Strokes, p.Walls, Sleeves, 13, 72);
+                    foreach (var s in shapes)
                         rows.Add(new Row
                         {
-                            Code = s.Code == "LAV/SINK" ? "LAV" : s.Code, Name = s.Code, Source = p.Source, How = s.How, Level = level.Name, FromDwg = true,
+                            Code = s.Code == "LAV/SINK" ? "LAV" : s.Code, Name = s.Code + " (by shape)", Source = p.Source, How = "by shape, check: " + s.How,
+                            Level = level.Name, FromDwg = true,
                             X0 = s.X0 / 12, Y0 = s.Y0 / 12, X1 = s.X1 / 12, Y1 = s.Y1 / 12,
                             Points = s.Points.Select(q => new XYZ(q.X / 12, q.Y / 12, 0)).ToList()
                         });
+                }
             }
 
             if (revit)

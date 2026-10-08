@@ -343,21 +343,53 @@ namespace SleevesOpenings.Automation.Drawings
                     : objects.FirstOrDefault(o => (o.Group == 0 ? Touch(o, s) : Within(o, s)) &&
                         Math.Max(Math.Max(o.X1, s.X1) - Math.Min(o.X0, s.X0), Math.Max(o.Y1, s.Y1) - Math.Min(o.Y0, s.Y0)) <= maxObject);
                 if (host == null) objects.Add(host = new Obj { X0 = s.X0, Y0 = s.Y0, X1 = s.X1, Y1 = s.Y1, Group = s.Group });
-                else { host.X0 = Math.Min(host.X0, s.X0); host.Y0 = Math.Min(host.Y0, s.Y0); host.X1 = Math.Max(host.X1, s.X1); host.Y1 = Math.Max(host.Y1, s.Y1); }
-                if (s.Circle) host.Circles.Add(s);
-                host.Strokes.Add(s);
-                if (s.Kitchen) host.Kitchen = true;
-                if (s.Curved && !s.Circle)              // a bowl or a tub's outline; round circles are drains and faucet handles
-                {
-                    double a = Math.Max(1, (s.X1 - s.X0) * (s.Y1 - s.Y0));
-                    host.Curved++; host.CurvedW += a; host.CurvedSx += a * (s.X0 + s.X1) / 2; host.CurvedSy += a * (s.Y0 + s.Y1) / 2;
-                    if (s.Closed) host.ClosedCurved++;
-                    if (Math.Max(s.X1 - s.X0, s.Y1 - s.Y0) <= 6) host.Fittings++;
-                    if ((s.X1 - s.X0) * (s.Y1 - s.Y0) > host.MaxCurvedW * host.MaxCurvedL) { host.MaxCurvedW = s.X1 - s.X0; host.MaxCurvedL = s.Y1 - s.Y0; }
-                }
-                if (s.Diagonal) host.Diagonals++;
+                Absorb(host, s);
             }
             return objects;
+        }
+
+        /// <summary>Adds a stroke to a drawing: its box, curves, circles, diagonals.</summary>
+        private static void Absorb(Obj host, Stroke s)
+        {
+            host.X0 = Math.Min(host.X0, s.X0); host.Y0 = Math.Min(host.Y0, s.Y0); host.X1 = Math.Max(host.X1, s.X1); host.Y1 = Math.Max(host.Y1, s.Y1);
+            if (s.Circle) host.Circles.Add(s);
+            host.Strokes.Add(s);
+            if (s.Kitchen) host.Kitchen = true;
+            if (s.Curved && !s.Circle)              // a bowl or a tub's outline; round circles are drains and faucet handles
+            {
+                double a = Math.Max(1, (s.X1 - s.X0) * (s.Y1 - s.Y0));
+                host.Curved++; host.CurvedW += a; host.CurvedSx += a * (s.X0 + s.X1) / 2; host.CurvedSy += a * (s.Y0 + s.Y1) / 2;
+                if (s.Closed) host.ClosedCurved++;
+                if (Math.Max(s.X1 - s.X0, s.Y1 - s.Y0) <= 6) host.Fittings++;
+                if ((s.X1 - s.X0) * (s.Y1 - s.Y0) > host.MaxCurvedW * host.MaxCurvedL) { host.MaxCurvedW = s.X1 - s.X0; host.MaxCurvedL = s.Y1 - s.Y0; }
+            }
+            if (s.Diagonal) host.Diagonals++;
+        }
+
+        /// <summary>
+        /// What one drawing is by its shape alone, when the drawing is known to be one object (a DWG block's own lines):
+        /// WC, LAV or KS, BT, SH, W/D; null when it is no fixture (a door, a range, a refrigerator) or unclear.
+        /// </summary>
+        public static string Guess(IList<Stroke> strokes)
+        {
+            if (strokes == null || strokes.Count == 0) return null;
+            var o = new Obj { X0 = strokes[0].X0, Y0 = strokes[0].Y0, X1 = strokes[0].X1, Y1 = strokes[0].Y1 };
+            foreach (var s in strokes) Absorb(o, s);
+            return Kind(o);
+        }
+
+        /// <summary>
+        /// The sleeve point(s) of a fixture whose type is known (a named DWG block: no guessing what it is), from its
+        /// drawing's strokes and the walls around it, by the same office rules as <see cref="Extract"/>. Null points when
+        /// the drawing gives no spot (a tub with no drain drawn, a sink with no wall and no faucet).
+        /// </summary>
+        public static (List<(double X, double Y)> Points, string How) LocateKnown(string code, IList<Stroke> strokes,
+            IList<((double X, double Y) A, (double X, double Y) B)> walls, (int Count, double Spacing) sleeve, double toiletFromWall = 13)
+        {
+            if (strokes == null || strokes.Count == 0) return (null, null);
+            var o = new Obj { X0 = strokes[0].X0, Y0 = strokes[0].Y0, X1 = strokes[0].X1, Y1 = strokes[0].Y1 };
+            foreach (var s in strokes) Absorb(o, s);
+            return Drain(code, o, walls, sleeve, toiletFromWall);
         }
 
         /// <summary>

@@ -6,6 +6,7 @@ using System.Linq;
 using System.Windows.Forms;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using SleevesOpenings.Automation;
 using SleevesOpenings.Commands;
 using Color = System.Drawing.Color;
 using ComboBox = System.Windows.Forms.ComboBox;
@@ -30,7 +31,8 @@ namespace SleevesOpenings.UI
         private readonly UIDocument _uidoc;
         private readonly List<Level> _levels;
         private readonly ComboBox _floor;
-        private readonly CheckBox _dwg, _revit, _onlySleeved;
+        private readonly CheckBox _dwg, _revit, _onlySleeved, _allShapes;
+        private List<DwgFixtureCatalog.Item> _blocks = new List<DwgFixtureCatalog.Item>();
         private readonly Label _summary;
         private readonly DataGridView _grid;
         private readonly TextBox _detail;
@@ -49,7 +51,7 @@ namespace SleevesOpenings.UI
             ClientSize = new Size(1180, 640);
             MinimumSize = new Size(860, 420);
 
-            var top = new Panel { Dock = DockStyle.Top, Height = 48, Padding = new Padding(12, 10, 12, 0) };
+            var top = new Panel { Dock = DockStyle.Top, Height = 82, Padding = new Padding(12, 10, 12, 0) };
             var floorLabel = new Label { Text = "Floor:", AutoSize = true, Location = new Point(12, 15) };
             _floor = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(62, 11), Width = 260 };
             foreach (var l in _levels) _floor.Items.Add($"{l.Name}   ({FixtureExtractor.Ft(l.ProjectElevation)})");
@@ -58,8 +60,11 @@ namespace SleevesOpenings.UI
             _dwg = new CheckBox { Text = "Architect's DWG", Checked = true, AutoSize = true, Location = new Point(340, 14) };
             _revit = new CheckBox { Text = "Revit fixtures (model + links)", Checked = true, AutoSize = true, Location = new Point(480, 14) };
             var extract = new Button { Text = "Extract", Size = new Size(110, 30), Location = new Point(720, 9) };
-            _onlySleeved = new CheckBox { Text = "Only sleeved types", Checked = false, AutoSize = true, Location = new Point(845, 14) };
-            top.Controls.AddRange(new Control[] { floorLabel, _floor, _dwg, _revit, extract, _onlySleeved });
+            var name = new Button { Text = "Override names…", Size = new Size(130, 30), Location = new Point(840, 9) };
+            _onlySleeved = new CheckBox { Text = "Only sleeved types", Checked = false, AutoSize = true, Location = new Point(340, 48) };
+            _allShapes = new CheckBox { Text = "Also guess toilets and sinks from loose lines (not blocks) by shape", Checked = false, AutoSize = true, Location = new Point(500, 48) };
+            var how = new Label { Text = "Fixtures = the DWG's blocks, identified automatically.", AutoSize = true, ForeColor = Color.DimGray, Location = new Point(12, 50) };
+            top.Controls.AddRange(new Control[] { floorLabel, _floor, _dwg, _revit, extract, name, how, _onlySleeved, _allShapes });
 
             _summary = new Label { Dock = DockStyle.Top, Height = 30, Padding = new Padding(12, 6, 12, 0), Font = new Font("Segoe UI", 10f, FontStyle.Bold),
                                    Text = "Choose a floor and press Extract." };
@@ -102,6 +107,7 @@ namespace SleevesOpenings.UI
             Controls.Add(top);
 
             extract.Click += (s, e) => Extract();
+            name.Click += (s, e) => NameBlocks();
             _onlySleeved.CheckedChanged += (s, e) => Refill();
             zoom.Click += (s, e) => { var r = Current(); if (r != null) Zoom(r); };
             mark.Click += (s, e) => Mark();
@@ -128,7 +134,7 @@ namespace SleevesOpenings.UI
             try
             {
                 var rules = App.Rules(doc).Plumbing;
-                _rows = FixtureExtractor.Extract(doc, _level, rules, _dwg.Checked, _revit.Checked, out var plans);
+                _rows = FixtureExtractor.Extract(doc, _level, rules, _dwg.Checked, _revit.Checked, _allShapes.Checked, out var plans, out _blocks, out var notes);
                 Refill();
                 var kinds = _rows.GroupBy(r => r.Code).OrderBy(g => g.Key).Select(g => $"{g.Count()} {g.Key}");
                 string dwgs = !_dwg.Checked ? "" : plans.Count == 0 ? "  —  no architect's DWG on this level" : $"  —  DWG: {string.Join(", ", plans.Select(p => p.Source).Distinct())}";
@@ -141,6 +147,12 @@ namespace SleevesOpenings.UI
                     MessageBox.Show(this, string.Join("\n\n", warnings), Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
                 App.Log($"Extract fixtures {_level.Name}: {_rows.Count} found ({string.Join(", ", kinds)})");
+                // nothing to answer: blocks are identified on their own; only the unclear ones are said (and never placed)
+                var unclear = notes.Where(n => n.StartsWith("Block '")).Distinct().ToList();
+                if (unclear.Count > 0) _summary.Text += $"  —  {unclear.Count} block kind(s) unclear, not placed";
+                var flagged = _rows.Count(r => r.Name?.EndsWith("(check)") == true);
+                if (flagged > 0) _summary.Text += $"  —  {flagged} identified from one sign only (check)";
+                foreach (var n in notes) App.Log("Extract fixtures: " + n);
             }
             catch (Exception ex)
             {
@@ -148,6 +160,38 @@ namespace SleevesOpenings.UI
                 MessageBox.Show(this, "Could not extract: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             finally { Cursor = Cursors.Default; }
+        }
+
+        /// <summary>Opens the block naming list for the blocks of the last extraction; on save, extracts again.</summary>
+        private void NameBlocks()
+        {
+            if (_level == null || _blocks.Count == 0) { MessageBox.Show(this, "Extract a floor whose DWG has fixture blocks first.", Text); return; }
+            using (var f = new BlockNamesForm(_blocks, names => MarkBlocks(names)))
+                if (f.ShowDialog(this) == DialogResult.OK) Extract();
+        }
+
+        /// <summary>Marks every insert of the named blocks in the floor's plan (to see what a block is).</summary>
+        private void MarkBlocks(List<string> names)
+        {
+            var doc = _uidoc.Document;
+            try
+            {
+                var view = FixtureExtractor.PlanFor(doc, _level, _uidoc.ActiveView);
+                if (view == null) { MessageBox.Show(this, $"No floor plan of {_level.Name} to draw in.", Text); return; }
+                var rows = _blocks.Where(b => names.Contains(b.Name) || b.Inner.Any(names.Contains)).Select(b => new Row
+                {
+                    Code = "?", Name = b.Name, X0 = b.X0 / 12, Y0 = b.Y0 / 12, X1 = b.X1 / 12, Y1 = b.Y1 / 12,
+                    Points = new List<XYZ> { new XYZ(b.Cx / 12, b.Cy / 12, 0) }
+                }).ToList();
+                var ids = FixtureExtractor.Mark(doc, view, _level, rows);
+                if (_uidoc.ActiveView?.Id != view.Id) { try { _uidoc.ActiveView = view; } catch (Exception) { } }
+                MessageBox.Show(this, $"{rows.Count} insert(s) of {string.Join(", ", names)} marked in '{view.Name}' with a box and the block name. Undo removes them.", Text);
+            }
+            catch (Exception ex)
+            {
+                App.Log("Extract fixtures mark blocks: " + ex);
+                MessageBox.Show(this, "Could not mark: " + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         private void Refill()

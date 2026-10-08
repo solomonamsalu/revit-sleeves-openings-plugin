@@ -38,10 +38,16 @@ namespace SleevesOpenings.Automation
             public XYZ Origin;
             /// <summary>Something to tell the user about this drawing (two copies at different positions).</summary>
             public string Warning;
+            /// <summary>The DWG's placement: its own coordinates (feet) to the model's.</summary>
+            public Transform Transform;
+            /// <summary>The DWG's scale as imported (1 = its own units).</summary>
+            public double ImportScale = 1;
+            /// <summary>The DWG file (the link's path, else a file of that name near the model); null when not found.</summary>
+            public string FilePath;
         }
 
         /// <summary>Layers whose sinks are kitchen sinks.</summary>
-        private static readonly Regex KitchenLayers = new Regex(@"KITCHEN|KTCH|\bKIT\b", RegexOptions.IgnoreCase);
+        public static readonly Regex KitchenLayers = new Regex(@"KITCHEN|KTCH|\bKIT\b", RegexOptions.IgnoreCase);
 
         /// <summary>A block wider or longer than this (inches) is no fixture (a counter, a bound floor plan): its lines are loose.</summary>
         private const double FixtureInches = 78;
@@ -80,7 +86,15 @@ namespace SleevesOpenings.Automation
                 if (level == null) continue;
                 if (onlyLevel != null && level.Name != onlyLevel) continue;
 
-                var plan = new Plan { Level = level.Name, Source = name, Origin = ii.GetTotalTransform()?.Origin ?? XYZ.Zero };
+                var type = doc.GetElement(ii.GetTypeId());
+                double scale = type?.get_Parameter(BuiltInParameter.IMPORT_SCALE)?.AsDouble() ?? 0;
+                if (scale <= 0) scale = ii.get_Parameter(BuiltInParameter.IMPORT_INSTANCE_SCALE)?.AsDouble() ?? 0;
+                var plan = new Plan
+                {
+                    Level = level.Name, Source = name, Transform = ii.GetTotalTransform(), ImportScale = scale > 0 ? scale : 1,
+                    FilePath = FileOf(doc, type, name)
+                };
+                plan.Origin = plan.Transform?.Origin ?? XYZ.Zero;
                 try
                 {
                     // hidden layers and categories of the view are read all the same
@@ -116,6 +130,24 @@ namespace SleevesOpenings.Automation
                 else App.Log($"DWG fixtures: {name} on {level.Name}: another instance already read more ({had.Layers.Values.Sum()} vs {lines} lines), this one dropped");
             }
             return order.Select(k => best[k]).ToList();
+        }
+
+        /// <summary>The DWG file behind an import: the link's own path, else a file of that name next to the model (3 folders deep, and one up).</summary>
+        private static string FileOf(Document doc, Element type, string name)
+        {
+            try
+            {
+                if (type != null && type.IsExternalFileReference())
+                {
+                    var p = type.GetExternalFileReference().GetAbsolutePath();
+                    string path = p == null ? null : ModelPathUtils.ConvertModelPathToUserVisiblePath(p);
+                    if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path)) return path;
+                }
+            }
+            catch (Exception) { }
+            if (string.IsNullOrEmpty(doc.PathName)) return null;
+            var dir = System.IO.Path.GetDirectoryName(doc.PathName);
+            return Alignment.ReferenceFiles.Locate(name, new[] { dir, System.IO.Path.GetDirectoryName(dir) });
         }
 
         private static bool Is(Regex r, string layer) => r != null && layer != null && r.IsMatch(layer);

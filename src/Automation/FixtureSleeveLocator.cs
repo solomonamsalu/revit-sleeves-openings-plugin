@@ -143,7 +143,7 @@ namespace SleevesOpenings.Automation
             int fromDwg = 0;
             if (rules.DwgFixtures && (gaps.Count > 0 || rules.ModelFixtures))
             {
-                try { fromDwg = FromDwg(DwgFixtureReader.Read(host, rules), gaps, labels, rules, dwgShapes, dwgLevels); }
+                try { fromDwg = FromDwg(DwgFixtureReader.Read(host, rules), gaps, labels, rules, dwgShapes, dwgLevels, messages); }
                 catch (Exception ex) { App.Log("AutoRun DWG fixtures failed: " + ex); messages.Add("Fixtures in the architect's DWGs not read: " + ex.Message); }
             }
 
@@ -269,12 +269,33 @@ namespace SleevesOpenings.Automation
         /// Returns how many labels were placed.
         /// </summary>
         private static int FromDwg(List<DwgFixtureReader.Plan> plans, List<Crossing> gaps, List<Crossing> labels, PlumbingRules rules,
-                                   List<(DwgFixtureReader.Plan, FixtureDrains.Shape)> shapes, HashSet<string> dwgLevels)
+                                   List<(DwgFixtureReader.Plan, FixtureDrains.Shape)> shapes, HashSet<string> dwgLevels, List<string> messages = null)
         {
             int n = 0;
             (int, double) Sleeves(string code) => rules.Fixtures.TryGetValue(code, out var fs) ? (fs.Count, fs.Spacing) : (1, 0);
+
+            // the architect's blocks, read from the files: each kind identified once over every floor, from the plumbing
+            // labels next to its copies, its drawing and its name (no one names anything), then located
+            var map = FixtureBlockMap.Load();
+            var cats = plans.Where(p => p.Strokes.Count > 0).ToDictionary(p => p, p => DwgFixtureCatalog.Read(p, rules, map));
+            var votes = labels.Where(c => c.HasPosition && c.Level != null)
+                              .Select(c => new DwgFixtureCatalog.Label { Level = c.Level, Tag = c.Tag, X = c.X, Y = c.Y }).ToList();
+            var unclear = DwgFixtureCatalog.Identify(cats.Values.ToList(), votes, map);
+            foreach (var c in cats.Values.Where(c => c.Used)) DwgFixtureCatalog.Locate(c, rules);
+            foreach (var note in unclear.Distinct()) { App.Log("AutoRun fixtures: " + note); messages?.Add("  ! " + note); }
+            var kinds = cats.Values.Where(c => c.Used).SelectMany(c => c.Items).Where(i => i.Code != null).GroupBy(i => i.Name)
+                            .Select(g => $"{g.Key} = {g.First().Code}{(g.First().Check ? " (check)" : "")}").ToList();
+            if (kinds.Count > 0) messages?.Add("Fixtures in the architect's DWG blocks: " + string.Join(", ", kinds) + ".");
+
             foreach (var plan in plans.Where(p => p.Strokes.Count > 0))
             {
+                var cat = cats[plan];
+                if (cat.Note != null) App.Log("AutoRun fixtures: " + cat.Note);
+                if (cat.Used && cat.Items.Any(i => i.Code != null && i.Points != null))
+                {
+                    n += FromBlocks(plan, cat, gaps, labels, rules, shapes, dwgLevels, Sleeves);
+                    continue;
+                }
                 var here = labels.Where(c => c.HasPosition && AutoPlacer.SameFloor(plan.Level, c.Level)).ToList();
                 var marks = here.Select(c => new FixtureMark { Code = c.Tag, X = c.X * 12, Y = c.Y * 12 }).ToList();
                 FixtureDrains.Recognise(marks, plan.Strokes, plan.Walls, Sleeves, DwgSearchInches, ToiletFromWallFeet * 12, 72, false);
@@ -302,6 +323,70 @@ namespace SleevesOpenings.Automation
                 shapes.AddRange(found.Select(s => (plan, s)));
             }
             return n;
+        }
+
+        /// <summary>
+        /// Step 2b from the DWG's named blocks (<see cref="DwgFixtureCatalog"/>), plus tubs and showers drawn line by line
+        /// (by shape). Each plan label takes the nearest fixture of its kind within <see cref="DwgSearchInches"/>, nearest
+        /// pairs first; a label with no Revit fixture takes that fixture's sleeve point(s). The fixtures no label takes go to
+        /// <paramref name="shapes"/> (step 5: placed and flagged). Returns how many labels were placed.
+        /// </summary>
+        private static int FromBlocks(DwgFixtureReader.Plan plan, DwgFixtureCatalog.Result cat, List<Crossing> gaps, List<Crossing> labels, PlumbingRules rules,
+                                      List<(DwgFixtureReader.Plan, FixtureDrains.Shape)> shapes, HashSet<string> dwgLevels, Func<string, (int, double)> sleeves)
+        {
+            var fixtures = cat.Items.Where(i => i.Code != null && i.Points != null && rules.Fixtures.ContainsKey(i.Code))
+                .Select(i => new FixtureDrains.Shape { Code = i.Code, Cx = i.Cx, Cy = i.Cy, X0 = i.X0, Y0 = i.Y0, X1 = i.X1, Y1 = i.Y1, Points = i.Points,
+                                                       How = $"block '{i.Name}'{(i.Check ? " (check)" : "")}: {i.How} [{i.Why}]" })
+                .ToList();
+            fixtures.AddRange(FixtureDrains.Extract(DwgFixtureCatalog.Loose(plan, cat), plan.Walls, sleeves, ToiletFromWallFeet * 12, 72)
+                                           .Where(s => s.Code == "BT" || s.Code == "SH")
+                                           .Select(s => { s.How = "by shape: " + s.How; return s; }));
+            if (fixtures.Count > 0) dwgLevels.Add(plan.Level);
+
+            double Gap(FixtureDrains.Shape s, double x, double y) =>
+                Math.Sqrt(Math.Pow(Math.Max(Math.Max(s.X0 - x, 0), x - s.X1), 2) + Math.Pow(Math.Max(Math.Max(s.Y0 - y, 0), y - s.Y1), 2));
+            var here = labels.Where(c => c.HasPosition && AutoPlacer.SameFloor(plan.Level, c.Level)).ToList();
+            var pairs = (from c in here
+                         from s in fixtures
+                         where SameKind(c.Tag, s.Code)
+                         let d = Gap(s, c.X * 12, c.Y * 12)
+                         where d <= DwgSearchInches
+                         orderby d
+                         select (C: c, S: s)).ToList();
+            var claimed = new HashSet<FixtureDrains.Shape>();
+            var done = new HashSet<Crossing>();
+            int n = 0;
+            foreach (var (c, s) in pairs)
+            {
+                if (done.Contains(c) || claimed.Contains(s)) continue;
+                done.Add(c); claimed.Add(s);
+                if (!gaps.Contains(c)) continue;                     // already sleeved or a Revit fixture: the drawing only claims it
+                SetPoints(c, s.Points.Select(p => new XYZ(p.X / 12, p.Y / 12, 0)).ToList());
+                c.Status = Crossing.Place;
+                c.Confidence = s.How.StartsWith("block") ? "high" : "medium";
+                c.FromModel = true;
+                c.Check = !s.How.StartsWith("block") || s.How.Contains("(check)");
+                c.Notes.RemoveAll(t => t.Contains("position is the engineer's fixture text"));
+                c.Notes.Add($"position from the {s.Code} in the architect's DWG in the model ({plan.Source}): {s.How}");
+                gaps.Remove(c);
+                n++;
+            }
+            shapes.AddRange(fixtures.Where(s => !claimed.Contains(s)).Select(s => (plan, s)));
+            int unnamed = cat.Items.Count(i => i.Code == null);
+            App.Log($"AutoRun fixtures from blocks: {plan.Source} on {plan.Level}: {fixtures.Count} fixture(s) " +
+                    $"({string.Join(", ", fixtures.GroupBy(s => s.Code).Select(g => $"{g.Count()} {g.Key}"))}), {n} plan label(s) placed from them" +
+                    (unnamed > 0 ? $"; {unnamed} block(s) not named yet, not placed" : ""));
+            return n;
+        }
+
+        /// <summary>A plan label and a drawn fixture are the same kind: the same code, any sink for a sink label, tub/shower, washer.</summary>
+        private static bool SameKind(string label, string code)
+        {
+            if (string.Equals(label, code, StringComparison.OrdinalIgnoreCase)) return true;
+            var sinks = new[] { "LAV", "KS", "LS" };
+            var wet = new[] { "BT", "SH" };
+            var washers = new[] { "W/D", "WD" };
+            return (sinks.Contains(label) && sinks.Contains(code)) || (wet.Contains(label) && wet.Contains(code)) || (washers.Contains(label) && washers.Contains(code));
         }
 
         /// <summary>
