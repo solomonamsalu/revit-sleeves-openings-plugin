@@ -145,8 +145,10 @@ namespace SleevesOpenings.Automation
                 }
             }
             catch (Exception) { }
-            if (string.IsNullOrEmpty(doc.PathName)) return null;
-            var dir = System.IO.Path.GetDirectoryName(doc.PathName);
+            // a workshared model is open as a local copy in the user's Documents, so look where the central model is
+            string home = Setup.ModelFiles.HomePath(doc);
+            if (string.IsNullOrEmpty(home)) return null;
+            var dir = System.IO.Path.GetDirectoryName(home);
             return Alignment.ReferenceFiles.Locate(name, new[] { dir, System.IO.Path.GetDirectoryName(dir) });
         }
 

@@ -103,7 +103,7 @@ namespace SleevesOpenings.Sheets
             if (plan.Pattern == null)
             {
                 // no S&O sheet in the model: the office's template, if there is one
-                plan.Template = SoTemplates.Resolve(cfg.Template, doc.PathName, out string why);
+                plan.Template = SoTemplates.Resolve(cfg.Template, Setup.ModelFiles.HomePath(doc), out string why);
                 if (plan.Template == null) { plan.Problems.AddRange(patternProblems); plan.Problems.Add(why); return plan; }
             }
             else plan.Problems.AddRange(patternProblems);
@@ -846,7 +846,8 @@ namespace SleevesOpenings.Sheets
         public static string PdfFolder(Document doc, SoSheetRules cfg, ProjectState state)
         {
             var starts = new List<string>();
-            if (!string.IsNullOrEmpty(doc.PathName) && Path.IsPathRooted(doc.PathName)) starts.Add(Path.GetDirectoryName(doc.PathName));
+            string home = Setup.ModelFiles.HomePath(doc);        // the central model when this is a local copy
+            if (!string.IsNullOrEmpty(home) && Path.IsPathRooted(home)) starts.Add(Path.GetDirectoryName(home));
             foreach (var f in state?.Automation?.Files?.Values ?? Enumerable.Empty<Automation.DisciplineFiles>())
                 foreach (var path in new[] { f.Pdf, f.Dwg, f.Xrefs })
                     if (!string.IsNullOrEmpty(path) && Path.IsPathRooted(path)) starts.Add(Directory.Exists(path) ? path : Path.GetDirectoryName(path));

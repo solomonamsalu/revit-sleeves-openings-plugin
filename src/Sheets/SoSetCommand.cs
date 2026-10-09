@@ -98,7 +98,7 @@ namespace SleevesOpenings.Sheets
         /// <summary>The Structural folder; else next to the model; else Documents.</summary>
         private static string DefaultFolder(Document doc, SoSheetRules cfg, ProjectState state) =>
             SoSheets.PdfFolder(doc, cfg, state)
-            ?? (!string.IsNullOrEmpty(doc.PathName) && Path.IsPathRooted(doc.PathName) ? Path.GetDirectoryName(doc.PathName) : null)
+            ?? (ModelFiles.HomePath(doc) is string home && !string.IsNullOrEmpty(home) && Path.IsPathRooted(home) ? Path.GetDirectoryName(home) : null)
             ?? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
 
         private static System.Collections.Generic.List<ElementId> Ordered(Document doc, SoSetResult result) =>
