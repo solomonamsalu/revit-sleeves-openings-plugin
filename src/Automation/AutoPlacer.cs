@@ -186,7 +186,12 @@ namespace SleevesOpenings.Automation
                     double hw = (spec0.Width ?? spec0.Diameter ?? 0) / 2, hl = (spec0.Length ?? spec0.Diameter ?? 0) / 2;
                     if (Math.Abs(Math.Sin(spec0.RotationRadians)) > 0.7) (hw, hl) = (hl, hw);
                     var warnings = points.SelectMany(p => guard.Check(p, hw, hl, spec0.System)).Distinct().ToList();
-                    if (points.Count == 1 && (spec0.Role == FamilyRole.RegularOpening || spec0.Role == FamilyRole.RoundSleeve) && c.System != "GarbageChute" &&
+                    // a fixture's sleeve stays where the model's fixture drains (the model decides): a column or structure there
+                    // is flagged with the warning, never cleared by moving the sleeve off the fixture
+                    if (c.IsFixture && warnings.Any(Avoidable))
+                        c.Notes.Add("kept at the fixture (fixture sleeves are not moved to clear): " +
+                                    string.Join("; ", warnings.Where(Avoidable).Select(PlacementGuard.Clean).Distinct()) + "; check");
+                    else if (points.Count == 1 && (spec0.Role == FamilyRole.RegularOpening || spec0.Role == FamilyRole.RoundSleeve) && c.System != "GarbageChute" &&
                         _rules.Automation.Decisions?.AvoidStructure == true && warnings.Any(Avoidable))
                     {
                         var better = Avoid(c, spec0, points[0], guard, warnings, list);
@@ -210,7 +215,7 @@ namespace SleevesOpenings.Automation
                         }
                     }
                     var hard = warnings.Where(PlacementGuard.IsHard).ToList();
-                    if (hard.Count > 0)
+                    if (hard.Count > 0 && !c.IsFixture)                 // a fixture's sleeve is placed all the same, the warning flags it
                     {
                         outcome.Result = PlacementOutcome.Skipped;
                         outcome.Detail = string.Join("; ", hard.Select(PlacementGuard.Clean));
@@ -228,8 +233,14 @@ namespace SleevesOpenings.Automation
                         try
                         {
                             var placer = new Placer(_doc, PlanOf(level));
+                            // a fixture's sleeve(s) get an id of their own (not a floor-to-floor riser's), so Final Check has none to add
+                            string fixtureId = c.IsFixture ? FixtureId(c.Tag) : null;
                             foreach (var p in points)
-                                outcome.Ids.Add(placer.Place(Spec(c, points.Count), symbol, map, level, p).Id);
+                            {
+                                var spec = Spec(c, points.Count);
+                                if (fixtureId != null && string.IsNullOrEmpty(spec.Riser)) spec.Riser = fixtureId;
+                                outcome.Ids.Add(placer.Place(spec, symbol, map, level, p).Id);
+                            }
                             if (t.Commit() == TransactionStatus.Committed)
                             {
                                 outcome.Result = PlacementOutcome.Placed;
@@ -252,6 +263,18 @@ namespace SleevesOpenings.Automation
         }
 
         private OpeningSpec Spec(Crossing c, int ducts) => SpecFor(_rules, c);
+
+        /// <summary>
+        /// A fixture sleeve's id: "FX-WC-1"... unused in the model. Never a riser's id ("S-7"), so a riser of that name on
+        /// another floor is not tracked through it.
+        /// </summary>
+        private string FixtureId(string tag)
+        {
+            var used = new HashSet<string>(SleevesOpenings.Risers.RiserIndex.AllOpenings(_doc).Select(o => o.Riser).Where(r => r != null), StringComparer.OrdinalIgnoreCase);
+            string prefix = "FX-" + (tag ?? "FIX").Replace("/", "");
+            for (int i = 1; ; i++)
+                if (!used.Contains($"{prefix}-{i}")) return $"{prefix}-{i}";
+        }
 
         /// <summary>Two level names of one floor ("06.6-TH FLOOR" and "06.6 TH FLOOR NEW"): the same floor name, or the same level.</summary>
         internal static bool SameFloor(string a, string b) =>

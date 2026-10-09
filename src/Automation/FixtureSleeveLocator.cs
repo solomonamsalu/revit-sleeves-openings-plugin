@@ -115,6 +115,7 @@ namespace SleevesOpenings.Automation
             {
                 // the plan shows a fixture the model does not have (architecture only in DWG links): step 3
                 if (!match.TryGetValue(c, out var m)) { gaps.Add(c); continue; }
+                ModelKind(c, Classify(m.F.Name, rules), rules);
                 var sleeve = rules.Fixtures[c.Tag];
                 var (points, how, sure) = SleevePoints(m.F, c.Tag, sleeve);
                 string away = m.D > MatchRadiusFeet ? $"{m.D:0.#} ft from where the plan shows it (the plan looks out of date here)" : $"{m.D * 12:0.#}\" from the plan label";
@@ -370,11 +371,13 @@ namespace SleevesOpenings.Automation
             // nearest pairs first; a label with no fixture yet takes one further than DwgSearchInches (up to MatchRadiusFeet):
             // the model is what gets built, the plan looks out of date there (flagged). A label already settled (a sleeve
             // there, a Revit fixture) claims only the drawing right at it: a fixture further off keeps its own sleeve.
+            // Past DwgSearchInches only the very same kind: a KS label 5 ft from a lavatory is not that lavatory.
             var pairs = (from c in here
                          from s in fixtures
                          where SameKind(c.Tag, s.Code)
                          let d = Gap(s, c.X * 12, c.Y * 12)
-                         where d <= (gaps.Contains(c) ? MatchRadiusFeet * 12 : DwgSearchInches)
+                         where d <= DwgSearchInches ||
+                               (gaps.Contains(c) && d <= MatchRadiusFeet * 12 && string.Equals(c.Tag, s.Code, StringComparison.OrdinalIgnoreCase))
                          orderby d
                          select (C: c, S: s, D: d)).ToList();
             var claimed = new HashSet<FixtureDrains.Shape>();
@@ -386,6 +389,7 @@ namespace SleevesOpenings.Automation
                 done.Add(c); claimed.Add(s);
                 if (!gaps.Contains(c)) continue;                     // already sleeved or a Revit fixture: the drawing only claims it
                 bool far = d > DwgSearchInches;
+                ModelKind(c, s.Code, rules);                       // the drawn fixture's kind, not the label's
                 SetPoints(c, s.Points.Select(p => new XYZ(p.X / 12, p.Y / 12, 0)).ToList());
                 c.Status = Crossing.Place;
                 c.Confidence = s.How.StartsWith("block") && !far ? "high" : "medium";
@@ -543,6 +547,22 @@ namespace SleevesOpenings.Automation
                         return (new List<XYZ> { back - f.Facing * IntoWallFeet }, "the wall behind the fixture, on its centre line", false);
                     }
             }
+        }
+
+        /// <summary>
+        /// The model decides what the fixture is: a label that took a fixture of another kind (a KS label on a lavatory, BT on
+        /// a shower) becomes that kind's sleeve (name, pipe and sleeve size), flagged. Kitchen and laundry sinks are one
+        /// block in many sets, so there the plan's KS / LS is kept.
+        /// </summary>
+        private static void ModelKind(Crossing c, string code, PlumbingRules rules)
+        {
+            if (code == null || string.Equals(c.Tag, code, StringComparison.OrdinalIgnoreCase) || !rules.Fixtures.TryGetValue(code, out var fs)) return;
+            var sinks = new[] { "KS", "LS" };
+            if (sinks.Contains(c.Tag) && sinks.Contains(code)) return;
+            string was = c.Tag;
+            c.Tag = code; c.System = fs.System; c.Size = new DuctSize { Diameter = fs.Pipe };
+            c.Check = true;
+            c.Notes.Add($"the plan labels it {was}, the model has a {fs.Name} here: the model's {code} sleeve is used ({Units.FormatInches(rules.SleeveFor(fs.Pipe))}{(fs.Count > 1 ? $" x {fs.Count}" : "")}); check");
         }
 
         private static void SetPoints(Crossing c, List<XYZ> points)
