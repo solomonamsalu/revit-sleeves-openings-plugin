@@ -8,7 +8,7 @@ using ACadSharp.IO;
 using SleevesOpenings.Automation.Drawings;
 namespace SleevesOpenings.Automation.Drawings
 {
-    public class FixtureMark { public string Floor, Code; public double X, Y; public List<(double X, double Y)> Drains = new List<(double X, double Y)>(); public string DrainHow; }
+    public class FixtureMark { public string Floor, Code; public double X, Y; public List<(double X, double Y)> Drains = new List<(double X, double Y)>(); public string DrainHow; public (double X, double Y)? Back; }
 }
 struct Xf
 {
@@ -67,13 +67,41 @@ static class P
                 }
             }
         }
-        var shapes = FixtureDrains.Extract(plan.Strokes, plan.Walls, c => c == "BT" ? (2, 7.0) : (1, 0.0));
+        var edges = All.Where(q => System.Text.RegularExpressions.Regex.IsMatch(q.L, @"EDGE.?OF.?SLAB|SLAB.?EDGE", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                       .Select(q => ((q.X0, q.Y0), (q.X1, q.Y1))).ToList();
+        var shapes = FixtureDrains.Extract(plan.Strokes, plan.Walls, c => c == "BT" ? (2, 7.0) : (1, 0.0), 13, 72, edges);
         foreach (var g in shapes.GroupBy(s => s.Code).OrderBy(g => g.Key)) Console.WriteLine($"  {g.Key}: {g.Count()}");
         foreach (var s in shapes.OrderBy(s => s.Code).ThenBy(s => s.Cx))
-            Console.WriteLine($"  {s.Code,-9} centre ({s.Cx / 12:0.00},{s.Cy / 12:0.00}) ft  {s.X1 - s.X0:0}x{s.Y1 - s.Y0:0} in  -> {string.Join("; ", s.Points.Select(p => $"({p.X / 12:0.00},{p.Y / 12:0.00})"))}  {s.How}");
+            Console.WriteLine($"  {s.Code,-9} centre ({s.Cx / 12:0.00},{s.Cy / 12:0.00}) ft  {s.X1 - s.X0:0}x{s.Y1 - s.Y0:0} in  -> {string.Join("; ", s.Points.Select(p => $"({p.X / 12:0.00},{p.Y / 12:0.00})"))}  {s.How}  back {(s.Back.HasValue ? $"({s.Back.Value.X:0},{s.Back.Value.Y:0})" : "-")}");
+        int ni = Array.IndexOf(args, "near");
+        if (ni >= 0)
+        {
+            double nx = double.Parse(args[ni + 1]) * 12, ny = double.Parse(args[ni + 2]) * 12;
+            double D((string L, double X0, double Y0, double X1, double Y1) q) { double dx = q.X1 - q.X0, dy = q.Y1 - q.Y0, l2 = dx * dx + dy * dy; double t = l2 < 1e-9 ? 0 : Math.Max(0, Math.Min(1, ((nx - q.X0) * dx + (ny - q.Y0) * dy) / l2)); return Math.Sqrt(Math.Pow(q.X0 + t * dx - nx, 2) + Math.Pow(q.Y0 + t * dy - ny, 2)); }
+            foreach (var g in All.Where(q => D(q) <= 24).GroupBy(q => q.L)) Console.WriteLine($"NEAR {g.Key}: {g.Count()} seg, nearest {g.Min(D):0.0} in; e.g. {string.Join(" | ", g.OrderBy(D).Take(3).Select(q => $"({q.X0 / 12:0.00},{q.Y0 / 12:0.00})-({q.X1 / 12:0.00},{q.Y1 / 12:0.00})"))}");
+        }
+        if (args.Contains("stacks"))
+        {
+            // Extract Stacks' finder on these shapes (no Revit pipes, no chases here)
+            var rules = new SleevesOpenings.Automation.PlumbingRules();
+            var fx = shapes.Select(s => new SleevesOpenings.Automation.StackFinder.Fixture
+            {
+                Code = s.Code == "LAV/SINK" ? (s.How.Contains("island") ? "KS" : "LAV") : s.Code, Name = s.Code, How = s.How,
+                X = s.Points.Average(p => p.X) / 12, Y = s.Points.Average(p => p.Y) / 12, Points = s.Points.Select(p => (p.X / 12, p.Y / 12)).ToList(),
+                Back = s.Back.HasValue ? new[] { s.Back.Value.X, s.Back.Value.Y } : null, Island = s.How.Contains("island")
+            }).ToList();
+            var found = SleevesOpenings.Automation.StackFinder.Find(fx, new List<((double X, double Y) A, (double X, double Y) B)>(), new List<SleevesOpenings.Automation.StackFinder.Pipe>(),
+                                                                    new List<SleevesOpenings.Automation.StackFinder.Mark>(), rules, true);
+            Console.WriteLine($"STACKS: {found.Stacks.Count}");
+            foreach (var st in found.Stacks)
+                Console.WriteLine($"  {st.Id} {st.Kind} ({st.X:0.00},{st.Y:0.00}) serves {string.Join(",", st.Serves.Select(f => f.Code))}: " +
+                                  string.Join(" ", st.Sleeves.Select(v => $"{(v.Fixture != null && v.Service != v.Fixture ? v.Service + "-" + v.Fixture : v.Service)}{v.Size:0}@({v.X:0.00},{v.Y:0.00})")) +
+                                  "  | " + string.Join("; ", st.Missing.Select(m => m.Split(':')[0])) + " | " + string.Join("; ", st.Notes));
+        }
     }
 
     static int groups = 0;
+    public static List<(string L, double X0, double Y0, double X1, double Y1)> All = new();
     static void Walk(IEnumerable<Entity> entities, Xf xf, Plan plan, string blockLayer, bool useNew, int depth, int group = 0)
     {
         string LayerOf(Entity e) { string own = e.Layer?.Name ?? ""; return (own == "" || own == "0") && blockLayer != null ? blockLayer : own; }
@@ -124,6 +152,7 @@ static class P
             bool diagonal = straight && lenIn > 12 && Math.Abs(pts[1].X - pts[0].X) * unit / lenIn > 0.34 && Math.Abs(pts[1].Y - pts[0].Y) * unit / lenIn > 0.34;
             string layer = LayerOf(e);
             plan.Layers[layer] = plan.Layers.TryGetValue(layer, out int n) ? n + 1 : 1;
+            for (int i = 0; i + 1 < pts.Count; i++) All.Add((layer, pts[i].X * unit, pts[i].Y * unit, pts[i + 1].X * unit, pts[i + 1].Y * unit));
             if (Rm.IsMatch(layer)) { plan.Removed++; continue; }
             bool isWall = Wl.IsMatch(layer), isFixture = Fx.IsMatch(layer);
             if (useNew && !isWall && !isFixture && Nw.IsMatch(layer)) { bool inBlock = depth > 0; isWall = straight && !diagonal && !inBlock && lenIn >= 24; isFixture = !straight || diagonal || inBlock || lenIn <= 24; }

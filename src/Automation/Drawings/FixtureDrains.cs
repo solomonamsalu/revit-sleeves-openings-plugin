@@ -44,7 +44,12 @@ namespace SleevesOpenings.Automation.Drawings
             /// <summary>The drawing's box (inches).</summary>
             public double X0, Y0, X1, Y1;
             public List<(double X, double Y)> Points;
+            /// <summary>Unit direction (drawing axes) from the fixture to the wall behind it; null = not known (tub, shower).</summary>
+            public (double X, double Y)? Back;
         }
+
+        /// <summary>Island sink sleeve centre behind the sink's faucet edge (inches): a 4" sleeve's radius plus 1/2" clear.</summary>
+        private const double IslandBehind = 2.5;
 
         /// <summary>
         /// Every fixture the drawing shows, by shape alone (Extract Fixtures): toilets, tubs and showers as in
@@ -52,7 +57,8 @@ namespace SleevesOpenings.Automation.Drawings
         /// (22-34" square with a round drum). A shape with no wall behind it keeps its box centre (How says so).
         /// </summary>
         public static List<Shape> Extract(IList<Stroke> strokes, IList<((double X, double Y) A, (double X, double Y) B)> walls,
-                                          Func<string, (int Count, double Spacing)> sleeves, double toiletFromWall = 13, double maxObject = 72)
+                                          Func<string, (int Count, double Spacing)> sleeves, double toiletFromWall = 13, double maxObject = 72,
+                                          IList<((double X, double Y) A, (double X, double Y) B)> edges = null)
         {
             var shapes = new List<Shape>();
             var objects = Objects(strokes, maxObject);
@@ -62,9 +68,9 @@ namespace SleevesOpenings.Automation.Drawings
             {
                 string code = Kind(o);
                 if (code == null || LooseShower(code, o, walls)) continue;
-                var (points, how) = Drain(code, o, walls, sleeves(code), toiletFromWall);
+                var (points, how, back) = Drain(code, o, walls, sleeves(code), toiletFromWall, edges);
                 if (points == null) { points = new List<(double X, double Y)> { (o.Cx, o.Cy) }; how = "no wall found behind it: its centre"; }
-                shapes.Add(new Shape { Code = code == "LAV" ? "LAV/SINK" : code, Cx = o.Cx, Cy = o.Cy, X0 = o.X0, Y0 = o.Y0, X1 = o.X1, Y1 = o.Y1, Points = points, How = how });
+                shapes.Add(new Shape { Code = code == "LAV" ? "LAV/SINK" : code, Cx = o.Cx, Cy = o.Cy, X0 = o.X0, Y0 = o.Y0, X1 = o.X1, Y1 = o.Y1, Points = points, How = how, Back = back });
             }
             return shapes;
         }
@@ -119,7 +125,8 @@ namespace SleevesOpenings.Automation.Drawings
         /// lavatories are not guessed: a counter's basins look like too many other things.
         /// </summary>
         public static List<Shape> Recognise(IList<FixtureMark> fixtures, IList<Stroke> strokes, IList<((double X, double Y) A, (double X, double Y) B)> walls,
-                                            Func<string, (int Count, double Spacing)> sleeves, double search, double toiletFromWall, double maxObject, bool unlabelled)
+                                            Func<string, (int Count, double Spacing)> sleeves, double search, double toiletFromWall, double maxObject, bool unlabelled,
+                                            IList<((double X, double Y) A, (double X, double Y) B)> edges = null)
         {
             var objects = Objects(strokes, maxObject);
             var used = new HashSet<Obj>();
@@ -144,11 +151,12 @@ namespace SleevesOpenings.Automation.Drawings
             foreach (var (f, o) in pairs)
             {
                 if (done.Contains(f) || used.Contains(o)) continue;
-                var (points, how) = Drain(f.Code, o, walls, sleeves(f.Code), toiletFromWall);
+                var (points, how, back) = Drain(f.Code, o, walls, sleeves(f.Code), toiletFromWall, edges);
                 if (points == null) continue;
                 done.Add(f); used.Add(o);
                 f.Drains.AddRange(points);
                 f.DrainHow = how;
+                f.Back = back;
             }
             // a label near a drawing it could not use still owns it (never guessed again as an unlabelled fixture)
             foreach (var f in fixtures)
@@ -161,9 +169,9 @@ namespace SleevesOpenings.Automation.Drawings
                 string code = Kind(o);
                 if (code != "WC" && code != "BT" && code != "SH") continue;
                 if (LooseShower(code, o, walls)) continue;
-                var (points, how) = Drain(code, o, walls, sleeves(code), toiletFromWall);
+                var (points, how, back) = Drain(code, o, walls, sleeves(code), toiletFromWall, edges);
                 if (points == null) continue;
-                shapes.Add(new Shape { Code = code, Cx = o.Cx, Cy = o.Cy, Points = points, How = how });
+                shapes.Add(new Shape { Code = code, Cx = o.Cx, Cy = o.Cy, Points = points, How = how, Back = back });
             }
             return shapes;
         }
@@ -211,15 +219,21 @@ namespace SleevesOpenings.Automation.Drawings
             }
         }
 
-        private static (List<(double X, double Y)> Points, string How) Drain(string code, Obj o, IList<((double X, double Y) A, (double X, double Y) B)> walls,
-                                                                            (int Count, double Spacing) sleeve, double toiletFromWall)
+        /// <summary>The unit direction out of the object through one of its sides (X0 = its low X edge...).</summary>
+        private static (double X, double Y)? Toward(string side) =>
+            side == "X0" ? (-1, 0) : side == "X1" ? (1, 0) : side == "Y0" ? (0, -1) : side == "Y1" ? (0, 1) : ((double, double)?)null;
+
+        /// <summary>The sleeve point(s), how they were found and the direction to the wall behind the fixture (null = none).</summary>
+        private static (List<(double X, double Y)> Points, string How, (double X, double Y)? Back) Drain(string code, Obj o,
+            IList<((double X, double Y) A, (double X, double Y) B)> walls, (int Count, double Spacing) sleeve, double toiletFromWall,
+            IList<((double X, double Y) A, (double X, double Y) B)> edges = null)
         {
             switch (code)
             {
                 case "BT":
                     {
                         var drain = o.Circles.Where(c => Math.Max(c.X1 - c.X0, c.Y1 - c.Y0) <= 5).OrderBy(c => c.X1 - c.X0).FirstOrDefault();
-                        if (drain == null) return (null, null);
+                        if (drain == null) return (null, null, null);
                         double dx = (drain.X0 + drain.X1) / 2, dy = (drain.Y0 + drain.Y1) / 2;
                         bool alongX = o.W >= o.L;
                         // a freestanding tub (its oval outline spans the whole drawing) drains through one sleeve (office sets)
@@ -228,7 +242,7 @@ namespace SleevesOpenings.Automation.Drawings
                         var pts = Enumerable.Range(0, n).Select(i => (i - (n - 1) / 2.0) * sleeve.Spacing)
                                             .Select(a => alongX ? (dx + a, dy) : (dx, dy + a)).ToList();
                         return (pts, freestanding ? "freestanding tub's drawn drain circle, one sleeve"
-                                                  : $"tub's drawn drain circle{(n > 1 ? $", {n} sleeves {sleeve.Spacing:0.#}\" c-c along the tub" : "")}");
+                                                  : $"tub's drawn drain circle{(n > 1 ? $", {n} sleeves {sleeve.Spacing:0.#}\" c-c along the tub" : "")}", null);
                     }
                 case "SH":
                 case "FD":
@@ -237,8 +251,8 @@ namespace SleevesOpenings.Automation.Drawings
                         var circle = o.Circles.Where(c => Math.Max(c.X1 - c.X0, c.Y1 - c.Y0) <= 6)
                                               .OrderBy(c => Math.Abs((c.X0 + c.X1) / 2 - o.Cx) + Math.Abs((c.Y0 + c.Y1) / 2 - o.Cy)).FirstOrDefault();
                         if (circle != null && Math.Abs((circle.X0 + circle.X1) / 2 - o.Cx) <= 8 && Math.Abs((circle.Y0 + circle.Y1) / 2 - o.Cy) <= 8)
-                            return (new List<(double X, double Y)> { ((circle.X0 + circle.X1) / 2, (circle.Y0 + circle.Y1) / 2) }, code == "SH" ? "shower's drawn drain" : "drain's drawn circle");
-                        return (new List<(double X, double Y)> { (o.Cx, o.Cy) }, code == "SH" ? "shower's centre (point drain)" : "drain's centre");
+                            return (new List<(double X, double Y)> { ((circle.X0 + circle.X1) / 2, (circle.Y0 + circle.Y1) / 2) }, code == "SH" ? "shower's drawn drain" : "drain's drawn circle", null);
+                        return (new List<(double X, double Y)> { (o.Cx, o.Cy) }, code == "SH" ? "shower's centre (point drain)" : "drain's centre", null);
                     }
                 case "WC":
                     {
@@ -261,18 +275,18 @@ namespace SleevesOpenings.Automation.Drawings
                             double along = onWall ? behind.Value.Face + front * toiletFromWall : back + front * (toiletFromWall - 1);
                             return (new List<(double X, double Y)> { alongX ? (along, o.Cy) : (o.Cx, along) },
                                     onWall ? $"toilet's centre line, {toiletFromWall:0.#}\" from the wall behind its tank"
-                                           : $"toilet's centre line, {toiletFromWall - 1:0.#}\" from the back of its tank");
+                                           : $"toilet's centre line, {toiletFromWall - 1:0.#}\" from the back of its tank", Toward(backSide));
                         }
                         // no bowl to tell the front (wall-hung, a simplified block): the nearer wall at an end of its long side
                         var ends = alongX ? new[] { "X0", "X1" } : new[] { "Y0", "Y1" };
                         var w = ends.Select(e => WallBehind(o, walls, e)).Where(x => x != null && ends.Contains(x.Value.Side))
                                     .OrderBy(x => Math.Abs(x.Value.Face - (x.Value.Side == "X0" ? o.X0 : x.Value.Side == "X1" ? o.X1 : x.Value.Side == "Y0" ? o.Y0 : o.Y1)))
                                     .FirstOrDefault();
-                        if (w == null) return (null, null);
+                        if (w == null) return (null, null, null);
                         var (side, face, _) = w.Value;
                         int outward = side == "X0" || side == "Y0" ? -1 : 1;
                         var p = side[0] == 'X' ? (face - outward * toiletFromWall, o.Cy) : (o.Cx, face - outward * toiletFromWall);
-                        return (new List<(double X, double Y)> { p }, $"toilet's centre line, {toiletFromWall:0.#}\" from the wall behind it");
+                        return (new List<(double X, double Y)> { p }, $"toilet's centre line, {toiletFromWall:0.#}\" from the wall behind it", Toward(side));
                     }
                 default:
                     {
@@ -280,18 +294,55 @@ namespace SleevesOpenings.Automation.Drawings
                         // circles, hexagons or arcs, off the basin's middle) is on that wall's side
                         string prefer = Faucet(o);
                         var w = WallBehind(o, walls, prefer);
+                        if (w == null && prefer != null && SlabEdgeBehind(o, prefer, edges) is double slab)
+                        {
+                            // no wall line behind it, but the slab edge is close behind its faucet side: it stands against the
+                            // exterior wall (drawn as a hatch, not as lines): the sleeve halfway between its back and the slab edge
+                            double edge = prefer == "X0" ? o.X0 : prefer == "X1" ? o.X1 : prefer == "Y0" ? o.Y0 : o.Y1;
+                            int outward = prefer.EndsWith("0") ? -1 : 1;
+                            double mid = edge + outward * slab / 2;
+                            var p0 = prefer[0] == 'X' ? (mid, o.Cy) : (o.Cx, mid);
+                            return (new List<(double X, double Y)> { p0 }, $"against the exterior wall (the slab edge {slab:0}\" behind its faucet side): halfway, on its centre line", Toward(prefer));
+                        }
                         if (w == null && prefer != null)
                         {
-                            // an island sink (no wall behind it): the sleeve at its faucet side, on its centre line (office sets)
-                            var edge = prefer == "X0" ? (o.X0, o.Cy) : prefer == "X1" ? (o.X1, o.Cy) : prefer == "Y0" ? (o.Cx, o.Y0) : (o.Cx, o.Y1);
-                            return (new List<(double X, double Y)> { edge }, "no wall behind it (island): at its faucet side, on its centre line");
+                            // an island sink (no wall behind it): the sleeve just behind its faucet side, on its centre line, clear
+                            // of the sink's outline (office sets: a 4" sleeve touching the back edge, not on it)
+                            double b = IslandBehind;
+                            var edge = prefer == "X0" ? (o.X0 - b, o.Cy) : prefer == "X1" ? (o.X1 + b, o.Cy) : prefer == "Y0" ? (o.Cx, o.Y0 - b) : (o.Cx, o.Y1 + b);
+                            return (new List<(double X, double Y)> { edge }, $"no wall behind it (island): {b:0.#}\" behind its faucet side, on its centre line", Toward(prefer));
                         }
-                        if (w == null) return (null, null);
+                        if (w == null) return (null, null, null);
                         var (side, _, centre) = w.Value;
                         var p = side[0] == 'X' ? (centre, o.Cy) : (o.Cx, centre);
-                        return (new List<(double X, double Y)> { p }, "wall behind the fixture, on its centre line" + (prefer != null ? " (faucet side)" : ""));
+                        return (new List<(double X, double Y)> { p }, "wall behind the fixture, on its centre line" + (prefer != null ? " (faucet side)" : ""), Toward(side));
                     }
             }
+        }
+
+        /// <summary>How far (inches) a slab edge may be behind a sink's faucet side for the sink to stand against the exterior wall.</summary>
+        private const double SlabEdgeInches = 18;
+
+        /// <summary>The distance (inches) to a slab edge line running along the object's side, within <see cref="SlabEdgeInches"/> behind it; null = none.</summary>
+        private static double? SlabEdgeBehind(Obj o, string side, IList<((double X, double Y) A, (double X, double Y) B)> edges)
+        {
+            if (edges == null) return null;
+            bool horizontal = side[0] == 'Y';
+            double edge = side == "X0" ? o.X0 : side == "X1" ? o.X1 : side == "Y0" ? o.Y0 : o.Y1;
+            int outward = side.EndsWith("0") ? -1 : 1;
+            double lo = horizontal ? o.X0 : o.Y0, hi = horizontal ? o.X1 : o.Y1;
+            double? best = null;
+            foreach (var (a, b) in edges)
+            {
+                double c, s0, s1;
+                if (horizontal && Math.Abs(a.Y - b.Y) < 0.3) { c = a.Y; s0 = Math.Min(a.X, b.X); s1 = Math.Max(a.X, b.X); }
+                else if (!horizontal && Math.Abs(a.X - b.X) < 0.3) { c = a.X; s0 = Math.Min(a.Y, b.Y); s1 = Math.Max(a.Y, b.Y); }
+                else continue;
+                if (s1 < lo || s0 > hi) continue;
+                double d = (c - edge) * outward;
+                if (d > 0 && d <= SlabEdgeInches && (best == null || d < best)) best = d;
+            }
+            return best;
         }
 
         /// <summary>
@@ -383,13 +434,14 @@ namespace SleevesOpenings.Automation.Drawings
         /// drawing's strokes and the walls around it, by the same office rules as <see cref="Extract"/>. Null points when
         /// the drawing gives no spot (a tub with no drain drawn, a sink with no wall and no faucet).
         /// </summary>
-        public static (List<(double X, double Y)> Points, string How) LocateKnown(string code, IList<Stroke> strokes,
-            IList<((double X, double Y) A, (double X, double Y) B)> walls, (int Count, double Spacing) sleeve, double toiletFromWall = 13)
+        public static (List<(double X, double Y)> Points, string How, (double X, double Y)? Back) LocateKnown(string code, IList<Stroke> strokes,
+            IList<((double X, double Y) A, (double X, double Y) B)> walls, (int Count, double Spacing) sleeve, double toiletFromWall = 13,
+            IList<((double X, double Y) A, (double X, double Y) B)> edges = null)
         {
-            if (strokes == null || strokes.Count == 0) return (null, null);
+            if (strokes == null || strokes.Count == 0) return (null, null, null);
             var o = new Obj { X0 = strokes[0].X0, Y0 = strokes[0].Y0, X1 = strokes[0].X1, Y1 = strokes[0].Y1 };
             foreach (var s in strokes) Absorb(o, s);
-            return Drain(code, o, walls, sleeve, toiletFromWall);
+            return Drain(code, o, walls, sleeve, toiletFromWall, edges);
         }
 
         /// <summary>

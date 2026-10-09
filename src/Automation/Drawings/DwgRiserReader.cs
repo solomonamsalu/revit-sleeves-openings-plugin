@@ -101,6 +101,8 @@ namespace SleevesOpenings.Automation.Drawings
         /// <summary>Sleeve point(s) from the fixture drawn on the plan (PDF only), same axes as X/Y; empty = not found.</summary>
         public List<(double X, double Y)> Drains = new List<(double X, double Y)>();
         public string DrainHow;
+        /// <summary>Unit direction (same axes as X/Y) from the fixture to the wall behind it; null = not known.</summary>
+        public (double X, double Y)? Back;
     }
 
     public class DwgRiserResult

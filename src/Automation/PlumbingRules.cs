@@ -38,8 +38,9 @@ namespace SleevesOpenings.Automation
             ["V"] = new PipeService { System = "Vent", Layer = "VENT", Sleeve = true, Pipe = 4 },
             ["ST"] = new PipeService { System = "Storm", Layer = "STORM", Sleeve = true, Pipe = 4 },
             ["G"] = new PipeService { System = "Gas", Layer = "GAS", Sleeve = true, Pipe = 1 },
-            ["CW"] = new PipeService { System = "ColdWater", Layer = "COLD WATER", Sleeve = false, Pipe = 2 },
-            ["HW"] = new PipeService { System = "HotWater", Layer = "HOT WATER(?! RETURN)", Sleeve = false, Pipe = 1.5 },
+            // the office S&O sets draw a 3" hot and a 3" cold sleeve beside each sanitary stack (24 Skillman 7-20-26): pipe 1" + 2"
+            ["CW"] = new PipeService { System = "ColdWater", Layer = "COLD WATER", Sleeve = true, Pipe = 1 },
+            ["HW"] = new PipeService { System = "HotWater", Layer = "HOT WATER(?! RETURN)", Sleeve = true, Pipe = 1 },
             ["HWR"] = new PipeService { System = "HotWaterReturn", Layer = "HOT WATER RETURN", Sleeve = false, Pipe = 1 }
         };
 
@@ -58,12 +59,12 @@ namespace SleevesOpenings.Automation
         [JsonProperty("fixtures", ObjectCreationHandling = ObjectCreationHandling.Replace)]
         public Dictionary<string, FixtureSleeve> Fixtures { get; set; } = new Dictionary<string, FixtureSleeve>(StringComparer.OrdinalIgnoreCase)
         {
-            ["WC"] = new FixtureSleeve { Name = "toilet", Pipe = 4 },
-            ["LAV"] = new FixtureSleeve { Name = "lavatory", Pipe = 1.5 },
+            ["WC"] = new FixtureSleeve { Name = "toilet", Pipe = 4, Vent = 2 },
+            ["LAV"] = new FixtureSleeve { Name = "lavatory", Pipe = 1.5, Vent = 2 },
             ["BT"] = new FixtureSleeve { Name = "bathtub", Pipe = 4, Count = 2, Spacing = 7 },      // two 6" sleeves, 1" clear
             ["SH"] = new FixtureSleeve { Name = "shower", Pipe = 4 },                                // 6" sleeve (office S&O sets)
-            ["KS"] = new FixtureSleeve { Name = "kitchen sink", Pipe = 2 },
-            ["LS"] = new FixtureSleeve { Name = "laundry sink", Pipe = 2 },
+            ["KS"] = new FixtureSleeve { Name = "kitchen sink", Pipe = 2, Vent = 2, Water = 1, StackReach = 60 },
+            ["LS"] = new FixtureSleeve { Name = "laundry sink", Pipe = 2, Vent = 2, Water = 1, StackReach = 60 },
             ["W/D"] = new FixtureSleeve { Name = "washer", Pipe = 3 },                               // 5" sleeve (office S&O sets)
             ["WD"] = new FixtureSleeve { Name = "washer", Pipe = 3 },
             ["FD"] = new FixtureSleeve { Name = "floor drain", Pipe = 2 }
@@ -98,6 +99,17 @@ namespace SleevesOpenings.Automation
         /// new layout on one layer, "TO ADD"): their curves and short lines are read as fixtures, their long straight lines as walls.
         /// </summary>
         [JsonProperty("dwgNewLayers")] public string DwgNewLayers { get; set; } = @"TO ADD|NEW WORK|NEW-WORK";
+        /// <summary>Regex on the DWG layers holding the slab edge (a sink against an exterior wall drawn as a hatch: its sleeve halfway to the slab edge).</summary>
+        [JsonProperty("dwgSlabEdgeLayers")] public string DwgSlabEdgeLayers { get; set; } = @"EDGE.?OF.?SLAB|SLAB.?EDGE";
+        /// <summary>Regex on the DWG layers holding pipe shafts and chases (Extract Stacks: a stack goes in the chase next to its fixtures).</summary>
+        [JsonProperty("dwgShaftLayers")] public string DwgShaftLayers { get; set; } = @"SHAFT|CHASE";
+        /// <summary>
+        /// Extract Stacks: the services of a stack found from the model's fixtures alone (no engineer's drawing), by their
+        /// letters in <see cref="Services"/>: one sleeve each, in a touching row in the wet wall (office S&amp;O sets: vent 6,
+        /// waste 6, hot 3, cold 3). A stack from a Revit pipe takes the pipe's own system instead.
+        /// </summary>
+        [JsonProperty("stackServices", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+        public List<string> StackServices { get; set; } = new List<string> { "S", "V", "HW", "CW" };
         /// <summary>Regex on the DWG layers of what an alteration removes ("TO REMOVE"): a fixture block inserted on one is never sleeved.</summary>
         [JsonProperty("dwgRemoveLayers")] public string DwgRemoveLayers { get; set; } = @"TO REMOVE|REMOVE|DEMO";
 
@@ -197,7 +209,7 @@ namespace SleevesOpenings.Automation
         [JsonProperty("match")] public string Match { get; set; }
         /// <summary>Why this service gets no sleeve, written in the report (sprinkler chute riser: inside the chute opening).</summary>
         [JsonProperty("note")] public string Note { get; set; }
-        /// <summary>Gets a sleeve where it goes through a slab (the office sets sleeve sanitary, vent, storm and gas; not water).</summary>
+        /// <summary>Gets a sleeve where it goes through a slab (the office sets sleeve sanitary, vent, storm, gas, hot and cold water; not the hot water return).</summary>
         [JsonProperty("sleeve")] public bool Sleeve { get; set; }
         /// <summary>Pipe size (inches) used when the drawings give none (plumbing plans carry no sizes; the riser diagram is not read yet).</summary>
         [JsonProperty("pipe")] public double Pipe { get; set; }
@@ -212,5 +224,21 @@ namespace SleevesOpenings.Automation
         /// <summary>Sleeves per fixture (bathtub: two 6" sleeves 6" c-c, as the office sets draw them).</summary>
         [JsonProperty("count")] public int Count { get; set; } = 1;
         [JsonProperty("spacing")] public double Spacing { get; set; }
+        /// <summary>
+        /// Vent pipe (inches; 0 = none): a vent sleeve beside the drain sleeve, in the wall behind the fixture (office S&amp;O
+        /// sets: a 4" yellow next to each lavatory, one in the wall behind each toilet). A sink with its own row (no stack
+        /// within <see cref="StackReach"/>) gets it past its hot water sleeve.
+        /// </summary>
+        [JsonProperty("vent")] public double Vent { get; set; }
+        /// <summary>
+        /// Hot and cold water pipe (inches; 0 = none) of a sink with no stack within <see cref="StackReach"/> (an island,
+        /// a sink on its own wall): its own row behind it, vent - hot - drain - cold (hot on the left facing it, IRC P2722.2).
+        /// </summary>
+        [JsonProperty("water")] public double Water { get; set; }
+        /// <summary>
+        /// Inches (0 = off): a sanitary or vent stack sleeve this close serves the fixture. It drains sideways in the wall to
+        /// the stack, only the stacks go through the slab (24 Skillman S&amp;O: kitchen sinks have no sleeve of their own).
+        /// </summary>
+        [JsonProperty("stackReach")] public double StackReach { get; set; }
     }
 }

@@ -42,6 +42,8 @@ namespace SleevesOpenings.Automation
             /// <summary>Box and sleeve point(s), model inches; Points null until located (or no fixture).</summary>
             public double X0, Y0, X1, Y1;
             public List<(double X, double Y)> Points;
+            /// <summary>Unit direction (model axes) from the fixture to the wall behind it; null = not known.</summary>
+            public (double X, double Y)? Back;
             public bool Mirrored;
             /// <summary>The name in the office table when the read began (a person's or a learned name).</summary>
             internal bool Named;
@@ -235,9 +237,9 @@ namespace SleevesOpenings.Automation
             {
                 item.Points = null;
                 if (item.Code == null || !rules.Fixtures.ContainsKey(item.Code)) continue;
-                var (points, how) = FixtureDrains.LocateKnown(item.Code, item.Strokes, res.Plan.Walls, Sleeves(item.Code));
+                var (points, how, back) = FixtureDrains.LocateKnown(item.Code, item.Strokes, res.Plan.Walls, Sleeves(item.Code), 13, res.Plan.Edges);
                 if (points == null) { points = new List<(double X, double Y)> { (item.Cx, item.Cy) }; how = "its drawing gives no spot: its centre (check)"; item.Check = true; }
-                item.Points = points; item.How = how;
+                item.Points = points; item.How = how; item.Back = back;
             }
         }
 

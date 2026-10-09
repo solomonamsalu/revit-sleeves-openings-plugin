@@ -286,6 +286,14 @@ namespace SleevesOpenings.Automation.Assembly
                             c.X = drains.Average(d => d.X); c.Y = drains.Average(d => d.Y);
                             if (drains.Count > 1) { c.Points.AddRange(drains.Select(d => new[] { d.X, d.Y })); c.EachPoint = true; }
                             c.DrawnDrain = fx.DrainHow;
+                            // the wall behind the drawn fixture, turned into Revit's axes (the page may be rotated or scaled)
+                            var to = fx.Back.HasValue ? fa.ToRevit(fx.Drains[0].X + fx.Back.Value.X * 12, fx.Drains[0].Y + fx.Back.Value.Y * 12) : null;
+                            var from = fa.ToRevit(fx.Drains[0].X, fx.Drains[0].Y);
+                            if (to.HasValue && from.HasValue)
+                            {
+                                double bx = to.Value.X - from.Value.X, by = to.Value.Y - from.Value.Y, len = Math.Sqrt(bx * bx + by * by);
+                                if (len > 1e-9) c.Back = new[] { bx / len, by / len };
+                            }
                         }
                     }
                     result.Crossings.Add(c);

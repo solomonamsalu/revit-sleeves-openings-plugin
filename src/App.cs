@@ -118,6 +118,10 @@ namespace SleevesOpenings
                 "Choose a floor and list every fixture on it: toilets, lavatories, sinks, tubs, showers and washers from the architect's DWG (by shape) " +
                 "and Revit plumbing fixtures of this model and its links, with each one's location (X/Y and nearest grids) and sleeve point. " +
                 "Zoom to one, mark them in the plan, export CSV or place their sleeves."));
+            extract.AddItem(Button("ExtractStacks", "Extract\nStacks", asm, typeof(Commands.ExtractStacksCommand),
+                "Choose a floor and find its plumbing stacks from the model alone: vertical pipes modelled in Revit, else the wet walls of its fixtures " +
+                "(a chase drawn on the shaft layers, else the wall behind the toilet), laid out by the office rule (vent 6, waste 6, hot 3, cold 3). " +
+                "Zoom to one, mark them in the plan, export CSV or place their sleeves."));
 
             // greyed out until the startup check finds a newer version (UpdateChecker)
             var add = app.CreateRibbonPanel(TabName, "Add-in");

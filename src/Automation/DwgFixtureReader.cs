@@ -28,6 +28,12 @@ namespace SleevesOpenings.Automation
             public string Level, Source;
             public List<FixtureDrains.Stroke> Strokes = new List<FixtureDrains.Stroke>();
             public List<((double X, double Y) A, (double X, double Y) B)> Walls = new List<((double X, double Y) A, (double X, double Y) B)>();
+            /// <summary>Lines on the shaft / chase layers (plumbing.dwgShaftLayers), model inches.</summary>
+            public List<((double X, double Y) A, (double X, double Y) B)> Shafts = new List<((double X, double Y) A, (double X, double Y) B)>();
+            /// <summary>Slab edge lines (plumbing.dwgSlabEdgeLayers), model inches: the outer face of an exterior wall drawn as a hatch.</summary>
+            public List<((double X, double Y) A, (double X, double Y) B)> Edges = new List<((double X, double Y) A, (double X, double Y) B)>();
+            /// <summary>Riser circles of a plumbing DWG on the level (profile riserCircleLayers: P-COLD WATER...): centre, model inches, and layer.</summary>
+            public List<(double X, double Y, string Layer)> Risers = new List<(double X, double Y, string Layer)>();
             /// <summary>Every layer of the drawing with its number of lines (for the log and the scan: which layers to name in the rules).</summary>
             public Dictionary<string, int> Layers = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             /// <summary>Lines skipped because they are, or sit in a block on, a removal layer.</summary>
@@ -54,7 +60,7 @@ namespace SleevesOpenings.Automation
 
         private class Layers
         {
-            public Regex Fixture, Wall, New, Remove;
+            public Regex Fixture, Wall, New, Remove, Shaft, Riser, Edge;
         }
 
         /// <summary>The layer rules as regexes; an empty rule matches nothing.</summary>
@@ -74,7 +80,13 @@ namespace SleevesOpenings.Automation
         public static List<Plan> Read(Document doc, PlumbingRules rules, string onlyLevel = null, ICollection<string> onlyLevels = null)
         {
             var (fixture, wall, @new, remove) = Patterns(rules);
-            var layers = new Layers { Fixture = fixture, Wall = wall, New = @new, Remove = remove };
+            var layers = new Layers
+            {
+                Fixture = fixture, Wall = wall, New = @new, Remove = remove,
+                Shaft = string.IsNullOrWhiteSpace(rules.DwgShaftLayers) ? null : new Regex(rules.DwgShaftLayers, RegexOptions.IgnoreCase),
+                Riser = string.IsNullOrWhiteSpace(rules.Profile?.RiserCircleLayers) ? null : new Regex(rules.Profile.RiserCircleLayers, RegexOptions.IgnoreCase),
+                Edge = string.IsNullOrWhiteSpace(rules.DwgSlabEdgeLayers) ? null : new Regex(rules.DwgSlabEdgeLayers, RegexOptions.IgnoreCase)
+            };
             var best = new Dictionary<string, Plan>(StringComparer.OrdinalIgnoreCase);
             var order = new List<string>();
             foreach (var ii in new FilteredElementCollector(doc).OfClass(typeof(ImportInstance)).Cast<ImportInstance>())
@@ -224,6 +236,14 @@ namespace SleevesOpenings.Automation
                 if (isWall)
                     for (int i = 0; i + 1 < pts.Count; i++)
                         plan.Walls.Add(((pts[i].X * 12, pts[i].Y * 12), (pts[i + 1].X * 12, pts[i + 1].Y * 12)));
+                if (Is(layers.Shaft, layer))
+                    for (int i = 0; i + 1 < pts.Count; i++)
+                        plan.Shafts.Add(((pts[i].X * 12, pts[i].Y * 12), (pts[i + 1].X * 12, pts[i + 1].Y * 12)));
+                if (Is(layers.Edge, layer))
+                    for (int i = 0; i + 1 < pts.Count; i++)
+                        plan.Edges.Add(((pts[i].X * 12, pts[i].Y * 12), (pts[i + 1].X * 12, pts[i + 1].Y * 12)));
+                if (closedRound && Is(layers.Riser, layer))
+                    plan.Risers.Add(((pts.Min(p => p.X) + pts.Max(p => p.X)) * 6, (pts.Min(p => p.Y) + pts.Max(p => p.Y)) * 6, layer));
                 if (isFixture)
                 {
                     double x0 = pts.Min(p => p.X) * 12, y0 = pts.Min(p => p.Y) * 12, x1 = pts.Max(p => p.X) * 12, y1 = pts.Max(p => p.Y) * 12;

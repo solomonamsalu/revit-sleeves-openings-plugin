@@ -68,6 +68,8 @@ namespace SleevesOpenings.Commands
             /// <summary>The family instance in this model (null for DWG drawings and linked families).</summary>
             public ElementId Id;
             public bool FromDwg;
+            /// <summary>Unit plan direction ([x, y], model) from the fixture to the wall behind it; null = not known (tub, shower).</summary>
+            public double[] Back;
             public double Cx => (X0 + X1) / 2;
             public double Cy => (Y0 + Y1) / 2;
             public bool Sleeved(PlumbingRules rules) => Code != null && rules.Fixtures.ContainsKey(Code);
@@ -111,20 +113,22 @@ namespace SleevesOpenings.Commands
                                 Source = p.Source, Level = level.Name, FromDwg = true,
                                 How = i.Code == null ? i.Why : $"{i.How}  [{i.Why}]",
                                 X0 = i.X0 / 12, Y0 = i.Y0 / 12, X1 = i.X1 / 12, Y1 = i.Y1 / 12,
-                                Points = (i.Points ?? new List<(double X, double Y)> { (i.Cx, i.Cy) }).Select(q => new XYZ(q.X / 12, q.Y / 12, 0)).ToList()
+                                Points = (i.Points ?? new List<(double X, double Y)> { (i.Cx, i.Cy) }).Select(q => new XYZ(q.X / 12, q.Y / 12, 0)).ToList(),
+                                Back = i.Back.HasValue ? new[] { i.Back.Value.X, i.Back.Value.Y } : null
                             });
                         // what is not a block: tubs and showers drawn line by line (and the rest only when asked)
-                        shapes = FixtureDrains.Extract(DwgFixtureCatalog.Loose(p, cat), p.Walls, Sleeves, 13, 72)
+                        shapes = FixtureDrains.Extract(DwgFixtureCatalog.Loose(p, cat), p.Walls, Sleeves, 13, 72, p.Edges)
                                               .Where(s => allShapes || s.Code == "BT" || s.Code == "SH");
                     }
-                    else shapes = FixtureDrains.Extract(p.Strokes, p.Walls, Sleeves, 13, 72);
+                    else shapes = FixtureDrains.Extract(p.Strokes, p.Walls, Sleeves, 13, 72, p.Edges);
                     foreach (var s in shapes)
                         rows.Add(new Row
                         {
                             Code = s.Code == "LAV/SINK" ? "LAV" : s.Code, Name = s.Code + " (by shape)", Source = p.Source, How = "by shape, check: " + s.How,
                             Level = level.Name, FromDwg = true,
                             X0 = s.X0 / 12, Y0 = s.Y0 / 12, X1 = s.X1 / 12, Y1 = s.Y1 / 12,
-                            Points = s.Points.Select(q => new XYZ(q.X / 12, q.Y / 12, 0)).ToList()
+                            Points = s.Points.Select(q => new XYZ(q.X / 12, q.Y / 12, 0)).ToList(),
+                            Back = s.Back.HasValue ? new[] { s.Back.Value.X, s.Back.Value.Y } : null
                         });
                 }
             }
@@ -166,6 +170,10 @@ namespace SleevesOpenings.Commands
                                     drains.Add(t.OfPoint(cn.Origin));
                         row.Points = (drains.Count > 0 ? drains : new List<XYZ> { pt }).Select(q => new XYZ(q.X, q.Y, 0)).ToList();
                         row.How = drains.Count > 0 ? "sanitary connector" : "insertion point (no sanitary connector)";
+                        // the wall behind it: against the family's facing
+                        var facing = t.OfVector(fi.FacingOrientation);
+                        double fl = Math.Sqrt(facing.X * facing.X + facing.Y * facing.Y);
+                        if (fl > 1e-6) row.Back = new[] { -facing.X / fl, -facing.Y / fl };
                         rows.Add(row);
                     }
                 }
@@ -190,7 +198,7 @@ namespace SleevesOpenings.Commands
 
         // ------------------------------------------------------------------ location
 
-        private static List<(string Name, XYZ O, XYZ D)> Grids(Document doc)
+        internal static List<(string Name, XYZ O, XYZ D)> Grids(Document doc)
         {
             var list = new List<(string, XYZ, XYZ)>();
             void Add(Document d, Transform t)
@@ -217,7 +225,7 @@ namespace SleevesOpenings.Commands
         }
 
         /// <summary>The two nearest crossing grids and the distance to each: C/3: 1'-2" from C, 0'-8" from 3.</summary>
-        private static string GridRef(List<(string Name, XYZ O, XYZ D)> grids, double x, double y)
+        internal static string GridRef(List<(string Name, XYZ O, XYZ D)> grids, double x, double y)
         {
             if (grids.Count == 0) return "";
             var p = new XYZ(x, y, 0);

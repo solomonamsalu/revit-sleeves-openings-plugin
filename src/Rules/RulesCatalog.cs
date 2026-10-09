@@ -268,7 +268,10 @@ namespace SleevesOpenings.Rules
                         Col("pipe", "Drain pipe (in)", RuleKind.Number, true, 90),
                         Col("system", "System", RuleKind.OptionalText, false, 100, "Empty = Sanitary."),
                         Col("count", "Sleeves", RuleKind.OptionalNumber, false, 70, "Empty = 1."),
-                        Col("spacing", "Spacing c-c (in)", RuleKind.OptionalNumber, false, 90)
+                        Col("spacing", "Spacing c-c (in)", RuleKind.OptionalNumber, false, 90),
+                        Col("vent", "Vent pipe (in)", RuleKind.OptionalNumber, false, 80, "Empty = no vent sleeve. A vent sleeve beside the drain, in the wall behind."),
+                        Col("water", "Hot/cold pipe (in)", RuleKind.OptionalNumber, false, 90, "Empty = none. A sink with no stack nearby gets its own row: vent, hot, drain, cold."),
+                        Col("stackReach", "Stack serves it within (in)", RuleKind.OptionalNumber, false, 110, "Empty = off. A stack sleeve this close serves the fixture: no sleeve of its own.")
                     }
                 })
                 .H("Sleeve size")
@@ -289,6 +292,8 @@ namespace SleevesOpenings.Rules
                 .F("plumbing.dwgWallLayers", "DWG wall layers", RuleKind.Regex)
                 .F("plumbing.dwgNewLayers", "DWG new-work layers", RuleKind.Regex, "Alteration drawings: the layer the new layout is drawn on (\"TO ADD\"); its curves and short lines are fixtures, its long lines walls.")
                 .F("plumbing.dwgRemoveLayers", "DWG removal layers", RuleKind.Regex, "Alteration drawings: fixtures drawn or inserted on these layers (\"TO REMOVE\") get no sleeve.")
+                .F("plumbing.dwgSlabEdgeLayers", "DWG slab edge layers", RuleKind.Regex, "A sink with no wall line behind it but the slab edge close behind: against the exterior wall, not an island.")
+                .F("plumbing.dwgShaftLayers", "DWG shaft / chase layers", RuleKind.Regex, "Extract Stacks: a stack goes in the chase drawn on these layers next to its fixtures.")
                 .H("Words on the plans")
                 .F("plumbing.upWords", "Means up (slab above)", RuleKind.Words)
                 .F("plumbing.downWords", "Means down (this slab)", RuleKind.Words)

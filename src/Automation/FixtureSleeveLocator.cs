@@ -126,6 +126,7 @@ namespace SleevesOpenings.Automation
                     {
                         // the fixture is in the model: it gets its sleeve, at the fixture itself, flagged
                         SetPoints(c, new List<XYZ> { Flat(m.F.Point) });
+                        c.Back = BackOf(m.F) ?? c.Back;
                         c.Status = Crossing.Place; c.Confidence = "low"; c.FromModel = true; c.Check = true;
                         c.Notes.RemoveAll(n => n.Contains("position is the engineer's fixture text"));
                         c.Notes.Add($"matched Revit fixture '{m.F.Name}' ({m.F.Source}), {away}: {how}; placed at the fixture's insertion point: check and move it to the drain");
@@ -137,10 +138,12 @@ namespace SleevesOpenings.Automation
                 if (!sure && c.DrawnDrain != null && Dist(c.X, c.Y, Mean(points)) <= SameSpotFeet)
                 {
                     FromDrawing(c, $"matched Revit fixture '{m.F.Name}' ({m.F.Source}) is at the drawn fixture");
+                    c.Back = BackOf(m.F) ?? c.Back;
                     drawn++; continue;
                 }
 
                 SetPoints(c, points);
+                c.Back = BackOf(m.F) ?? c.Back;
                 c.Status = Crossing.Place;
                 c.Confidence = sure ? "high" : "medium";
                 c.FromModel = true;
@@ -194,6 +197,7 @@ namespace SleevesOpenings.Automation
                          $"; {left.Count} left for review in {stacks} stack(s) ({textOnly} not in the architect's DWG or with only the label text).");
             if (rules.ModelFixtures)
                 messages.Add(ModelOnly(fixtures.Where(f => !used.Contains(f)).ToList(), dwgShapes, assembly, rules, existing));
+            messages.Add(WetWall(assembly, rules, existing));
             foreach (var level in outOfSync)
                 messages.Add($"  ! {level}: most fixture labels on the plan have no modelled fixture nearby — the drawings and the model look out of sync on this floor (which is newer?).");
             foreach (var line in messages) App.Log("AutoRun " + line.Trim());
@@ -237,6 +241,7 @@ namespace SleevesOpenings.Automation
                 if (stack != null)
                 {
                     SetPoints(c, stack.ExistingIds.Select(id => Flat(sleeveAt[id])).ToList());
+                    c.Back = stack.Back ?? c.Back;
                     c.Status = Crossing.Place;
                     c.Confidence = "medium";
                     c.FromModel = true;
@@ -258,6 +263,147 @@ namespace SleevesOpenings.Automation
             }
             return (stacked, drawn, textOnly + review);
         }
+
+        /// <summary>Toilet vent sleeve: this far (feet) along the wall behind the toilet from its centre line (manual, toilet sleeves page: 5 1/4").</summary>
+        private const double ToiletVentAlongFeet = 5.25 / 12;
+        /// <summary>A lavatory's vent sleeve goes on the side of a vent stack this close (feet) in the same wall.</summary>
+        private const double VentStackFeet = 6.0;
+        /// <summary>How far (feet) a vent sleeve may slide along the wall to clear the sleeves already there.</summary>
+        private const double SlideFeet = 1.0;
+
+        /// <summary>
+        /// The sleeves beside the fixtures' drain sleeves (24 Skillman S&amp;O set, manual toilet sleeves page). Only the stacks
+        /// and the fixtures' drains go through the slab; the rest of a fixture's pipes run in the wall to the stack:
+        /// - a sink with a sanitary or vent stack sleeve within its stackReach: the stack serves it, no sleeve of its own;
+        /// - a toilet: a vent sleeve in the wall behind it, 5 1/4" off its centre line (away from a stack there);
+        /// - a lavatory: a vent sleeve beside its drain sleeve in the wall (on the vent stack's side when one is in that wall);
+        /// - a sink with no stack near (an island, a sink on its own wall): its own row behind it, vent - hot - drain - cold,
+        ///   hot on the left facing it (IRC P2722.2).
+        /// The sleeves touch (plumbing.sleeveGap clear), a vent slides along the wall off the sleeves already there, and every
+        /// one is flagged for a check. A fixture whose wall is not known gets a note instead.
+        /// </summary>
+        private static string WetWall(RiserAssembly assembly, PlumbingRules rules, ExistingReport existing)
+        {
+            double gap = rules.SleeveGap / 12;
+            double R(double pipe) => rules.SleeveFor(pipe) / 2 / 12;
+            double Rc(Crossing o) => R(o.Size?.Diameter ?? 2);
+            int served = 0, vents = 0, water = 0, noWall = 0, already = 0, clash = 0;
+
+            IEnumerable<(double X, double Y, double R)> Taken(string floor) =>
+                assembly.Crossings.Where(o => o.Floor == floor && o.Status == Crossing.Place && o.MergedInto == null && o.HasPosition)
+                    .SelectMany(o => o.EachPoint && o.Points.Count > 0 ? o.Points.Select(p => (p[0], p[1], Rc(o))) : new[] { (o.X, o.Y, Rc(o)) });
+            bool Clear(string floor, double x, double y, double r) => Taken(floor).All(t => Dist(t.X, t.Y, x, y) >= t.R + r + gap - 1e-6);
+            // a sleeve already in the model there (the office's own, an earlier run's): nothing more
+            bool InModel(Crossing fx, double x, double y, double r) => existing != null && existing.Items.Any(e => e.Point != null && e.Source != "native opening" &&
+                AutoPlacer.SameFloor(e.Level, fx.Level) && Dist(x, y, e.Point) <= r + 1.0 / 12);
+
+            void Add(Crossing fx, string service, string system, double pipe, double x, double y, string where, bool clear)
+            {
+                if (InModel(fx, x, y, R(pipe))) { already++; return; }
+                var c = new Crossing
+                {
+                    Floor = fx.Floor, Level = fx.Level, Tag = $"{service}-{fx.Tag}", System = system, Size = new DuctSize { Diameter = pipe },
+                    X = x, Y = y, HasPosition = true, Status = Crossing.Place, Confidence = "medium", Check = true, FromModel = fx.FromModel,
+                    Pdf = "not in the PDF", Back = fx.Back
+                };
+                c.From.Add($"{FloorKey.Describe(fx.Floor)}: fixture '{fx.Tag}' ({rules.Fixtures[fx.Tag].Name}) {service} sleeve");
+                c.Notes.Add($"{Units.FormatInches(rules.SleeveFor(pipe))} {service} sleeve {where}: by the office rule (the plans do not draw it), check");
+                if (!clear) { c.Notes.Add("overlaps a sleeve already there: move it by hand"); clash++; }
+                assembly.Crossings.Add(c);
+                if (system == "Vent") vents++; else water++;
+            }
+
+            var stacks = assembly.Crossings.Where(o => !o.IsFixture && o.HasPosition && o.Status != Crossing.Skip && o.MergedInto == null &&
+                                                       (o.System == "Sanitary" || o.System == "Vent")).ToList();
+            var fixtures = assembly.Crossings.Where(c => c.IsFixture && c.Status == Crossing.Place && c.MergedInto == null && c.HasPosition && !c.EachPoint &&
+                                                         c.ExistingIds.Count == 0 && c.Tag != null && rules.Fixtures.ContainsKey(c.Tag)).ToList();
+            foreach (var fx in fixtures)
+            {
+                var fs = rules.Fixtures[fx.Tag];
+                if (fs.StackReach > 0)
+                {
+                    var stack = stacks.Where(o => o.Floor == fx.Floor).Select(o => (O: o, D: Dist(o, fx))).Where(t => t.D <= fs.StackReach / 12)
+                                      .OrderBy(t => t.D).FirstOrDefault();
+                    if (stack.O != null)
+                    {
+                        fx.Status = Crossing.Skip; fx.MergedInto = stack.O;
+                        fx.Notes.Add($"drains in the wall to the {stack.O.Tag} stack {stack.D * 12:0}\" away: only the stack goes through the slab, " +
+                                     $"its sleeves serve the {fs.Name} (plumbing.fixtures stackReach)");
+                        served++;
+                        continue;
+                    }
+                }
+                if (fs.Vent <= 0 && fs.Water <= 0) continue;
+                if (fx.Back == null)
+                {
+                    fx.Notes.Add("the wall behind the fixture is not known: its vent" + (fs.Water > 0 ? " and hot/cold water" : "") + " sleeves are not laid out, add them by hand");
+                    fx.Check = true; noWall++;
+                    continue;
+                }
+                double bx = fx.Back[0], by = fx.Back[1];
+                double ax = -by, ay = bx;                 // along the wall, to the left of someone facing it
+                double rw = Rc(fx);
+
+                if (fs.Water > 0)
+                {
+                    // its own row behind it: vent - hot - drain - cold, hot on the left
+                    double rh = R(fs.Water), rv = R(fs.Vent);
+                    double hot = rw + rh + gap, cold = -(rw + rh + gap), vent = hot + rh + rv + gap;
+                    foreach (var (service, system, pipe, along) in new[] { ("HW", "HotWater", fs.Water, hot), ("CW", "ColdWater", fs.Water, cold), ("V", "Vent", fs.Vent, vent) })
+                    {
+                        if (pipe <= 0) continue;
+                        double x = fx.X + ax * along, y = fx.Y + ay * along;
+                        Add(fx, service, system, pipe, x, y, $"in the {fs.Name}'s own row behind it ({(along > 0 ? "left" : "right")} of its drain, facing it): no stack within " +
+                            $"{Units.FormatInches(fs.StackReach)}", Clear(fx.Floor, x, y, R(pipe)));
+                    }
+                    continue;
+                }
+
+                // a vent beside the drain, in the wall behind (a toilet's drain is 1'-1" out from that wall)
+                double r = R(fs.Vent);
+                bool toilet = string.Equals(fx.Tag, "WC", StringComparison.OrdinalIgnoreCase);
+                bool inWall = !toilet || fx.Notes.Any(n => n.Contains("wall-hung"));
+                double wx = fx.X, wy = fx.Y;
+                if (!inWall) { wx += bx * (ToiletFromWallFeet + IntoWallFeet); wy += by * (ToiletFromWallFeet + IntoWallFeet); }
+                double first = toilet ? ToiletVentAlongFeet : rw + r + gap;
+                // which side: a toilet's vent away from a stack in its wall (the stack sits on the other side, manual); a
+                // lavatory's toward the vent stack in its wall
+                int side = 1;
+                var near = stacks.Where(o => o.Floor == fx.Floor && (toilet ? o.System == "Sanitary" : o.System == "Vent"))
+                                 .Where(o => Math.Abs((o.X - wx) * bx + (o.Y - wy) * by) <= 1.0)
+                                 .Select(o => (O: o, D: Dist(o.X, o.Y, wx, wy))).Where(t => t.D <= (toilet ? 2.0 : VentStackFeet)).OrderBy(t => t.D).FirstOrDefault();
+                if (near.O != null)
+                {
+                    int toward = (near.O.X - wx) * ax + (near.O.Y - wy) * ay >= 0 ? 1 : -1;
+                    side = toilet ? -toward : toward;
+                }
+                (double X, double Y)? spot = null;
+                for (double extra = 0; extra <= SlideFeet + 1e-9 && spot == null; extra += 1.0 / 12)
+                    foreach (int s in new[] { side, -side })
+                    {
+                        double x = wx + ax * s * (first + extra), y = wy + ay * s * (first + extra);
+                        if (Clear(fx.Floor, x, y, r)) { spot = (x, y); break; }
+                    }
+                bool clear = spot != null;
+                var at = spot ?? (wx + ax * side * first, wy + ay * side * first);
+                Add(fx, "V", "Vent", fs.Vent, at.X, at.Y, toilet && !inWall ? "in the wall behind the toilet, beside its centre line" : "beside its drain sleeve, in the wall behind it", clear);
+            }
+            return $"Sleeves beside the fixtures: {served} sink(s) served by the stack in their wall (no sleeve of their own), {vents} vent and {water} hot/cold water " +
+                   $"sleeve(s) placed by the office rule (flagged for a check)" +
+                   (already > 0 ? $", {already} already in the model" : "") +
+                   (clash > 0 ? $", {clash} overlapping another sleeve (move by hand)" : "") +
+                   (noWall > 0 ? $", {noWall} fixture(s) whose wall is not known (add them by hand)" : "") + ".";
+        }
+
+        /// <summary>The wall behind a modelled fixture (against its facing), Revit plan; null when the family has no facing.</summary>
+        private static double[] BackOf(Fixture f)
+        {
+            if (f.Facing == null) return null;
+            double len = Math.Sqrt(f.Facing.X * f.Facing.X + f.Facing.Y * f.Facing.Y);
+            return len < 1e-6 ? null : new[] { -f.Facing.X / len, -f.Facing.Y / len };
+        }
+
+        private static double[] Dir((double X, double Y)? d) => d.HasValue ? new[] { d.Value.X, d.Value.Y } : null;
 
         /// <summary>
         /// Two labels of one fixture (a double sink read twice, a label repeated) that end on the same spot: the second is
@@ -320,10 +466,10 @@ namespace SleevesOpenings.Automation
                 }
                 var here = labels.Where(c => c.HasPosition && AutoPlacer.SameFloor(plan.Level, c.Level)).ToList();
                 var marks = here.Select(c => new FixtureMark { Code = c.Tag, X = c.X * 12, Y = c.Y * 12 }).ToList();
-                FixtureDrains.Recognise(marks, plan.Strokes, plan.Walls, Sleeves, DwgSearchInches, ToiletFromWallFeet * 12, 72, false);
+                FixtureDrains.Recognise(marks, plan.Strokes, plan.Walls, Sleeves, DwgSearchInches, ToiletFromWallFeet * 12, 72, false, plan.Edges);
 
                 // every fixture the drawing shows (Extract Fixtures): those no label is on are the fixtures the plans do not label
-                var all = FixtureDrains.Extract(plan.Strokes, plan.Walls, Sleeves, ToiletFromWallFeet * 12, 72);
+                var all = FixtureDrains.Extract(plan.Strokes, plan.Walls, Sleeves, ToiletFromWallFeet * 12, 72, plan.Edges);
                 if (all.Count > 0) dwgLevels.Add(plan.Level);
                 bool Labelled(FixtureDrains.Shape s) =>
                     here.Any(c => Dist(c.X * 12, c.Y * 12, s.Cx, s.Cy) <= DwgSearchInches || s.Points.Any(p => Dist(c.X * 12, c.Y * 12, p.X, p.Y) <= DwgSearchInches)) ||
@@ -334,6 +480,7 @@ namespace SleevesOpenings.Automation
                     var c = here[i]; var m = marks[i];
                     if (!gaps.Contains(c) || m.Drains.Count == 0) continue;
                     SetPoints(c, m.Drains.Select(d => new XYZ(d.X / 12, d.Y / 12, 0)).ToList());
+                    c.Back = Dir(m.Back);
                     c.Status = Crossing.Place;
                     c.Confidence = "high";
                     c.FromModel = true;
@@ -357,10 +504,10 @@ namespace SleevesOpenings.Automation
                                       List<(DwgFixtureReader.Plan, FixtureDrains.Shape)> shapes, HashSet<string> dwgLevels, Func<string, (int, double)> sleeves)
         {
             var fixtures = cat.Items.Where(i => i.Code != null && i.Points != null && rules.Fixtures.ContainsKey(i.Code))
-                .Select(i => new FixtureDrains.Shape { Code = i.Code, Cx = i.Cx, Cy = i.Cy, X0 = i.X0, Y0 = i.Y0, X1 = i.X1, Y1 = i.Y1, Points = i.Points,
+                .Select(i => new FixtureDrains.Shape { Code = i.Code, Cx = i.Cx, Cy = i.Cy, X0 = i.X0, Y0 = i.Y0, X1 = i.X1, Y1 = i.Y1, Points = i.Points, Back = i.Back,
                                                        How = $"block '{i.Name}'{(i.Check ? " (check)" : "")}: {i.How} [{i.Why}]" })
                 .ToList();
-            fixtures.AddRange(FixtureDrains.Extract(DwgFixtureCatalog.Loose(plan, cat), plan.Walls, sleeves, ToiletFromWallFeet * 12, 72)
+            fixtures.AddRange(FixtureDrains.Extract(DwgFixtureCatalog.Loose(plan, cat), plan.Walls, sleeves, ToiletFromWallFeet * 12, 72, plan.Edges)
                                            .Where(s => s.Code == "BT" || s.Code == "SH")
                                            .Select(s => { s.How = "by shape: " + s.How; return s; }));
             if (fixtures.Count > 0) dwgLevels.Add(plan.Level);
@@ -391,6 +538,7 @@ namespace SleevesOpenings.Automation
                 bool far = d > DwgSearchInches;
                 ModelKind(c, s.Code, rules);                       // the drawn fixture's kind, not the label's
                 SetPoints(c, s.Points.Select(p => new XYZ(p.X / 12, p.Y / 12, 0)).ToList());
+                c.Back = Dir(s.Back);
                 c.Status = Crossing.Place;
                 c.Confidence = s.How.StartsWith("block") && !far ? "high" : "medium";
                 c.FromModel = true;
@@ -431,21 +579,21 @@ namespace SleevesOpenings.Automation
             int placed = 0, fromDwg = 0, already = 0, duplicate = 0, review = 0, lowest = 0, noFloor = 0;
             var made = new List<Crossing>();
 
-            var candidates = new List<(string Code, string Level, List<XYZ> Points, string How, bool Sure, XYZ At, string Name, bool Dwg)>();
+            var candidates = new List<(string Code, string Level, List<XYZ> Points, string How, bool Sure, XYZ At, string Name, bool Dwg, double[] Back)>();
             foreach (var f in fixtures)
             {
                 string code = Classify(f.Name, rules);
                 if (code == null) continue;                                  // not a sleeved fixture (cabinet, counter...)
                 var (points, how, sure) = SleevePoints(f, code, rules.Fixtures[code]);
-                candidates.Add((code, f.Level, points, how + " of the Revit fixture", sure, points != null ? Mean(points) : f.Point, $"modelled as '{f.Name}' ({f.Source})", false));
+                candidates.Add((code, f.Level, points, how + " of the Revit fixture", sure, points != null ? Mean(points) : f.Point, $"modelled as '{f.Name}' ({f.Source})", false, BackOf(f)));
             }
             foreach (var (plan, s) in shapes.Where(x => rules.Fixtures.ContainsKey(x.Shape.Code)))
             {
                 var points = s.Points.Select(p => new XYZ(p.X / 12, p.Y / 12, 0)).ToList();
-                candidates.Add((s.Code, plan.Level, points, s.How + " of the fixture drawn in the DWG", false, Mean(points), $"drawn in {plan.Source} (found by its shape)", true));
+                candidates.Add((s.Code, plan.Level, points, s.How + " of the fixture drawn in the DWG", false, Mean(points), $"drawn in {plan.Source} (found by its shape)", true, Dir(s.Back)));
             }
 
-            foreach (var (code, level, points, how, sure, at, name, dwg) in candidates)
+            foreach (var (code, level, points, how, sure, at, name, dwg, back) in candidates)
             {
                 var floor = assembly.FloorLevels.FirstOrDefault(kv => AutoPlacer.SameFloor(kv.Value, level));
                 if (floor.Key == null) { noFloor++; continue; }
@@ -461,7 +609,7 @@ namespace SleevesOpenings.Automation
                 var c = new Crossing
                 {
                     Floor = floor.Key, Level = floor.Value, Tag = code, System = sleeve.System, Size = new DuctSize { Diameter = sleeve.Pipe },
-                    HasPosition = true, Pdf = "not in the PDF", FromModel = true, Check = true
+                    HasPosition = true, Pdf = "not in the PDF", FromModel = true, Check = true, Back = back
                 };
                 c.From.Add($"{FloorKey.Describe(floor.Key)}: fixture '{code}' ({sleeve.Name}) {name}");
                 c.Notes.Add($"{sleeve.Name}: in the model but not labelled on the plan");
@@ -541,8 +689,16 @@ namespace SleevesOpenings.Automation
                 default:
                     {
                         // sinks, lavatories, washers: into the wall behind; a double sink's connectors share one sleeve
-                        if (f.Drains.Count > 0) return (new List<XYZ> { Flat(Mean(f.Drains)) }, f.Drains.Count > 1 ? "the sanitary connectors (one sleeve)" : "the sanitary connector", true);
                         var back = Back();
+                        if (f.Drains.Count > 0)
+                        {
+                            var p = Flat(Mean(f.Drains));
+                            string how = f.Drains.Count > 1 ? "the sanitary connectors (one sleeve)" : "the sanitary connector";
+                            // a connector inside the fixture (at its faucet) would put the sleeve on the sink: behind its back edge
+                            double depth = back == null ? IntoWallFeet : (back - p).DotProduct(f.Facing);
+                            if (depth < IntoWallFeet) { p -= f.Facing * (IntoWallFeet - depth); how += $", moved {IntoWallFeet * 12:0.#}\" behind the back of the fixture"; }
+                            return (new List<XYZ> { p }, how, true);
+                        }
                         if (back == null) return (null, "the fixture has no sanitary connector and no facing to find the wall behind it", false);
                         return (new List<XYZ> { back - f.Facing * IntoWallFeet }, "the wall behind the fixture, on its centre line", false);
                     }

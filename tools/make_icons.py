@@ -302,6 +302,16 @@ def extract_fixtures():
     return im
 icons['ExtractFixtures'] = extract_fixtures
 
+def extract_stacks():
+    im, d = base(COL['doc'])
+    for x in (30, 52, 74):                                            # three pipes through a slab
+        line(d, [(x, 14), (x, 92)], 10)
+    line(d, [(16, 54), (88, 54)], 6)                                  # the slab
+    ring(d, 82, 78, 22, 9)                                            # magnifier
+    line(d, [(98, 94), (114, 110)], 12)
+    return im
+icons['ExtractStacks'] = extract_stacks
+
 # ---------------- Add-in update (greyed out by Revit until an update is found)
 def update():
     im, d = base(COL['riser'])

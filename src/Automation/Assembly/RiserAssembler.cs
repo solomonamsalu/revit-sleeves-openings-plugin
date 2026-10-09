@@ -79,6 +79,8 @@ namespace SleevesOpenings.Automation.Assembly
         public string ExistingDetail;
         /// <summary>Fixture sleeves: the position comes from the modelled fixture, not the PDF (the plans may show it elsewhere).</summary>
         public bool FromModel;
+        /// <summary>Fixture sleeves: unit plan direction (Revit, [x, y]) from the fixture to the wall behind it; null = not known.</summary>
+        public double[] Back;
     }
 
     /// <summary>Something the drawings show that will not be placed, with the reason.</summary>
