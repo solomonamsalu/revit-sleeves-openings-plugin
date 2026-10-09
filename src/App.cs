@@ -113,6 +113,14 @@ namespace SleevesOpenings
                 "Audit every opening in the model against the manual (sizes, clearances, shear walls/beams, wall edges, riser continuity, AD pairs, naming), " +
                 "including openings moved or added by hand after Auto Run."));
 
+            // Auto Run covers mechanical, plumbing and sprinkler. The electrical riser reads no engineer drawing, so it
+            // is not part of that run — it needs its own button, or there is no way to reach it at all.
+            var electrical = app.CreateRibbonPanel(TabName, "Electrical");
+            electrical.AddItem(Button("Electrical", "Electrical\nRiser", asm, typeof(Commands.ElectricalCommand),
+                "Conduit calculator: reads the apartments per floor and the electrical room from the architect's drawings; " +
+                "one circle per apartment + 1 for the roof at 0.75\" c-c, recalculated at offsets. Places the ELECTRIC opening " +
+                "on every floor, draws the circles, and puts a 2\" sleeve at the roof."));
+
             var extract = app.CreateRibbonPanel(TabName, "Extract");
             extract.AddItem(Button("ExtractFixtures", "Extract\nFixtures", asm, typeof(Commands.ExtractFixturesCommand),
                 "Choose a floor and list every fixture on it: toilets, lavatories, sinks, tubs, showers and washers from the architect's DWG (by shape) " +
@@ -160,9 +168,7 @@ namespace SleevesOpenings
                 Button("Bathtub", "Bathtub", asm, typeof(Commands.PlaceBathtubCommand), "Two 6\" or one 10\" — per project decision."));
 
             var plan = app.CreateRibbonPanel(TabName, "Plan");
-            plan.AddStackedItems(
-                Button("Electrical", "Electrical Riser", asm, typeof(Commands.ElectricalCommand),
-                    "Conduit calculator: apartments + roof = circles at 0.75\" c-c, recalculated at offsets; places the ELECTRIC opening on every floor, draws the circles, 2\" sleeve at roof."),
+            plan.AddStackedItems(                                  // Electrical Riser has its own panel above, always shown
                 Button("RefrigPlan", "Refrigeration Plan", asm, typeof(Commands.RefrigerationCommand),
                     "PTAC / split / VRF wizard: lines per stack, floors served, condenser roof; places Pipe Reference Openings on every floor (+3\" on the roof)."),
                 Button("Roof", "Generate Roof", asm, typeof(Commands.RoofCommand),

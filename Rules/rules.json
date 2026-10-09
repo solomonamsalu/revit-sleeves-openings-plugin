@@ -213,7 +213,16 @@
     "_referenceFolders": "Regex on folder names (searched next to the model) holding the per-floor drawings at Revit's 0,0 (office xrefs). Used to line the DWG up with Revit for floors that have no DWG imported/linked in the model.",
     "referenceFolders": "^XREF\\s*-?\\s*(ME|M|MECH|MECHANICAL|HVAC|HV)$",
     "_gridFiles": "Regex on the file name of the office grid-lines DWG (same 0,0 as the xrefs), searched in and next to the xref folder. Its grids must land on the Revit grids (this model's, or a Revit link's) within 1\", or nothing is placed.",
-    "gridFiles": "\\bGRID"
+    "gridFiles": "\\bGRID",
+
+    "_architectural": "Electrical Riser: the architect's per-floor drawings say how many apartments each floor holds and where the electrical room is. architecturalFolders is searched next to the model, as referenceFolders is. One apartment tag block = one apartment; its number comes from the first attribute named in apartmentNumberAttributes. Another architect names these differently — change them here, not in the code.",
+    "architecturalFolders": "^XREF\\s*-?\\s*(AR|A|ARCH|ARCHITECTURAL)$",
+    "apartmentTagBlocks": "^APT\\s*TAG$",
+    "apartmentTagLayers": "APARTMENT",
+    "apartmentNumberAttributes": [ "#", "APT#", "APTNO", "NUMBER", "NO", "UNIT" ],
+    "_electricalRoomText": "Text naming the room the riser starts from (electrical rule 3). When no electrical room is named anywhere, the mechanical room is used instead, as the manual's note under the electrical rules says.",
+    "electricalRoomText": "^ELEC(TRIC|TRICAL)?\\.?\\s*(ROOM|RM\\.?|CLOSET|CL\\.?)?$|^METER\\s*(ROOM|RM\\.?|BANK)?$",
+    "mechanicalRoomText": "^MECH(ANICAL)?\\.?\\s*(ROOM|RM\\.?|EQUIP(MENT)?)?$|^BOILER\\s*(ROOM|RM\\.?)?$"
   },
 
   "sleeveViews": {
