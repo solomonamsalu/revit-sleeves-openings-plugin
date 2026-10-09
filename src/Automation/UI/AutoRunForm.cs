@@ -1219,10 +1219,13 @@ namespace SleevesOpenings.Automation.UI
 
             int usable = a.Floors.Count(f => f.Usable);
             _alignPage.Text = $"Revit position ({usable}/{a.Floors.Count} floors, {(a.Passed ? "passed" : a.DrawingsMatch ? "Revit NOT proven" : "NOT passed")})";
-            _alignSummary.Text = string.Join("\n", a.Messages) +
+            // the one thing to change goes first: the per-floor notes say what was measured, this says what to do
+            _alignSummary.Text = (a.Diagnosis != null ? "► " + a.Diagnosis + "\n\n" : "") +
+                string.Join("\n", a.Messages) +
                 (a.Anchors.Count > 0 ? "\nThe check risers below can be marked in the model (option at the bottom) to confirm the position by eye." : "");
             _alignSummary.ForeColor = a.Passed ? SystemColors.ControlText : Color.DarkRed;
             msg.AppendLine("Revit position: " + string.Join(" ", a.Messages.Take(1).Concat(a.Messages.Where(m => m.StartsWith("Check") || m.StartsWith("Revit") || m.StartsWith("Result")))) + " See the Revit position tab.");
+            if (a.Diagnosis != null) msg.AppendLine("  ! " + a.Diagnosis);
             foreach (var r in _lastRefs.Where(r => r.FromModel && (r.Problem != null || r.Floor == null)))
                     msg.AppendLine($"  ! {r.Name} ({r.Method}): {r.Problem ?? "floor not recognised from its name or level"}");
         }

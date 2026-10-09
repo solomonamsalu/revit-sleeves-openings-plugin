@@ -99,6 +99,11 @@ namespace SleevesOpenings.Automation.Alignment
         public bool RevitProven;
         public List<GridCheckResult> Grids = new List<GridCheckResult>();
         public string RevitSummary;
+        /// <summary>
+        /// Why nothing can be placed and what to do about it, in one sentence. The per-floor notes say what each test
+        /// measured; this says the one thing to change. Null when the check passed.
+        /// </summary>
+        public string Diagnosis;
         /// <summary>Nothing is placed unless both hold.</summary>
         public bool Passed => DrawingsMatch && RevitProven;
         public const int AnchorCount = 3;
@@ -403,6 +408,17 @@ namespace SleevesOpenings.Automation.Alignment
                 ? $"Revit position PROVEN: {result.RevitSummary}."
                 : $"Revit position NOT proven: {result.RevitSummary}. Check the marks in the model before placing.");
             result.Messages.Add(result.Passed ? "Result: PASSED." : "Result: NOT PASSED — nothing will be placed.");
+            if (!result.Passed)
+                result.Diagnosis =
+                    result.Floors.Count == 0 ? "No floor of the engineer's drawing could be matched to a level. Check the floor mapping above."
+                    : references == null || references.Count == 0
+                        ? "No reference drawing was found to line the engineer's drawing up against. Pick the office xref folder " +
+                          "(the per-floor DWGs at Revit's 0,0) in the files above, or link them in the model."
+                    : !result.DrawingsMatch
+                        ? $"Only {result.Anchors.Count} riser(s) landed on the reference drawing, {AlignmentResult.AnchorCount} are needed. " +
+                          "The engineer's drawing and the reference are probably different revisions of the building."
+                        : "The reference drawing could not be proved to sit at Revit's position: its grids did not fall on the " +
+                          "Revit grids. Check the grid DWG is the one for this building, or place one opening by hand as a reference.";
             return result;
         }
 

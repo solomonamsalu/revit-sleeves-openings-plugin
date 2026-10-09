@@ -209,11 +209,16 @@ namespace SleevesOpenings.Automation.Alignment
                 fa.StackedTags = Stacked(plans.Risers, fa, below, rules);
             }
 
-            // ---- check marks: one matched column per floor, the closest, on three different floors
+            // ---- check marks: one matched column per floor, the closest, on three different floors. The floors must
+            //      come from three different pages: the typical floors are drawn once, so six floors off one sheet are
+            //      one measurement counted six times, which is what the three-floor rule exists to prevent.
+            var anchorPages = new HashSet<int>();
             foreach (var (fa, f) in fits.Where(kv => kv.Key.Status == FloorAlignment.Confirmed).Select(kv => (kv.Key, kv.Value))
                                         .OrderBy(kv => kv.Value.Pairs.Where(p => p.D <= rules.ColumnTolerance).Select(p => p.D).DefaultIfEmpty(99).Min()))
             {
                 if (result.Anchors.Count >= AlignmentResult.AnchorCount) break;
+                int page = plans.For(fa.Floor)?.Page ?? 0;
+                if (page != 0 && !anchorPages.Add(page)) continue;
                 var p = f.Pairs.OrderBy(x => x.D).First();
                 var at = f.Apply(p.P.X, p.P.Y);
                 result.Anchors.Add(new AnchorRiser
@@ -237,7 +242,53 @@ namespace SleevesOpenings.Automation.Alignment
                 : $"Check columns: only {result.Anchors.Count} floor(s) confirmed by columns (3 needed).");
             result.Messages.Add(result.RevitProven ? $"Revit position PROVEN: {result.RevitSummary}." : $"Revit position NOT proven: {result.RevitSummary}.");
             result.Messages.Add(result.Passed ? "Result: PASSED." : "Result: NOT PASSED — nothing will be placed.");
+            if (!result.Passed) result.Diagnosis = Diagnose(result, revit, rules, plans);
             return result;
+        }
+
+        /// <summary>
+        /// The one thing to change, in the order worth checking: the model has nothing to line up against, then the
+        /// plans do, then the fit is wrong or ambiguous. Each floor's notes say what was measured; this says what to do.
+        /// </summary>
+        private static string Diagnose(AlignmentResult result, RevitColumns revit, PdfOnlyRules rules, PdfPlanResult plans)
+        {
+            if (revit.Columns.Count == 0)
+                return "The model has no columns to line the drawings up against. Link the structural model " +
+                       "(Manage Links), reload it, and check the drawings again.";
+
+            // the position is confirmed on three different pages; typical floors drawn once give fewer pages than floors
+            int pages = result.Floors.Where(f => f.Status == FloorAlignment.Confirmed)
+                                     .Select(f => plans?.For(f.Floor)?.Page ?? 0).Where(p => p != 0).Distinct().Count();
+            if (result.RevitProven && !result.DrawingsMatch && pages > 0 && pages < AlignmentResult.AnchorCount)
+                return $"The floors line up, but they come from only {pages} page(s) of floor plan and the position is " +
+                       $"confirmed on {AlignmentResult.AnchorCount} different pages. Typical floors drawn on one sheet count " +
+                       "once. Use the engineer's DWG, or place one opening by hand as a reference.";
+
+            var blocked = result.Floors.Where(f => !f.Usable).ToList();
+            if (blocked.Count == 0) return null;
+
+            bool Most(string pattern) =>
+                blocked.Count(f => f.Notes.Any(n => System.Text.RegularExpressions.Regex.IsMatch(
+                    n, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase))) * 2 > blocked.Count;
+
+            if (Most(@"no model columns at level"))
+                return "The structural model has no columns at these levels. Check the right structural model is linked " +
+                       "and that its levels line up with this model's.";
+            if (Most(@"column\(s\) drawn on the page"))
+                return $"The drawings show too few columns to line up by ({rules.MinColumns} needed). The column layer may be " +
+                       "named differently in this set — check pdfOnly.columnLayers in the rules, or use the engineer's DWG instead of the PDF.";
+            if (Most(@"ambiguous"))
+                return "Several positions fit the columns equally well, which happens in a symmetric building. " +
+                       "Place one opening by hand where you know it belongs, then run again: it will line up to that.";
+            if (Most(@"do not fit the printed scale"))
+                return "The columns do not match the drawing's printed scale, so the page was probably plotted at a " +
+                       "different scale than it states. Check the scale on the sheet, or use the DWG.";
+            if (Most(@"only \d+ column"))
+                return $"Too few columns matched the model within {rules.ColumnTolerance:0.#}\". The linked structural model is " +
+                       "probably a different building or a different revision — check it is the one these drawings were made from.";
+
+            return "No floor could be positioned. The floors' notes below say what each one measured; the usual causes " +
+                   "are the wrong structural model linked, or drawings from a different revision.";
         }
 
         private static string Ratio(PdfPlan plan) => plan.ScaleText ?? PdfPlanReader.Ratio(plan.Scale);
