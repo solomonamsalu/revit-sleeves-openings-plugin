@@ -101,8 +101,11 @@ namespace SleevesOpenings.Placement
                     if (floor != null && topFace != null)
                         return _doc.Create.NewFamilyInstance(topFace, pt, XYZ.BasisX, symbol);
 
-                    var plane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, new XYZ(0, 0, level.ProjectElevation));
-                    var sp = SketchPlane.Create(_doc, plane);
+                    // The level's own plane, not a loose one at the same height: a loose plane leaves the instance
+                    // with no level, so it reports blank in schedules and tags and the riser audit cannot follow it.
+                    SketchPlane sp;
+                    try { sp = SketchPlane.Create(_doc, level.Id); }
+                    catch (Exception) { sp = SketchPlane.Create(_doc, Plane.CreateByNormalAndOrigin(XYZ.BasisZ, new XYZ(0, 0, level.ProjectElevation))); }
                     return _doc.Create.NewFamilyInstance(sp.GetPlaneReference(), pt, XYZ.BasisX, symbol);
                 }
 
@@ -168,10 +171,19 @@ namespace SleevesOpenings.Placement
             var typeDriven = new List<(string name, double inches)>();
             foreach (var (name, val) in SizePairs(map, spec))
             {
-                if (string.IsNullOrEmpty(name)) continue;
+                // No parameter name: the caller never resolved them (FamilyMapping.GuessParams), so the opening keeps
+                // the family type's own size. Silent until now, which is how wrong-sized openings went out unnoticed.
+                if (string.IsNullOrEmpty(name))
+                {
+                    App.Log($"Size not written for {spec.Label ?? spec.System.ToString()} {spec.SizeText}: family '{symbol.Family.Name}' " +
+                            $"has no size parameter mapped; it keeps the type's own size. Run Map Families, or name it in rules.json.");
+                    continue;
+                }
                 var ip = inst.LookupParameter(name);
                 if (ip != null && !ip.IsReadOnly) SetLength(inst, name, val);
                 else if (symbol.LookupParameter(name) != null) typeDriven.Add((name, val));
+                else App.Log($"Size not written for {spec.Label ?? spec.System.ToString()} {spec.SizeText}: family " +
+                             $"'{symbol.Family.Name}' has no parameter '{name}'.");
             }
             if (typeDriven.Count == 0) return;
 
