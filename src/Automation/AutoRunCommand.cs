@@ -75,7 +75,7 @@ namespace SleevesOpenings.Automation
                 }
 
                 PdfSheetIndex pdf; DwgSheetIndex dwg; int risersFound; PdfPlanResult pdfPlans; AlignmentResult alignment; RiserAssembly assembly; bool mark, place;
-                RiserDiagramResult diagram; SoCompareResult soCompare; SoSetResult soSet;
+                RiserDiagramResult diagram; SoCompareResult soCompare; SoSetResult soSet; HashSet<string> placeFloors; DwgRiserResult risers;
                 using (var form = new AutoRunForm(existing, state.Automation, levels, rules.Legend, profile, modelRefs, revitGrids, doc.PathName,
                                                   rules.Systems.DryerExhaust.MinSpacing, rules.Automation, c => AutoPlacer.OpeningSize(rules, c),
                                                   a => OpeningLayout.Apply(a, c => AutoPlacer.OpeningSize(rules, c), rules.Clearances.ErvFloorCenterToCenter,
@@ -87,11 +87,11 @@ namespace SleevesOpenings.Automation
                                                                            roofDryerLength: rules.Systems.DryerExhaust.RoofOpeningLength,
                                                                            dryerGap: rules.Systems.DryerExhaust.MinSpacing),
                                                   discipline, pipeRules, columns, rules.PdfOnly,
-                                                  pipeOptions.ContainsKey(AutomationInputs.Plumbing) ? a => FixtureSleeveLocator.Apply(doc, a, rules.Plumbing, existing) : null,
+                                                  pipeOptions.ContainsKey(AutomationInputs.Plumbing) ? (a, only) => FixtureSleeveLocator.Apply(doc, a, rules.Plumbing, existing, only) : null,
                                                   pipeOptions, model, allowed, rules.DwgProfile))
                 {
                     if (form.ShowDialog(SleevesOpenings.UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
-                    pdf = form.Pdf; dwg = form.Dwg; risersFound = form.Risers?.Risers.Count ?? 0;
+                    pdf = form.Pdf; dwg = form.Dwg; risers = form.Risers; placeFloors = form.PlaceFloors;
                     alignment = form.Alignment; assembly = form.Assembly; mark = form.MarkAnchors; place = form.PlaceNow;
                     diagram = form.Diagram; soCompare = form.SoCompare; soSet = form.SoSet; pdfPlans = form.PdfPlans;
                     discipline = form.Discipline;
@@ -102,6 +102,19 @@ namespace SleevesOpenings.Automation
                     }
                 }
                 state.Automation.LastDiscipline = discipline;
+
+                // the floors ticked in the Floors tab (null = all): placed and reported. The others were read so the risers
+                // line up through the building; nothing is placed there and the report does not mention them.
+                bool Chosen(string floor) => placeFloors == null || (floor != null && placeFloors.Contains(floor));
+                var chosenLevels = placeFloors == null ? null
+                    : (alignment?.Floors.Where(f => Chosen(f.Floor)).Select(f => f.Level) ?? Enumerable.Empty<string>())
+                      .Concat(assembly?.FloorLevels?.Where(kv => Chosen(kv.Key)).Select(kv => kv.Value) ?? Enumerable.Empty<string>())
+                      .Concat(assembly?.Crossings.Where(c => Chosen(c.Floor)).Select(c => c.Level) ?? Enumerable.Empty<string>())
+                      .Where(l => l != null).Distinct().ToList();
+                bool OnChosenLevel(string level) => chosenLevels == null || (level != null && chosenLevels.Any(l => AutoPlacer.SameFloor(l, level)));
+                risersFound = risers?.Risers.Count(r => Chosen(r.Floor)) ?? 0;
+                if (placeFloors != null)
+                    App.Log($"AutoRun: placing on {string.Join(", ", placeFloors.OrderBy(FloorKey.Order).Select(FloorKey.Describe))} only (levels {string.Join(", ", chosenLevels)})");
                 App.Log($"AutoRun: discipline {discipline} (from the drawings picked)" +
                         (state.Automation.ModelKind != null ? $"; model kind {state.Automation.ModelKind} (your choice, saved)" : ""));
 
@@ -157,7 +170,7 @@ namespace SleevesOpenings.Automation
                 List<PlacementOutcome> outcomes = null;
                 if (place)
                 {
-                    var toPlace = assembly.ToPlace.ToList();
+                    var toPlace = assembly.ToPlace.Where(c => Chosen(c.Floor)).ToList();
                     var placer = new AutoPlacer(doc, rules, state, existing, state.Automation.Existing);
                     var loadedFamilies = placer.LoadMissingFamilies(toPlace);         // from the add-in's Families folder
                     if (loadedFamilies.Count > 0) App.Log("AutoRun: loaded families " + string.Join(", ", loadedFamilies));
@@ -187,7 +200,7 @@ namespace SleevesOpenings.Automation
                 SleeveViewResult views = null;
                 if (place)
                 {
-                    try { views = SleeveViews.Ensure(doc, rules, levels, rules.SleeveViews); App.Log("AutoRun: " + views); }
+                    try { views = SleeveViews.Ensure(doc, rules, levels, rules.SleeveViews, chosenLevels); App.Log("AutoRun: " + views); }
                     catch (Exception ex) { App.Log("AutoRun: sleeve views failed: " + ex); }
                     // the name drawn inside the opening families: no white box behind it. Only the families this run
                     // placed: reloading an unrelated family (e.g. Ref pipes opening at Down Height 0) can fail to regenerate
@@ -228,7 +241,7 @@ namespace SleevesOpenings.Automation
                 // the S&O set (SL101…): completed from the pattern sheet and printed, in the PL / FP model where the office keeps it
                 string soSheets = null;
                 if (place && discipline != AutomationInputs.Mechanical)
-                    try { soSheets = Sheets.SoSetCommand.AfterAutoRun(doc, rules, levels, ProjectStore.Load(doc)); }
+                    try { soSheets = Sheets.SoSetCommand.AfterAutoRun(doc, rules, levels, ProjectStore.Load(doc), chosenLevels); }
                     catch (Exception ex) { soSheets = "S&O sheets failed: " + ex.Message; App.Log("AutoRun: S&O sheets failed: " + ex); }
 
                 var marks = new List<ElementId>();
@@ -237,28 +250,49 @@ namespace SleevesOpenings.Automation
                     using (var t = new Transaction(doc, "Sleeves & Openings: Auto Run check marks"))
                     {
                         t.Start();
-                        marks = AnchorMarks.Draw(doc, alignment.Anchors, levels);
+                        marks = AnchorMarks.Draw(doc, alignment.Anchors.Where(a => Chosen(a.Floor)).ToList(), levels);
                         t.Commit();
                     }
                     if (marks.Count > 0) { uidoc.Selection.SetElementIds(marks); uidoc.ShowElements(marks); }
                 }
 
+                // what the report shows: the chosen floors only (the run's own lists stay whole in risers.json and the log)
+                var shown = assembly == null || placeFloors == null ? assembly : new RiserAssembly
+                {
+                    Crossings = assembly.Crossings.Where(c => Chosen(c.Floor)).ToList(),
+                    Issues = assembly.Issues.Where(i => Chosen(i.Floor)).ToList(),
+                    NotRisers = assembly.NotRisers, FloorLevels = assembly.FloorLevels, Lowest = assembly.Lowest
+                };
+                var shownSo = soCompare == null || placeFloors == null ? soCompare : new SoCompareResult
+                {
+                    Matches = soCompare.Matches.Where(m => Chosen(m.Floor)).ToList(),
+                    Floors = soCompare.Floors.Where(Chosen).ToList()
+                };
+                var shownFinal = final == null || placeFloors == null ? final : new FinalCheckRun
+                {
+                    Checked = final.Checked, Failed = final.Failed,
+                    Fixed = final.Fixed.Where(f => f.Issue.Level == null || OnChosenLevel(f.Issue.Level)).ToList(),
+                    Remaining = final.Remaining.Where(i => i.Level == null || OnChosenLevel(i.Level)).ToList()
+                };
+                var shownExisting = existing.Items.Count(i => OnChosenLevel(i.Level));
+
                 string summary =
                         $"Model: {model.Describe()}\n" +
-                        $"PDF: {(pdf == null ? "none" : $"{pdf.FloorPlans.Count()} floor plan(s)")}\n" +
+                        (placeFloors != null ? $"Floors: {string.Join(", ", placeFloors.OrderBy(FloorKey.Order).Select(FloorKey.Describe))}\n" : "") +
+                        $"PDF: {(pdf == null ? "none" : $"{pdf.FloorPlans.Count(s => Chosen(s.Floor))} floor plan(s)")}\n" +
                         (pdfPlans != null
-                            ? $"DWG: none (PDF only: {pdfPlans.Plans.Count(p => p.Problem == null)} floor plan(s) read from the PDF's CAD layers, lined up by their columns)\n" +
+                            ? $"DWG: none (PDF only: {pdfPlans.Plans.Count(p => p.Problem == null && Chosen(p.Floor))} floor plan(s) read from the PDF's CAD layers, lined up by their columns)\n" +
                               $"Pipe groups found in the PDF: {risersFound}\n"
-                            : $"DWG: {(dwg == null ? "none" : $"{dwg.Floors.Count} floor plan(s)")}\n" +
+                            : $"DWG: {(dwg == null ? "none" : $"{dwg.Floors.Count(f => Chosen(f.Floor))} floor plan(s)")}\n" +
                               $"Risers found in the DWG: {risersFound}\n") +
                         $"Tags defined in the PDF: {pdf?.Legend.Entries.Select(e => e.Tag).Distinct().Count() ?? 0}\n" +
-                        $"Existing sleeves/openings: {existing.Items.Count} ({(state.Automation.Existing == ExistingPolicy.Update ? "update" : "keep and add missing")})\n\n" +
-                        AlignmentText(alignment, marks.Count > 0) +
-                        OpeningsText(assembly, listPath) +
-                        PlacedText(outcomes, place, alignment, assembly) + (views != null ? "\n\n" + views : "") +
-                        (final != null ? "\n\n" + final : "") +
+                        $"Existing sleeves/openings: {shownExisting} ({(state.Automation.Existing == ExistingPolicy.Update ? "update" : "keep and add missing")})\n\n" +
+                        AlignmentText(alignment, marks.Count > 0, Chosen) +
+                        OpeningsText(shown, listPath) +
+                        PlacedText(outcomes, place, alignment, shown) + (views != null ? "\n\n" + views : "") +
+                        (shownFinal != null ? "\n\n" + shownFinal : "") +
                         (soSheets != null ? "\n\n" + soSheets : "") +
-                        (soCompare != null ? $"\n\nS&O set ({System.IO.Path.GetFileName(soSet?.Path)}): {soCompare.Summary()}" : "") +
+                        (shownSo != null ? $"\n\nS&O set ({System.IO.Path.GetFileName(soSet?.Path)}): {shownSo.Summary()}" : "") +
                         (diagram != null ? $"\nRiser diagram (page {diagram.Page}): {diagram.Risers.Count} tagged run(s) checked against the plans" : "");
 
                 // the report next to risers.json, and the review list
@@ -266,7 +300,7 @@ namespace SleevesOpenings.Automation
                 RunReport report = null;
                 try
                 {
-                    report = ReportBuilder.Build(doc.Title, files, alignment, assembly, outcomes, soCompare, final, rules,
+                    report = ReportBuilder.Build(doc.Title, files, alignment, shown, outcomes, shownSo, shownFinal, rules,
                                                  summary.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith("List saved")), discipline);
                     report.Summary = summary;
                     (html, _) = report.Write(folder);
@@ -388,13 +422,16 @@ namespace SleevesOpenings.Automation
                    (path != null ? $"List saved: {path}\n\n" : "\n");
         }
 
-        private static string AlignmentText(AlignmentResult a, bool marked)
+        /// <param name="chosen">The floors the run places on (the others are not mentioned).</param>
+        private static string AlignmentText(AlignmentResult a, bool marked, Func<string, bool> chosen)
         {
             if (a == null) return "Revit position: not checked (no DWG).\n\n";
-            var text = $"Revit position: {a.Floors.Count(f => f.Usable)} of {a.Floors.Count} floor(s) line up with the drawings at Revit's position.\n" +
-                       $"3 check risers: {(a.DrawingsMatch ? "match" : "do NOT match")}. Revit position: {(a.RevitProven ? "PROVEN" : "NOT proven")} ({a.RevitSummary}).\n" +
+            var floors = a.Floors.Where(f => chosen(f.Floor)).ToList();
+            bool every = floors.Count == a.Floors.Count;          // the position summary counts every floor: only when all are chosen
+            var text = $"Revit position: {floors.Count(f => f.Usable)} of {floors.Count} floor(s) line up with the drawings at Revit's position.\n" +
+                       $"3 check risers: {(a.DrawingsMatch ? "match" : "do NOT match")}. Revit position: {(a.RevitProven ? "PROVEN" : "NOT proven")}{(every ? $" ({a.RevitSummary})" : "")}.\n" +
                        $"Result: {(a.Passed ? "PASSED" : "NOT PASSED — nothing will be placed")}.\n";
-            foreach (var x in a.Anchors)
+            foreach (var x in a.Anchors.Where(x => chosen(x.Floor)))
                 text += $"  {x.Tag ?? "(no tag)"} on the {FloorKey.Describe(x.Floor)}: {x.Distance:0.##}\" from the {x.Evidence}\n";
             if (marked)
                 text += "The check risers are marked (circle + cross) and selected: compare them with the drawings in Revit, then undo to remove the marks.\n";

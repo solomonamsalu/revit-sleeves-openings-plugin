@@ -37,6 +37,12 @@ namespace SleevesOpenings.Automation
         /// <summary>Drawing floor (FloorKey: CELLAR, F1.., ROOF, BULKHEAD) -> Revit level name, where the user overrode the automatic match.</summary>
         public Dictionary<string, string> FloorLevels { get; set; } = new Dictionary<string, string>();
 
+        /// <summary>
+        /// Drawing floors (FloorKey) the user unticked in the Floors tab: Auto Run reads them for the risers but places
+        /// and reports nothing there. Empty = every floor (a floor new to the drawings comes in ticked).
+        /// </summary>
+        public List<string> SkipFloors { get; set; } = new List<string>();
+
         public string Existing { get; set; } = ExistingPolicy.KeepAndAddMissing;
 
         /// <summary>The discipline of the last run in this model (PL model: plumbing or sprinkler): the window opens on its files.</summary>

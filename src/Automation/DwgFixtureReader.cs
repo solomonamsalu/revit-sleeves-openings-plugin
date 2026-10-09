@@ -70,7 +70,8 @@ namespace SleevesOpenings.Automation
         /// from every instance and the fullest read is kept: a view-specific instance gives only what its view shows
         /// and a flattened one loses its blocks' layers, so a plan can come back with a tenth of its lines.
         /// </summary>
-        public static List<Plan> Read(Document doc, PlumbingRules rules, string onlyLevel = null)
+        /// <param name="onlyLevels">Auto Run's chosen floors (Revit level names): the DWGs of the other levels are not read; null = all.</param>
+        public static List<Plan> Read(Document doc, PlumbingRules rules, string onlyLevel = null, ICollection<string> onlyLevels = null)
         {
             var (fixture, wall, @new, remove) = Patterns(rules);
             var layers = new Layers { Fixture = fixture, Wall = wall, New = @new, Remove = remove };
@@ -85,6 +86,7 @@ namespace SleevesOpenings.Automation
                          ?? doc.GetElement(ii.get_Parameter(BuiltInParameter.IMPORT_BASE_LEVEL)?.AsElementId() ?? ElementId.InvalidElementId) as Level;
                 if (level == null) continue;
                 if (onlyLevel != null && level.Name != onlyLevel) continue;
+                if (onlyLevels != null && !onlyLevels.Any(l => AutoPlacer.SameFloor(l, level.Name))) continue;
 
                 var type = doc.GetElement(ii.GetTypeId());
                 double scale = type?.get_Parameter(BuiltInParameter.IMPORT_SCALE)?.AsDouble() ?? 0;

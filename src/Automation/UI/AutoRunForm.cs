@@ -48,8 +48,15 @@ namespace SleevesOpenings.Automation.UI
         public string ChosenModelKind { get; private set; }
         private readonly RevitColumns _columns;                      // PDF only: the model's columns, to line the plans up
         private readonly PdfOnlyRules _pdfOnly;
-        private readonly Func<RiserAssembly, List<string>> _resolveFixtureSleeves;
+        /// <summary>Settles the fixture labels against the model; the second argument is the ticked floors' Revit levels (null = all).</summary>
+        private readonly Func<RiserAssembly, ICollection<string>, List<string>> _resolveFixtureSleeves;
         private List<ReferenceDrawing> _lastRefs = new List<ReferenceDrawing>();
+        /// <summary>The floors whose architect's DWG the fixture step read (null = all): a floor ticked later needs the step again.</summary>
+        private HashSet<string> _fixturesRead;
+        private bool _filling, _checking, _rebuilding;
+        /// <summary>Ticks settle before the openings are merged again (several ticks in a row: one rebuild).</summary>
+        private readonly Timer _tickTimer = new Timer { Interval = 700 };
+        private Label _floorsTicked;
 
         private bool Plumbing => _plumbing != null;
         /// <summary>Sprinkler / standpipe sleeves (rules.json "sprinkler"): the pipe path, read by <see cref="SprinklerReader"/>.</summary>
@@ -100,12 +107,14 @@ namespace SleevesOpenings.Automation.UI
         public bool MarkAnchors => _mark.Checked && Alignment?.Anchors.Count > 0;
         /// <summary>Phase 6: place the "place" openings after Save (only when the Revit position check passed).</summary>
         public bool PlaceNow => _place.Checked && Assembly != null && Alignment?.Passed == true;
+        /// <summary>The drawing floors ticked in the Floors tab (FloorKey), set by Save; null = every floor.</summary>
+        public HashSet<string> PlaceFloors { get; private set; }
 
         public AutoRunForm(ExistingReport existing, AutomationInputs inputs, LevelMap levels, LegendRules legendRules, DwgProfile profile,
                            IList<ReferenceDrawing> modelRefs, GridInputs revitGrids, string modelPath, double dryerSpacing = 8,
                            AutomationRules automation = null, Func<Crossing, (double W, double L)?> openingSize = null,
                            Action<RiserAssembly> layout = null, string discipline = AutomationInputs.Mechanical, PlumbingRules plumbing = null,
-                           RevitColumns columns = null, PdfOnlyRules pdfOnly = null, Func<RiserAssembly, List<string>> resolveFixtureSleeves = null,
+                           RevitColumns columns = null, PdfOnlyRules pdfOnly = null, Func<RiserAssembly, ICollection<string>, List<string>> resolveFixtureSleeves = null,
                            IDictionary<string, PlumbingRules> pipeOptions = null, ModelKindResult model = null, IList<string> allowed = null,
                            DwgProfile mechanicalProfile = null)
         {
@@ -215,6 +224,8 @@ namespace SleevesOpenings.Automation.UI
                 Dock = DockStyle.Fill, AllowUserToAddRows = false, AllowUserToDeleteRows = false, RowHeadersVisible = false,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, EditMode = DataGridViewEditMode.EditOnEnter
             };
+            // the floors to place on: the others are still read (the risers run through them) but get nothing and are not reported
+            _floors.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Place", HeaderText = "Place", FillWeight = 22 });
             _floors.Columns.Add(new DataGridViewTextBoxColumn { Name = "Floor", HeaderText = "Drawing floor", ReadOnly = true, FillWeight = 60 });
             _floors.Columns.Add(new DataGridViewTextBoxColumn { Name = "Pdf", HeaderText = "PDF page", ReadOnly = true, FillWeight = 60 });
             _floors.Columns.Add(new DataGridViewTextBoxColumn { Name = "Dwg", HeaderText = "DWG sheet", ReadOnly = true, FillWeight = 60 });
@@ -224,7 +235,30 @@ namespace SleevesOpenings.Automation.UI
             _floors.Columns.Add(lv);
             _floors.Columns.Add(new DataGridViewTextBoxColumn { Name = "How", HeaderText = "Matched by", ReadOnly = true, FillWeight = 50 });
             _floors.Columns.Add(new DataGridViewTextBoxColumn { Name = "Key", Visible = false });
+            _floors.CurrentCellDirtyStateChanged += (s, e) =>
+            {
+                if (_floors.IsCurrentCellDirty && _floors.CurrentCell is DataGridViewCheckBoxCell) _floors.CommitEdit(DataGridViewDataErrorContexts.Commit);
+            };
+            _floors.CellValueChanged += (s, e) =>
+            {
+                if (!_filling && e.RowIndex >= 0 && e.ColumnIndex == _floors.Columns["Place"].Index) FloorsTicked();
+            };
+            var floorBar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false };
+            var all = new Button { Text = "All", AutoSize = true };
+            var none = new Button { Text = "None", AutoSize = true };
+            all.Click += (s, e) => TickAll(true);
+            none.Click += (s, e) => TickAll(false);
+            _floorsTicked = new Label { AutoSize = true, Padding = new Padding(8, 7, 0, 0) };
+            new ToolTip().SetToolTip(_floorsTicked, "Sleeves are placed only on the ticked floors, and the report covers only them.\n" +
+                                                    "The whole PDF is still read so the risers line up through the building, and sleeves already\n" +
+                                                    "placed on the other floors (an earlier run) are kept and lined up with.");
+            floorBar.Controls.Add(all);
+            floorBar.Controls.Add(none);
+            floorBar.Controls.Add(_floorsTicked);
             _floorsPage.Controls.Add(_floors);
+            _floorsPage.Controls.Add(floorBar);
+            _tickTimer.Tick += async (s, e) => { _tickTimer.Stop(); await RebuildForFloorsAsync(); };
+            FormClosed += (s, e) => _tickTimer.Dispose();
 
             _messages = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = SystemColors.Window };
             _tags = new DataGridView
@@ -306,7 +340,12 @@ namespace SleevesOpenings.Automation.UI
             var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false };
             var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
             _ok = new Button { Text = "Save and continue", AutoSize = true, Enabled = false };
-            _ok.Click += (s, e) => { if (Save()) { DialogResult = DialogResult.OK; Close(); } };
+            _ok.Click += async (s, e) =>
+            {
+                _tickTimer.Stop();
+                await RebuildForFloorsAsync();          // a floor ticked since the check: its fixtures read first
+                if (Save()) { DialogResult = DialogResult.OK; Close(); }
+            };
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(_ok);
             var export = new Button { Text = "Copy extraction", AutoSize = true };
@@ -351,7 +390,10 @@ namespace SleevesOpenings.Automation.UI
             var unmatched = _floors.Rows.Cast<DataGridViewRow>().Where(r => (string)r.Cells["Level"].Value == AutomationInputs.NotUsed)
                                    .Select(r => FloorKey.Describe((string)r.Cells["Key"].Value)).ToList();
             if (unmatched.Count > 0) return $"{string.Join(", ", unmatched)} {(unmatched.Count == 1 ? "is" : "are")} not matched to a Revit level";
-            if (!Assembly.Crossings.Any(c => c.Status == Crossing.Place)) return "nothing was found to place";
+            var ticked = TickedFloors();
+            if (ticked.Count == 0) return "no floor is ticked to place (Floors tab)";
+            if (!Assembly.Crossings.Any(c => c.Status == Crossing.Place && ticked.Contains(c.Floor)))
+                return _floors.Rows.Count == ticked.Count ? "nothing was found to place" : "nothing was found to place on the ticked floors";
             return null;
         }
 
@@ -600,6 +642,8 @@ namespace SleevesOpenings.Automation.UI
             if (pdfPath.Length == 0 && dwgPath.Length == 0) { _fullMessages = $"Select the {DisciplineWord} PDF and DWG."; ApplyView(); return; }
 
             _check.Enabled = _ok.Enabled = false;
+            _checking = true;
+            _tickTimer.Stop();                      // the check reads the ticks as they are now
             _status.Text = "Reading drawings… (a large PDF can take 20 seconds)";
             UseWaitCursor = true;
             PdfSheetIndex pdf = null; DwgSheetIndex dwg = null; DwgRiserResult risers = null; CadDocument cad = null;
@@ -746,17 +790,7 @@ namespace SleevesOpenings.Automation.UI
                 if (dwg != null && risers != null && Alignment != null && Plumbing)
                 {
                     // PL model: pipe groups -> sleeves; no duct label check, riser diagram or duct outlines
-                    _status.Text = "Merging the floors (pipe groups)…";
-                    var floorLevels = FloorLevels(); var alignment = Alignment; var rules = _plumbing;
-                    bool trustUp = _automation.Decisions?.TrustUpFromBelow ?? false;
-                    try { Assembly = await Task.Run(() => PipeAssembler.Run(dwg, risers, alignment, floorLevels, rules, trustUp: trustUp)); }
-                    catch (Exception ex) { msg.AppendLine($"Merging the floors failed: {ex.Message}"); App.Log("AutoRun plumbing assembly failed: " + ex); }
-                    if (Assembly != null && _resolveFixtureSleeves != null && !Sprinkler)
-                    {
-                        try { foreach (var line in _resolveFixtureSleeves(Assembly)) msg.AppendLine("  " + line); }
-                        catch (Exception ex) { msg.AppendLine("  ! Fixture connector lookup failed; fixture sleeves remain review: " + ex.Message); App.Log("AutoRun fixture connector lookup failed: " + ex); }
-                    }
-                    if (Assembly != null && plans != null) MarkPdfOnly(Assembly, plans);
+                    await AssemblePipesAsync(msg);
                     if (Sprinkler)
                         msg.AppendLine("  Sprinkler: pipe sizes are read from the labels (3\" SPRINKLER RISER, 4\" FDC); sleeve = pipe + " +
                                        $"{Units.FormatInches(_plumbing.SleeveOverPipe)} (rules.json sprinkler). Risers inside the trash chute get no sleeve.");
@@ -835,6 +869,7 @@ namespace SleevesOpenings.Automation.UI
             {
                 UseWaitCursor = false;
                 _check.Enabled = true;
+                _checking = false;
                 _status.Text = "";
             }
             _fullMessages = msg.ToString().TrimEnd();
@@ -1002,14 +1037,17 @@ namespace SleevesOpenings.Automation.UI
 
         private void FillFloors(PdfSheetIndex pdf, DwgSheetIndex dwg)
         {
+            _filling = true;
             _floors.Rows.Clear();
             var keys = (pdf?.FloorPlans.Select(s => s.Floor) ?? Enumerable.Empty<string>())
                 .Concat(dwg?.Floors.Select(f => f.Floor) ?? Enumerable.Empty<string>()).Distinct();
+            var skip = new HashSet<string>(_inputs.SkipFloors ?? new List<string>());
             foreach (var m in FloorMatcher.Run(keys, _levels, _inputs))
             {
                 var page = pdf?.FloorPlans.FirstOrDefault(s => s.Floor == m.Floor);
                 var sheet = dwg?.Floors.FirstOrDefault(f => f.Floor == m.Floor);
                 int i = _floors.Rows.Add(
+                    !skip.Contains(m.Floor),
                     FloorKey.Describe(m.Floor),
                     page == null ? "—" : $"p{page.Page} {page.SheetNumber}",
                     sheet == null ? "—" : sheet.Layout ?? "model space",
@@ -1019,6 +1057,111 @@ namespace SleevesOpenings.Automation.UI
                 if (m.Level == null && m.How != "not used") _floors.Rows[i].DefaultCellStyle.BackColor = Color.MistyRose;
                 else if (m.NeedsCheck) _floors.Rows[i].DefaultCellStyle.BackColor = Color.LightYellow;
             }
+            _filling = false;
+            ShowTicked();
+        }
+
+        /// <summary>The drawing floors ticked to place on (FloorKey).</summary>
+        private HashSet<string> TickedFloors() =>
+            new HashSet<string>(_floors.Rows.Cast<DataGridViewRow>().Where(r => r.Cells["Place"].Value as bool? == true)
+                                           .Select(r => (string)r.Cells["Key"].Value).Where(k => k != null));
+
+        /// <summary>The Revit levels of the ticked floors; null when every floor is ticked (nothing left out).</summary>
+        private List<string> TickedLevels()
+        {
+            var ticked = TickedFloors();
+            if (ticked.Count == _floors.Rows.Count) return null;
+            return FloorLevels().Where(kv => ticked.Contains(kv.Key)).Select(kv => kv.Value).Distinct().ToList();
+        }
+
+        private void TickAll(bool on)
+        {
+            _floors.EndEdit();
+            _filling = true;
+            foreach (DataGridViewRow row in _floors.Rows) row.Cells["Place"].Value = on;
+            _filling = false;
+            FloorsTicked();
+        }
+
+        private void ShowTicked()
+        {
+            int n = TickedFloors().Count, all = _floors.Rows.Count;
+            _floorsTicked.Text = all == 0 ? "" : n == all ? $"Placing on every floor ({all})." : $"Placing on {n} of {all} floors: the others are read for the risers only.";
+            _floorsTicked.ForeColor = n == 0 && all > 0 ? Color.DarkRed : SystemColors.ControlText;
+        }
+
+        /// <summary>A tick changed: a floor ticked that the fixture step did not read is read once the ticks settle.</summary>
+        private void FloorsTicked()
+        {
+            ShowTicked();
+            if (FixturesStale()) { _tickTimer.Stop(); _tickTimer.Start(); }
+        }
+
+        /// <summary>A ticked floor's architect's DWG was not read by the fixture step (plumbing only).</summary>
+        private bool FixturesStale() =>
+            Plumbing && !Sprinkler && _resolveFixtureSleeves != null && Assembly != null && _fixturesRead != null &&
+            TickedFloors().Any(k => !_fixturesRead.Contains(k));
+
+        /// <summary>
+        /// Plumbing: the pipe groups merged into slab crossings, then the fixture labels settled against the model. The
+        /// architect's DWG is read on the ticked floors only (the PDF's risers on every floor).
+        /// </summary>
+        private async Task AssemblePipesAsync(StringBuilder msg)
+        {
+            _status.Text = "Merging the floors (pipe groups)…";
+            var dwg = Dwg; var risers = Risers; var plans = PdfPlans;
+            var floorLevels = FloorLevels(); var alignment = Alignment; var rules = _plumbing;
+            bool trustUp = _automation.Decisions?.TrustUpFromBelow ?? false;
+            Assembly = null;
+            try { Assembly = await Task.Run(() => PipeAssembler.Run(dwg, risers, alignment, floorLevels, rules, trustUp: trustUp)); }
+            catch (Exception ex) { msg.AppendLine($"Merging the floors failed: {ex.Message}"); App.Log("AutoRun plumbing assembly failed: " + ex); }
+            if (Assembly != null && _resolveFixtureSleeves != null && !Sprinkler)
+            {
+                var only = TickedLevels();
+                _fixturesRead = only == null ? null : TickedFloors();
+                if (only != null)
+                {
+                    _status.Text = "Reading the fixtures of the ticked floors…";
+                    msg.AppendLine($"  Fixtures: the architect's DWG read on the ticked floors only ({string.Join(", ", only)}).");
+                }
+                try { foreach (var line in _resolveFixtureSleeves(Assembly, only)) msg.AppendLine("  " + line); }
+                catch (Exception ex) { msg.AppendLine("  ! Fixture connector lookup failed; fixture sleeves remain review: " + ex.Message); App.Log("AutoRun fixture connector lookup failed: " + ex); }
+            }
+            if (Assembly != null && plans != null) MarkPdfOnly(Assembly, plans);
+        }
+
+        /// <summary>
+        /// Floors ticked after the check: the openings merged again and the fixtures read on the floors ticked now (the
+        /// fixture step changes the openings in place, so it is not run twice on one merge). Plumbing only; the drawings
+        /// already read are reused.
+        /// </summary>
+        private async Task RebuildForFloorsAsync()
+        {
+            if (_checking || _rebuilding || !FixturesStale() || Dwg == null || Risers == null || Alignment == null) return;
+            _rebuilding = true;
+            _check.Enabled = _ok.Enabled = false;
+            UseWaitCursor = true;
+            var msg = new StringBuilder();
+            try
+            {
+                msg.AppendLine("Floors ticked since the check: the floors merged again and the fixtures read on the floors ticked now.");
+                await AssemblePipesAsync(msg);
+                if (Assembly != null && SoSet != null)
+                    try { var set = SoSet; var assembly = Assembly; var size = _openingSize; var cfg = _automation.ReferenceSet; SoCompare = await Task.Run(() => SoSetCompare.Run(set, assembly, size, cfg)); }
+                    catch (Exception ex) { App.Log("AutoRun S&O set compare failed: " + ex); SoCompare = null; }
+                FillOpenings(msg);
+                FillSoSet(msg);
+            }
+            finally
+            {
+                _rebuilding = false;
+                UseWaitCursor = false;
+                _check.Enabled = true;
+                _status.Text = "";
+                _ok.Enabled = (Pdf != null || Dwg != null) && _floors.Rows.Count > 0;
+            }
+            _fullMessages = (_fullMessages + Environment.NewLine + Environment.NewLine + msg.ToString()).Trim();
+            ApplyView();
         }
 
         /// <summary>Every tag the PDF defines (plus the office tags) and what it means for placement; openings first.</summary>
@@ -1312,6 +1455,18 @@ namespace SleevesOpenings.Automation.UI
                 MessageBox.Show(this, "No drawing floor is matched to a Revit level.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return false;
             }
+
+            // the floors to place on, remembered by the floors left out (a floor new to the drawings comes in ticked)
+            var ticked = TickedFloors();
+            if (!ticked.Any(k => FloorLevels().ContainsKey(k)))
+            {
+                MessageBox.Show(this, "No floor is ticked to place on (Floors tab, Place column).", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+            var keys = _floors.Rows.Cast<DataGridViewRow>().Select(r => (string)r.Cells["Key"].Value).Where(k => k != null).ToList();
+            _inputs.SkipFloors = (_inputs.SkipFloors ?? new List<string>()).Where(k => !keys.Contains(k))      // floors not in these drawings: kept as they were
+                                 .Concat(keys.Where(k => !ticked.Contains(k))).Distinct().ToList();
+            PlaceFloors = ticked.Count == keys.Count ? null : ticked;
 
             // A level changed in the grid after the check: the check marks go on the level chosen now.
             if (Alignment != null)

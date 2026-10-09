@@ -58,7 +58,8 @@ namespace SleevesOpenings.Automation
     {
         private const int Mechanical = 4;       // BuiltInParameter.VIEW_DISCIPLINE value
 
-        public static SleeveViewResult Ensure(Document doc, RuleSet rules, LevelMap levels, SleeveViewRules cfg)
+        /// <param name="onlyLevels">Auto Run's chosen floors (Revit level names): the other levels' views are left as they are; null = all.</param>
+        public static SleeveViewResult Ensure(Document doc, RuleSet rules, LevelMap levels, SleeveViewRules cfg, ICollection<string> onlyLevels = null)
         {
             cfg = cfg ?? new SleeveViewRules();
             var result = new SleeveViewResult();
@@ -69,7 +70,8 @@ namespace SleevesOpenings.Automation
             using (var t = new Transaction(doc, "Sleeves & Openings: sleeve views"))
             {
                 t.Start();
-                foreach (var cl in levels.All.Where(l => byLevel.ContainsKey(l.Level.Id)))
+                foreach (var cl in levels.All.Where(l => byLevel.ContainsKey(l.Level.Id) &&
+                                                         (onlyLevels == null || onlyLevels.Any(n => AutoPlacer.SameFloor(n, l.Level.Name)))))
                 {
                     var level = cl.Level;
                     string name = level.Name + cfg.NameSuffix;

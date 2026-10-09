@@ -75,20 +75,34 @@ namespace SleevesOpenings.Sheets
         /// End of Auto Run in the PL / FP model (rules.json soSheets.afterAutoRun): sheets completed with the saved notes,
         /// then the PDF (pdfAfterAutoRun). Returns the lines for the Auto Run summary; null when it is off.
         /// </summary>
-        public static string AfterAutoRun(Document doc, RuleSet rules, LevelMap levels, ProjectState state)
+        /// <param name="onlyLevels">Auto Run's chosen floors (Revit level names): only their sheets are made or completed and
+        /// named in the summary; the PDF is still the whole set (the other floors' sheets as they are). Null = all.</param>
+        public static string AfterAutoRun(Document doc, RuleSet rules, LevelMap levels, ProjectState state, ICollection<string> onlyLevels = null)
         {
             var cfg = SoProjectSettings.Apply(rules.SoSheets, state.SoSettings);
             if (!cfg.Enabled || !cfg.AfterAutoRun) return null;
             var plan = SoSheets.Plan(doc, rules, cfg, levels);
             var seedProblems = new List<string>();
             plan = SoTemplates.Seed(doc, rules, cfg, levels, plan, seedProblems);
+            var others = new List<ElementId>();
+            if (onlyLevels != null)
+            {
+                bool Chosen(string level) => onlyLevels.Any(l => Automation.AutoPlacer.SameFloor(l, level));
+                var otherNames = levels.All.Select(l => l.Level.Name).Where(n => !Chosen(n)).ToList();
+                bool Other(string problem) => otherNames.Any(n => problem.IndexOf(n, StringComparison.OrdinalIgnoreCase) >= 0);
+                others = plan.Floors.Where(f => !Chosen(f.Level.Level.Name) && f.Sheet != null).Select(f => f.Sheet.Id).ToList();
+                plan.Floors = plan.Floors.Where(f => Chosen(f.Level.Level.Name)).ToList();
+                plan.Problems.RemoveAll(Other);
+                seedProblems.RemoveAll(Other);
+            }
             if (plan.Pattern == null) return "S&O sheets not made: " + string.Join("; ", seedProblems.Concat(plan.Problems));
             var result = SoSheets.Apply(doc, cfg, plan, state.SoNotes);
             result.Problems.InsertRange(0, seedProblems);
             if (cfg.PdfAfterAutoRun && result.SheetIds.Count > 0)
             {
                 string folder = state.SoPdfFolder ?? DefaultFolder(doc, cfg, state);
-                try { result.Pdf = SoSheets.ExportPdf(doc, cfg, Ordered(doc, result), folder, SoSheets.PdfName(cfg, plan.ProjectName)); }
+                var set = Ordered(doc, result.SheetIds.Concat(others).Distinct());
+                try { result.Pdf = SoSheets.ExportPdf(doc, cfg, set, folder, SoSheets.PdfName(cfg, plan.ProjectName)); }
                 catch (Exception ex) { result.Problems.Add("PDF not printed: " + ex.Message); App.Log("AutoRun: S&O PDF failed: " + ex); }
             }
             App.Log("AutoRun: S&O set: " + result.Summary().Replace("\n", "; "));
@@ -101,8 +115,10 @@ namespace SleevesOpenings.Sheets
             ?? (!string.IsNullOrEmpty(doc.PathName) && Path.IsPathRooted(doc.PathName) ? Path.GetDirectoryName(doc.PathName) : null)
             ?? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
 
-        private static System.Collections.Generic.List<ElementId> Ordered(Document doc, SoSetResult result) =>
-            result.SheetIds.Select(id => doc.GetElement(id) as ViewSheet).Where(s => s != null)
+        private static System.Collections.Generic.List<ElementId> Ordered(Document doc, SoSetResult result) => Ordered(doc, result.SheetIds);
+
+        private static System.Collections.Generic.List<ElementId> Ordered(Document doc, IEnumerable<ElementId> ids) =>
+            ids.Select(id => doc.GetElement(id) as ViewSheet).Where(s => s != null)
                   .OrderBy(s => s.SheetNumber, StringComparer.OrdinalIgnoreCase).Select(s => s.Id).ToList();
     }
 }

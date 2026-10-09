@@ -18,12 +18,16 @@ namespace SleevesOpenings.Automation
     ///    connector, else its shape (toilet 1'-1" from its back, sink in the wall behind it, tub at its piped end); the
     ///    fixture drawn on the plan is used instead when it sits on the modelled one and the model has no connector;
     /// 2b. no Revit fixture, but the architect's DWG in the model draws it (plumbing.dwgFixtures) -> its drawing's drain spot;
-    /// 3. no sleeve, no Revit fixture, no DWG drawing (plumbing.fixtureGaps "place") -> the same fixture's sleeve on the floor
-    ///    above/below at that spot, else the fixture drawn on the plan, else review; flagged for a check
-    ///    ("report" = a model/PDF gap, reported and not placed);
-    /// 4. a matched fixture whose shape gives no spot -> the fixture as drawn on the PDF, else review, grouped by stack;
-    /// 5. a Revit fixture no plan label names (plumbing.modelFixtures) -> its sleeve from the model all the same,
-    ///    flagged for a check; a floor whose modelled fixtures mostly disagree with the plan is reported once as out of sync.
+    /// 3. no sleeve, no Revit fixture, no DWG drawing: the model decides. On a floor where the model has fixtures (Revit
+    ///    families or the architect's DWG) -> a model/PDF gap, reported and not placed. Only on a floor with no fixtures in
+    ///    the model at all, plumbing.fixtureGaps "place" -> the same fixture's sleeve on the floor above/below at that spot,
+    ///    else the fixture drawn on the plan, else review; flagged for a check ("report" = reported, not placed);
+    /// 4. a matched fixture whose shape gives no spot -> the fixture as drawn on the PDF, else the fixture's insertion
+    ///    point, flagged;
+    /// 5. a fixture in the model no plan label names, or one the label disagrees with (plumbing.modelFixtures): Revit
+    ///    families and the architect's DWG fixtures (Extract Fixtures' reading) -> its sleeve from the model all the same,
+    ///    flagged for a check; no spot -> its insertion point. A floor whose modelled fixtures mostly disagree with the plan
+    ///    is reported once as out of sync.
     /// Plan text is deliberately used only to select nearby elements; it is never used as the sleeve centre.
     /// </summary>
     public static class FixtureSleeveLocator
@@ -75,7 +79,8 @@ namespace SleevesOpenings.Automation
         }
 
         /// <summary>Resolve fixture-review crossings in place. Returns reader-friendly results for the check summary.</summary>
-        public static List<string> Apply(Document host, RiserAssembly assembly, PlumbingRules rules, ExistingReport existing = null)
+        /// <param name="onlyLevels">Auto Run's chosen floors (Revit level names): the architect's DWG is read on those only; null = all.</param>
+        public static List<string> Apply(Document host, RiserAssembly assembly, PlumbingRules rules, ExistingReport existing = null, ICollection<string> onlyLevels = null)
         {
             var messages = new List<string>();
             if (host == null || assembly == null || rules == null ||
@@ -116,7 +121,15 @@ namespace SleevesOpenings.Automation
                 if (points == null)
                 {
                     if (c.DrawnDrain != null) { FromDrawing(c, $"matched Revit fixture '{m.F.Name}' ({m.F.Source}): {how}"); drawn++; }
-                    else { noSpot++; c.Notes.Add($"matched Revit fixture '{m.F.Name}' ({m.F.Source}), {away}: {how}; review required"); }
+                    else
+                    {
+                        // the fixture is in the model: it gets its sleeve, at the fixture itself, flagged
+                        SetPoints(c, new List<XYZ> { Flat(m.F.Point) });
+                        c.Status = Crossing.Place; c.Confidence = "low"; c.FromModel = true; c.Check = true;
+                        c.Notes.RemoveAll(n => n.Contains("position is the engineer's fixture text"));
+                        c.Notes.Add($"matched Revit fixture '{m.F.Name}' ({m.F.Source}), {away}: {how}; placed at the fixture's insertion point: check and move it to the drain");
+                        noSpot++;
+                    }
                     continue;
                 }
                 // the fixture drawn on the plan is laid out by the manual: better than the model's shape when both are at one spot
@@ -143,11 +156,17 @@ namespace SleevesOpenings.Automation
             int fromDwg = 0;
             if (rules.DwgFixtures && (gaps.Count > 0 || rules.ModelFixtures))
             {
-                try { fromDwg = FromDwg(DwgFixtureReader.Read(host, rules), gaps, labels, rules, dwgShapes, dwgLevels, messages); }
+                try { fromDwg = FromDwg(DwgFixtureReader.Read(host, rules, onlyLevels: onlyLevels), gaps, labels, rules, dwgShapes, dwgLevels, messages); }
                 catch (Exception ex) { App.Log("AutoRun DWG fixtures failed: " + ex); messages.Add("Fixtures in the architect's DWGs not read: " + ex.Message); }
             }
 
-            // step 3: no Revit fixture and no DWG drawing for the label
+            // step 3: no Revit fixture and no DWG drawing for the label. The model decides: on a floor where the model has
+            // fixtures (Revit families or the architect's DWG), a label it has nothing for is a model/PDF mismatch, reported
+            // and not placed. Only a floor with no fixtures in the model at all (nothing to compare with) follows fixtureGaps.
+            var modelFloors = fixtures.Where(f => f.Level != null && Classify(f.Name, rules) != null).Select(f => f.Level).Concat(dwgLevels)
+                                      .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var mismatch = gaps.Where(c => modelFloors.Any(l => AutoPlacer.SameFloor(l, c.Level))).ToList();
+            gaps.RemoveAll(mismatch.Contains);
             int stacked = 0, fromPdf = 0, textOnly = 0;
             if (string.Equals(rules.FixtureGaps, "place", StringComparison.OrdinalIgnoreCase))
             {
@@ -155,6 +174,7 @@ namespace SleevesOpenings.Automation
                 gaps.Clear();
                 drawn += fromPdf;
             }
+            gaps.AddRange(mismatch);
             int duplicates = Duplicates(labels.Where(c => c.Status == Crossing.Place && c.ExistingIds.Count == 0).ToList(), assembly);
             int served = Served(labels.Where(c => c.Status == Crossing.Place && c.ExistingIds.Count == 0).ToList(), assembly, rules);
 
@@ -169,7 +189,8 @@ namespace SleevesOpenings.Automation
                          $"({served} served by a sleeve already there, {duplicates} on another label's sleeve)" +
                          (moved > 0 ? $"; {moved} modelled more than {MatchRadiusFeet:0} ft from the plan (model position used, flagged for a check)" : "") +
                          (gaps.Count > 0 ? $"; {gaps.Count} on the plans but not in the model (reported as model/PDF gaps, not placed)" : "") +
-                         $"; {left.Count} left for review in {stacks} stack(s) ({textOnly} not in the architect's DWG or with only the label text, {noSpot} with no usable spot on the modelled fixture).");
+                         (noSpot > 0 ? $"; {noSpot} at the modelled fixture's insertion point (no drain spot on it: check)" : "") +
+                         $"; {left.Count} left for review in {stacks} stack(s) ({textOnly} not in the architect's DWG or with only the label text).");
             if (rules.ModelFixtures)
                 messages.Add(ModelOnly(fixtures.Where(f => !used.Contains(f)).ToList(), dwgShapes, assembly, rules, existing));
             foreach (var level in outOfSync)
@@ -327,8 +348,8 @@ namespace SleevesOpenings.Automation
 
         /// <summary>
         /// Step 2b from the DWG's named blocks (<see cref="DwgFixtureCatalog"/>), plus tubs and showers drawn line by line
-        /// (by shape). Each plan label takes the nearest fixture of its kind within <see cref="DwgSearchInches"/>, nearest
-        /// pairs first; a label with no Revit fixture takes that fixture's sleeve point(s). The fixtures no label takes go to
+        /// (by shape). Each plan label takes the nearest fixture of its kind within <see cref="MatchRadiusFeet"/> (beyond
+        /// <see cref="DwgSearchInches"/> flagged), nearest pairs first; a label with no Revit fixture takes that fixture's sleeve point(s). The fixtures no label takes go to
         /// <paramref name="shapes"/> (step 5: placed and flagged). Returns how many labels were placed.
         /// </summary>
         private static int FromBlocks(DwgFixtureReader.Plan plan, DwgFixtureCatalog.Result cat, List<Crossing> gaps, List<Crossing> labels, PlumbingRules rules,
@@ -346,28 +367,33 @@ namespace SleevesOpenings.Automation
             double Gap(FixtureDrains.Shape s, double x, double y) =>
                 Math.Sqrt(Math.Pow(Math.Max(Math.Max(s.X0 - x, 0), x - s.X1), 2) + Math.Pow(Math.Max(Math.Max(s.Y0 - y, 0), y - s.Y1), 2));
             var here = labels.Where(c => c.HasPosition && AutoPlacer.SameFloor(plan.Level, c.Level)).ToList();
+            // nearest pairs first; a label with no fixture yet takes one further than DwgSearchInches (up to MatchRadiusFeet):
+            // the model is what gets built, the plan looks out of date there (flagged). A label already settled (a sleeve
+            // there, a Revit fixture) claims only the drawing right at it: a fixture further off keeps its own sleeve.
             var pairs = (from c in here
                          from s in fixtures
                          where SameKind(c.Tag, s.Code)
                          let d = Gap(s, c.X * 12, c.Y * 12)
-                         where d <= DwgSearchInches
+                         where d <= (gaps.Contains(c) ? MatchRadiusFeet * 12 : DwgSearchInches)
                          orderby d
-                         select (C: c, S: s)).ToList();
+                         select (C: c, S: s, D: d)).ToList();
             var claimed = new HashSet<FixtureDrains.Shape>();
             var done = new HashSet<Crossing>();
             int n = 0;
-            foreach (var (c, s) in pairs)
+            foreach (var (c, s, d) in pairs)
             {
                 if (done.Contains(c) || claimed.Contains(s)) continue;
                 done.Add(c); claimed.Add(s);
                 if (!gaps.Contains(c)) continue;                     // already sleeved or a Revit fixture: the drawing only claims it
+                bool far = d > DwgSearchInches;
                 SetPoints(c, s.Points.Select(p => new XYZ(p.X / 12, p.Y / 12, 0)).ToList());
                 c.Status = Crossing.Place;
-                c.Confidence = s.How.StartsWith("block") ? "high" : "medium";
+                c.Confidence = s.How.StartsWith("block") && !far ? "high" : "medium";
                 c.FromModel = true;
-                c.Check = !s.How.StartsWith("block") || s.How.Contains("(check)");
+                c.Check = !s.How.StartsWith("block") || s.How.Contains("(check)") || far;
                 c.Notes.RemoveAll(t => t.Contains("position is the engineer's fixture text"));
-                c.Notes.Add($"position from the {s.Code} in the architect's DWG in the model ({plan.Source}): {s.How}");
+                c.Notes.Add($"position from the {s.Code} in the architect's DWG in the model ({plan.Source}): {s.How}" +
+                            (far ? $"; {d / 12:0.#} ft from where the plan shows it (the plan looks out of date here: model position used)" : ""));
                 gaps.Remove(c);
                 n++;
             }
@@ -437,10 +463,12 @@ namespace SleevesOpenings.Automation
                 c.Notes.Add($"{sleeve.Name}: in the model but not labelled on the plan");
                 if (points == null)
                 {
-                    c.X = at.X; c.Y = at.Y;
-                    c.Status = Crossing.Review; c.Confidence = "low";
-                    c.Notes.Add($"{how}; review required");
+                    // every fixture in the model gets its sleeve: no spot from its connectors or shape = at the fixture itself
+                    SetPoints(c, new List<XYZ> { Flat(at) });
+                    c.Status = Crossing.Place; c.Confidence = "low";
+                    c.Notes.Add($"{how}; placed at the fixture's insertion point: check and move it to the drain");
                     review++;
+                    placed++;
                 }
                 else
                 {
@@ -455,7 +483,7 @@ namespace SleevesOpenings.Automation
             }
             int served = Served(made.Where(c => c.Status == Crossing.Place).ToList(), assembly, rules);
             return $"Fixtures not on the plans: {placed - served} sleeve(s) placed ({fromDwg} of the {placed} found by shape in the architect's DWG; flagged for a check), {served} served by a sleeve next to them, " +
-                   $"{already} already sleeved, {duplicate} on another fixture's sleeve, {review} for review (no usable spot)" +
+                   $"{already} already sleeved, {duplicate} on another fixture's sleeve, {review} of them at the fixture's insertion point (no drain spot: check)" +
                    (lowest > 0 ? $", {lowest} on the lowest level (slab on grade)" : "") +
                    (noFloor > 0 ? $", {noFloor} on levels the run does not cover" : "") + ".";
         }
@@ -616,10 +644,11 @@ namespace SleevesOpenings.Automation
                 {
                     Floor = c.Floor, Tag = c.Tag, Level = c.Level, Type = AssemblyIssue.ModelGap,
                     X = c.HasPosition ? c.X : (double?)null, Y = c.HasPosition ? c.Y : (double?)null,
-                    Detail = $"{c.Tag} is on the {FloorKey.Describe(c.Floor)} plan but not in the model: no sleeve and no Revit fixture within {MismatchRadiusFeet:0} ft" +
+                    Detail = $"{c.Tag} is on the {FloorKey.Describe(c.Floor)} plan but not in the model: no sleeve, no Revit fixture within {MismatchRadiusFeet:0} ft " +
+                             $"and no {c.Tag} in the architect's DWG within {MatchRadiusFeet:0} ft" +
                              (c.DrawnDrain != null ? $" (the plan draws it: {c.DrawnDrain})" : "") +
                              (floors > 0 ? $"; the same gap on {floors} other floor(s) at this spot" : "") +
-                             ". Not placed: add the fixture to the model or place the sleeve by hand."
+                             ". Not placed (the model decides): add the fixture to the model or place the sleeve by hand."
                 });
             }
             assembly.Crossings.RemoveAll(gaps.Contains);
