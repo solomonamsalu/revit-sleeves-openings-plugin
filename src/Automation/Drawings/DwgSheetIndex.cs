@@ -54,13 +54,15 @@ namespace SleevesOpenings.Automation.Drawings
                 var paper = layout.AssociatedBlock?.Entities?.ToList();
                 if (paper == null) continue;
 
-                var floors = Texts(paper, 0).Select(Clean).Select(t => (Text: t, Floor: FloorKey.FromPlanTitle(t)))
-                                            .Where(t => t.Floor != null).ToList();
-                var distinct = floors.Select(f => f.Floor).Distinct().ToList();
+                // One title may cover several floors (the typical floors drawn once); two different titles are a
+                // sheet with several plans, which is not read.
+                var floors = Texts(paper, 0).Select(Clean).Select(t => (Text: t, Floors: FloorKey.PlanFloors(t)))
+                                            .Where(t => t.Floors.Count > 0).ToList();
+                var distinct = floors.Select(t => string.Join(",", t.Floors)).Distinct().ToList();
                 if (distinct.Count != 1) continue;          // no plan, or a sheet with several plans (handled later if needed)
 
                 var vp = PlanViewport(paper);
-                var f = new DwgFloor { Floor = distinct[0], Title = floors[0].Text, Layout = layout.Name };
+                var f = new DwgFloor { Floor = floors[0].Floors[0], Title = floors[0].Text, Layout = layout.Name };
                 if (vp != null)
                 {
                     // ViewCenter is in display coordinates around the view target; in a plan view (looking down Z)
@@ -79,6 +81,13 @@ namespace SleevesOpenings.Automation.Drawings
                 }
                 else index.Warnings.Add($"{layout.Name}: {f.Title} has no scaled viewport; its model-space region is unknown.");
                 index.Floors.Add(f);
+                // the typical floors share this one drawing: each gets its own entry over the same region
+                foreach (var also in floors[0].Floors.Skip(1))
+                    index.Floors.Add(new DwgFloor
+                    {
+                        Floor = also, Title = f.Title, Layout = f.Layout, Scale = f.Scale,
+                        MinX = f.MinX, MinY = f.MinY, MaxX = f.MaxX, MaxY = f.MaxY
+                    });
             }
 
             if (index.Floors.Count == 0) ModelSpaceFallback(doc, index);

@@ -94,7 +94,11 @@ namespace SleevesOpenings.Automation.Drawings
                         ? $"PDF only: {scanned} of {pdf.NumberOfPages} page(s) are scanned images and no floor plan title was found; PDF-only mode needs a vector PDF plotted from CAD."
                         : "PDF only: no floor plan title (e.g. \"5TH FLOOR PLAN\") was found on any page.");
                 }
-                foreach (var sheet in sheets.FloorPlans.GroupBy(s => s.Floor).Select(g => g.First()))
+                // A page drawn once for several typical floors ("2ND TO 7TH FLOOR PLAN") is read again as each of
+                // them, so every floor gets its own plan, columns and risers; a floor drawn twice is read once.
+                foreach (var sheet in sheets.FloorPlans.SelectMany(s => s.Floors.Select(s.ForFloor))
+                                            .GroupBy(s => s.Floor).Select(g => g.First())
+                                            .OrderBy(s => FloorKey.Order(s.Floor)))
                 {
                     var page = pdf.GetPage(sheet.Page);
                     var plan = new PdfPlan { Floor = sheet.Floor, Page = sheet.Page };
@@ -803,7 +807,8 @@ namespace SleevesOpenings.Automation.Drawings
                 found.Add((real / paper, m.Value.Trim(), l));
             }
             if (found.Count == 0) return (fallback, null);
-            var titles = lines.Where(l => FloorKey.FromPlanTitle(l.Text) == sheet.Floor && Regex.IsMatch(l.Text, @"\bPLAN\b", RegexOptions.IgnoreCase)).ToList();
+            // the scale is printed under the plan's title; a typical-floors title ("2ND TO 7TH FLOOR PLAN") names this floor among others
+            var titles = lines.Where(l => FloorKey.PlanFloors(l.Text).Contains(sheet.Floor) && Regex.IsMatch(l.Text, @"\bPLAN\b", RegexOptions.IgnoreCase)).ToList();
             if (titles.Count > 0)
             {
                 var title = titles.OrderByDescending(t => t.Size).First();
