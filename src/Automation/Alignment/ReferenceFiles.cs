@@ -37,11 +37,9 @@ namespace SleevesOpenings.Automation.Alignment
             var list = new List<ReferenceDrawing>();
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)) return list;
             foreach (var file in Directory.EnumerateFiles(folder, "*.dwg").OrderBy(f => f))
-            {
-                var floor = FloorOf(file);
-                if (floor != null)
+                // "03.3 TH TO 7 TH FLOOR.dwg": one typical xref for each floor of its range
+                foreach (var floor in FloorKey.FileFloors(file))
                     list.Add(new ReferenceDrawing { Floor = floor, Name = Path.GetFileName(file), Path = file, Method = ReferenceDrawing.XrefFolder });
-            }
             return list;
         }
 

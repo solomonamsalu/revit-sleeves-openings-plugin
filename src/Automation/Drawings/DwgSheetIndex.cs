@@ -17,6 +17,11 @@ namespace SleevesOpenings.Automation.Drawings
         public int Scale;                         // model units per paper unit (48 = 1/4" = 1'-0"), 0 when unknown
         public double MinX, MinY, MaxX, MaxY;     // model-space region of the plan (drawing units); all 0 when unknown
         public bool HasRegion => MaxX > MinX && MaxY > MinY;
+        /// <summary>A typical plan ("2ND THRU 7TH FLOOR PLAN"): every floor it is drawn for; null for a one-floor plan.
+        /// The index holds one DwgFloor per floor of the range, all with the same drawing.</summary>
+        public List<string> Typical;
+        /// <summary>The drawing it was read from: two floors with the same Source are one drawing (a typical plan's copies).</summary>
+        public string Source => $"{Layout}|{Title}|{MinX:0.#},{MinY:0.#}";
     }
 
     public class DwgSheetIndex
@@ -27,6 +32,34 @@ namespace SleevesOpenings.Automation.Drawings
         public List<string> Layouts = new List<string>();
         public List<DwgFloor> Floors = new List<DwgFloor>();
         public List<string> Warnings = new List<string>();
+
+        public DwgFloor For(string floor) => Floors.FirstOrDefault(f => f.Floor == floor);
+
+        /// <summary>
+        /// Both floors come from one typical plan: their agreement is one drawing repeating itself, not two plans
+        /// confirming each other (confidence, alignment votes and check risers count it once).
+        /// </summary>
+        public bool SameDrawing(string a, string b)
+        {
+            if (a == null || b == null || a == b) return false;
+            var fa = For(a); var fb = For(b);
+            return fa?.Typical != null && fb?.Typical != null && fa.Source == fb.Source;
+        }
+
+        /// <summary>"from the typical plan for 2ND–7TH FLOOR (M-301)" for a floor read from one; null otherwise.</summary>
+        public string TypicalNote(string floor)
+        {
+            var f = For(floor);
+            return f?.Typical == null ? null : $"from the typical plan for {FloorKey.DescribeRange(f.Typical)} ({f.Layout ?? f.Title}): the same drawing on each of those floors";
+        }
+
+        /// <summary>One DwgFloor per floor of a typical plan, each a copy of <paramref name="f"/>.</summary>
+        private static IEnumerable<DwgFloor> PerFloor(DwgFloor f, List<string> floors)
+        {
+            if (floors.Count == 1) { f.Floor = floors[0]; yield return f; yield break; }
+            foreach (var key in floors)
+                yield return new DwgFloor { Floor = key, Title = f.Title, Layout = f.Layout, Scale = f.Scale, MinX = f.MinX, MinY = f.MinY, MaxX = f.MaxX, MaxY = f.MaxY, Typical = floors };
+        }
 
         private static readonly Regex MTextCodes = new Regex(@"^(\\?[A-Za-z]\d*(\.\d+)?;)+");
 
@@ -54,13 +87,14 @@ namespace SleevesOpenings.Automation.Drawings
                 var paper = layout.AssociatedBlock?.Entities?.ToList();
                 if (paper == null) continue;
 
-                var floors = Texts(paper, 0).Select(Clean).Select(t => (Text: t, Floor: FloorKey.FromPlanTitle(t)))
-                                            .Where(t => t.Floor != null).ToList();
-                var distinct = floors.Select(f => f.Floor).Distinct().ToList();
+                // one floor, or a typical plan's range ("2ND THRU 7TH FLOOR PLAN")
+                var floors = Texts(paper, 0).Select(Clean).Select(t => (Text: t, Floors: FloorKey.PlanFloors(t)))
+                                            .Where(t => t.Floors.Count > 0).ToList();
+                var distinct = floors.Select(f => string.Join(",", f.Floors)).Distinct().ToList();
                 if (distinct.Count != 1) continue;          // no plan, or a sheet with several plans (handled later if needed)
 
                 var vp = PlanViewport(paper);
-                var f = new DwgFloor { Floor = distinct[0], Title = floors[0].Text, Layout = layout.Name };
+                var f = new DwgFloor { Floor = floors[0].Floors[0], Title = floors[0].Text, Layout = layout.Name };
                 if (vp != null)
                 {
                     // ViewCenter is in display coordinates around the view target; in a plan view (looking down Z)
@@ -78,14 +112,21 @@ namespace SleevesOpenings.Automation.Drawings
                         index.Warnings.Add($"{layout.Name}: the plan viewport is not a top view; its region may be wrong.");
                 }
                 else index.Warnings.Add($"{layout.Name}: {f.Title} has no scaled viewport; its model-space region is unknown.");
-                index.Floors.Add(f);
+                if (floors[0].Floors.Count > 1)
+                    index.Warnings.Add($"{layout.Name} is a typical plan ('{f.Title}'): used for each of {FloorKey.DescribeRange(floors[0].Floors)}.");
+                index.Floors.AddRange(PerFloor(f, floors[0].Floors));
             }
 
             if (index.Floors.Count == 0) ModelSpaceFallback(doc, index);
 
-            foreach (var dup in index.Floors.GroupBy(f => f.Floor).Where(g => g.Count() > 1))
-                index.Warnings.Add($"{FloorKey.Describe(dup.Key)} is on several sheets ({string.Join(", ", dup.Select(f => f.Layout ?? "model"))}); the first is used.");
-            index.Floors = index.Floors.GroupBy(f => f.Floor).Select(g => g.First()).OrderBy(f => FloorKey.Order(f.Floor)).ToList();
+            // a floor drawn on its own sheet wins over the same floor in a typical plan's range; said, as it can be a title
+            // typo (an 8th floor sheet titled 6TH leaves the 8th floor without a plan)
+            foreach (var g in index.Floors.GroupBy(f => f.Floor).Where(g => g.Any(x => x.Typical == null) && g.Any(x => x.Typical != null)))
+                index.Warnings.Add($"{FloorKey.Describe(g.Key)} has its own sheet ({g.First(x => x.Typical == null).Layout ?? "model"}) and is also in the typical plan " +
+                                   $"{g.First(x => x.Typical != null).Layout ?? "model"} ({FloorKey.DescribeRange(g.First(x => x.Typical != null).Typical)}): its own sheet is used. Check that sheet's title.");
+            foreach (var dup in index.Floors.GroupBy(f => f.Floor).Where(g => g.Count(x => x.Typical == null) > 1))
+                index.Warnings.Add($"{FloorKey.Describe(dup.Key)} is on several sheets ({string.Join(", ", dup.Where(x => x.Typical == null).Select(f => f.Layout ?? "model"))}); the first is used.");
+            index.Floors = index.Floors.GroupBy(f => f.Floor).Select(g => g.OrderBy(x => x.Typical == null ? 0 : 1).First()).OrderBy(f => FloorKey.Order(f.Floor)).ToList();
             if (index.Floors.Count == 0) index.Warnings.Add("No floor plans found (no layout title block or model-space title names a single floor).");
             return index;
         }
@@ -106,17 +147,21 @@ namespace SleevesOpenings.Automation.Drawings
             {
                 double tallest = hits.Max(x => x.Height);
                 foreach (var g in hits.Where(x => x.Height >= tallest * 0.5).GroupBy(x => x.Floor))
-                    index.Floors.Add(new DwgFloor { Floor = g.Key, Title = g.First().Text });
+                {
+                    var range = FloorKey.PlanFloors(g.First().Text);
+                    index.Floors.Add(new DwgFloor { Floor = g.Key, Title = g.First().Text, Typical = range.Count > 1 ? range : null });
+                }
                 index.Warnings.Add("Floors found from model-space titles (no sheet layouts); plan regions are unknown.");
                 return;
             }
 
             // Single-floor drawing (a per-floor xref like "05.5-TH FLOOR ME.dwg"): the file name names the floor.
-            var byName = FloorKey.Find(System.IO.Path.GetFileNameWithoutExtension(index.Path).Replace('.', ' ').Replace('-', ' '));
-            if (byName.Count == 1)
+            var byName = FloorKey.FileFloors(index.Path);
+            if (byName.Count > 0)
             {
-                index.Floors.Add(new DwgFloor { Floor = byName[0], Title = System.IO.Path.GetFileName(index.Path) });
-                index.Warnings.Add("Floor taken from the file name; the whole drawing is treated as that floor.");
+                index.Floors.AddRange(PerFloor(new DwgFloor { Title = System.IO.Path.GetFileName(index.Path) }, byName));
+                index.Warnings.Add(byName.Count == 1 ? "Floor taken from the file name; the whole drawing is treated as that floor."
+                                                     : $"Floors taken from the file name: the whole drawing is the typical plan of {FloorKey.DescribeRange(byName)}.");
             }
         }
 
@@ -139,8 +184,7 @@ namespace SleevesOpenings.Automation.Drawings
             {
                 string c = Clean(text);
                 if (c.Length == 0 || Regex.IsMatch(c, @"^[A-Z]{1,2}-\d{3}")) return;   // drawing-index row
-                var fl = FloorKey.FromPlanTitle(c);
-                if (fl != null) hits.Add((fl, c, Math.Abs(height)));
+                foreach (var fl in FloorKey.PlanFloors(c)) hits.Add((fl, c, Math.Abs(height)));
             }
         }
 

@@ -228,7 +228,9 @@ namespace SleevesOpenings.Automation.Alignment
             {
                 var all = result.Floors.Where(f => f.Reference != null).ToList();
                 var regions = all.ToDictionary(f => f, f => index.Floors.First(x => x.Floor == f.Floor));
-                var strong = all.Where(f => f.Shift.Found).Select(f => f.Map.Apply(regions[f].MinX + f.Shift.Dx, regions[f].MinY + f.Shift.Dy)).ToList();
+                // a typical plan's floors are one drawing: one vote
+                var strong = all.Where(f => f.Shift.Found).GroupBy(f => regions[f].Typical != null ? regions[f].Source : f.Floor).Select(g => g.First())
+                                .Select(f => f.Map.Apply(regions[f].MinX + f.Shift.Dx, regions[f].MinY + f.Shift.Dy)).ToList();
                 (double X, double Y)? common = null;
                 const double sameFt = 1.0 / 12;
                 if (strong.Count >= 2)
@@ -378,7 +380,7 @@ namespace SleevesOpenings.Automation.Alignment
             foreach (var c in candidatesAnchors.OrderBy(c => c.Rank).ThenBy(c => c.A.Tag == null ? 1 : 0).ThenBy(c => c.A.Distance))
             {
                 if (result.Anchors.Count >= AlignmentResult.AnchorCount) break;
-                if (result.Anchors.Any(x => x.Tag != null && x.Tag == c.A.Tag) || result.Anchors.Any(x => x.Floor == c.A.Floor)) continue;
+                if (result.Anchors.Any(x => x.Tag != null && x.Tag == c.A.Tag) || result.Anchors.Any(x => x.Floor == c.A.Floor || index.SameDrawing(x.Floor, c.A.Floor))) continue;
                 result.Anchors.Add(c.A);
             }
             foreach (var c in candidatesAnchors.OrderBy(c => c.Rank).ThenBy(c => c.A.Distance))     // fewer than 3 floors: allow repeats, still apart

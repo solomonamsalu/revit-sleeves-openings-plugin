@@ -130,7 +130,7 @@ namespace SleevesOpenings.Automation.Drawings
                     var floorRegion = new DwgFloor
                     {
                         Floor = sheet.Floor, Title = sheet.Title, Layout = $"PDF page {sheet.Page}", Scale = (int)Math.Round(plan.Scale),
-                        MinX = 0, MinY = 0, MaxX = page.Width * k, MaxY = page.Height * k
+                        MinX = 0, MinY = 0, MaxX = page.Width * k, MaxY = page.Height * k, Typical = sheet.Typical
                     };
                     if (plan.Columns.Count == 0)
                         result.Warnings.Add($"{FloorKey.Describe(sheet.Floor)} (page {sheet.Page}): no columns found on the column layers (rules.json pdfOnly.columnLayers).");
@@ -803,7 +803,7 @@ namespace SleevesOpenings.Automation.Drawings
                 found.Add((real / paper, m.Value.Trim(), l));
             }
             if (found.Count == 0) return (fallback, null);
-            var titles = lines.Where(l => FloorKey.FromPlanTitle(l.Text) == sheet.Floor && Regex.IsMatch(l.Text, @"\bPLAN\b", RegexOptions.IgnoreCase)).ToList();
+            var titles = lines.Where(l => (l.Text == sheet.Title || FloorKey.FromPlanTitle(l.Text) == sheet.Floor) && Regex.IsMatch(l.Text, @"\bPLAN\b", RegexOptions.IgnoreCase)).ToList();
             if (titles.Count > 0)
             {
                 var title = titles.OrderByDescending(t => t.Size).First();

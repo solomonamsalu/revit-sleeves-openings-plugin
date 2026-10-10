@@ -194,7 +194,9 @@ namespace SleevesOpenings.Automation.Assembly
                 var fa = alignment?.For(c.Floor);
                 floorLevels.TryGetValue(c.Floor, out c.Level);
                 bool own = c.Plans.Contains(c.Floor), fromBelow = c.Plans.Contains(Below(c.Floor) ?? "");
-                c.Confidence = own && fromBelow ? "high" : "medium";
+                // two floors of one typical plan agree because they are the same drawing: that is not a second plan confirming it
+                c.Confidence = own && fromBelow && !index.SameDrawing(c.Floor, Below(c.Floor)) ? "high" : "medium";
+                if (index.TypicalNote(c.Floor) is string typical && !c.Notes.Contains(typical)) c.Notes.Add(typical);
                 c.Pdf = "not checked";
                 if (!c.Notes.Any(n => n.StartsWith("pipe size")))
                     c.Notes.Add($"pipe size {Units.FormatInches(c.Size.Diameter.Value)} from rules.json (the plans carry no sizes; check the riser diagram)");

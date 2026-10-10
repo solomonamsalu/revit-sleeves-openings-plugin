@@ -131,6 +131,23 @@ The automation replaces those **inputs**. The rule code stays as it is.
 - Paths are saved in the project state (extensible storage) and filled in on the next run.
 - An immediate check shows: pages/sheets found, floor plans matched to levels, legend found, riser diagram found.
   Any drawing floor that doesn't match a level can be matched from a dropdown (the only interactive choice, and only when needed).
+- Floor → level matching (`FloorSequence`): the drawing floors are laid on the levels **in order** (dynamic programming), scored on
+  the floor in the level name, the level's role, the elevation printed on the plan (architect's datum tags, `FloorElevations`;
+  the datum offset is fitted, not assumed) and storey heights (a mezzanine / T.O. slab level between floors is passed over).
+  Two signals that do not depend on names: **what the model holds on each level** (`LevelEvidence`: room/space numbers
+  501, 5A… in the model and its links, used only when they rise floor by floor; linked models' levels at the same height;
+  per-floor xrefs placed on the level; plan views and sheets of the level) and, in PDF-only mode, **columns** (each plan's
+  columns placed once on the model's columns, then scored per level on the columns that level's plan cut passes through,
+  `ColumnAligner.LevelFits`: separates cellar, typical, setback and transfer floors, not identical typical floors).
+- Typical plans ("2ND THRU 7TH FLOOR PLAN", "2ND-7TH", "SECOND THRU SEVENTH"; PDF pages, DWG layouts, model-space titles,
+  xref file names like "03.3 TH TO 7 TH FLOOR.dwg") are read as every floor of the range, one entry per floor on the same
+  page/layout (`FloorKey.PlanFloors`). Lists ("CELLAR AND 1ST") are not expanded (two plans on one sheet) and are reported.
+  A floor with its own sheet wins over the range, with a warning. Copies of one drawing never confirm each other: sleeves
+  confirmed only within the range are medium with a "from the typical plan" note, and alignment votes / check risers count
+  the page once (`DwgSheetIndex.SameDrawing`). A word shared by the plan title and a level name (STAIR, ELEV) picks between
+  levels of the same role.
+  Unnamed typical floors are pinned by the named floors around them. Each row gets a confidence: medium / low rows are
+  yellow, the evidence is in the "Matched by" tooltip. Only floors the user changes are saved.
 
 ### Step 3 – Read the legend (abbreviations)
 - Sources, in order: **ABBREVIATIONS table** → **SYMBOLS list** → **schedules** (rows with TAG + SERVICE / DESCRIPTION) → office list (KX, TX only).

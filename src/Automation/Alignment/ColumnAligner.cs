@@ -118,6 +118,8 @@ namespace SleevesOpenings.Automation.Alignment
             {
                 f.Status = FloorAlignment.NotConfirmed; f.RevitProven = false; f.Notes.Add(why);
             }
+            string PageOf(FloorAlignment f) => f.Reference?.Name ?? f.Floor;
+            int Votes(IEnumerable<FloorAlignment> g) => g.Select(PageOf).Distinct().Count();      // a typical plan's floors are one page, one vote
             var turns = new List<List<FloorAlignment>>();
             foreach (var f in result.Floors.Where(fits.ContainsKey))          // every floor's own best fit votes, confirmed or not
             {
@@ -125,10 +127,10 @@ namespace SleevesOpenings.Automation.Alignment
                 if (g == null) turns.Add(g = new List<FloorAlignment>());
                 g.Add(f);
             }
-            turns = turns.OrderByDescending(g => g.Count).ToList();
+            turns = turns.OrderByDescending(Votes).ToList();
             if (turns.Count > 1)
             {
-                bool clear = turns[0].Count >= 2 * turns[1].Count;
+                bool clear = Votes(turns[0]) >= 2 * Votes(turns[1]);
                 double main = fits[turns[0][0]].Angle * 180 / Math.PI;
                 foreach (var g in turns.Skip(clear ? 1 : 0))
                     foreach (var f in g)
@@ -186,8 +188,9 @@ namespace SleevesOpenings.Automation.Alignment
                 var confirmed = result.Floors.Where(f => f.Status == FloorAlignment.Confirmed && fits.ContainsKey(f)).ToList();
                 bool Same(Fit a, Fit b) => Math.Abs(Angle(a.Angle - b.Angle)) <= Math.PI / 1800 &&
                                            Math.Sqrt(Math.Pow(a.Tx - b.Tx, 2) + Math.Pow(a.Ty - b.Ty, 2)) <= rules.StackTolerance;
-                var frame = confirmed.Select(f => (F: f, N: confirmed.Count(o => Same(fits[o], fits[f])))).OrderByDescending(t => t.N).FirstOrDefault();
-                if (frame.F != null && frame.N >= AlignmentResult.AnchorCount && frame.N * 3 >= confirmed.Count * 2)
+                // counted in pages: a typical plan's floors are one page
+                var frame = confirmed.Select(f => (F: f, N: Votes(confirmed.Where(o => Same(fits[o], fits[f]))))).OrderByDescending(t => t.N).FirstOrDefault();
+                if (frame.F != null && frame.N >= AlignmentResult.AnchorCount && frame.N * 3 >= Votes(confirmed) * 2)
                     foreach (var fa in result.Floors.Where(f => !f.Usable && f.Reference != null && f.Status != FloorAlignment.NotConfirmed))
                     {
                         var nf = fits[frame.F];
@@ -197,7 +200,7 @@ namespace SleevesOpenings.Automation.Alignment
                         fa.Shift = new FloorShift { Support = frame.N, Names = frame.N };
                         fa.Status = FloorAlignment.AgreesWithOthers;
                         fa.RevitProven = frame.F.RevitProven;
-                        fa.Notes.Add($"lined up in the sheet frame {frame.N} of the {confirmed.Count} column-confirmed floors share " +
+                        fa.Notes.Add($"lined up in the sheet frame {frame.N} of the {Votes(confirmed)} column-confirmed pages share " +
                                      $"(their pages land within {rules.StackTolerance:0.#}\" of each other): the engineer plotted every floor the same way");
                     }
             }
@@ -209,11 +212,14 @@ namespace SleevesOpenings.Automation.Alignment
                 fa.StackedTags = Stacked(plans.Risers, fa, below, rules);
             }
 
-            // ---- check marks: one matched column per floor, the closest, on three different floors
+            // ---- check marks: one matched column per floor, the closest, on three different floors (pages: a typical
+            //      plan's floors are one drawing)
+            var marked = new HashSet<string>();
             foreach (var (fa, f) in fits.Where(kv => kv.Key.Status == FloorAlignment.Confirmed).Select(kv => (kv.Key, kv.Value))
                                         .OrderBy(kv => kv.Value.Pairs.Where(p => p.D <= rules.ColumnTolerance).Select(p => p.D).DefaultIfEmpty(99).Min()))
             {
                 if (result.Anchors.Count >= AlignmentResult.AnchorCount) break;
+                if (!marked.Add(PageOf(fa))) continue;
                 var p = f.Pairs.OrderBy(x => x.D).First();
                 var at = f.Apply(p.P.X, p.P.Y);
                 result.Anchors.Add(new AnchorRiser
@@ -238,6 +244,54 @@ namespace SleevesOpenings.Automation.Alignment
             result.Messages.Add(result.RevitProven ? $"Revit position PROVEN: {result.RevitSummary}." : $"Revit position NOT proven: {result.RevitSummary}.");
             result.Messages.Add(result.Passed ? "Result: PASSED." : "Result: NOT PASSED — nothing will be placed.");
             return result;
+        }
+
+        /// <summary>Height above a level where its floor plan cuts the columns (feet).</summary>
+        private const double CutHeight = 4;
+
+        /// <summary>
+        /// For floor matching (FloorSequence): each plan's columns are placed once on all the model's columns (stacked
+        /// columns count once, any size), then scored per level on the columns that level's plan cut passes through:
+        /// 2 × matched / (page columns + level columns). Floors with the same columns fit alike; a cellar, a setback or a
+        /// transfer floor fits its own level clearly better. Floor -> level name -> 0..1; a floor whose columns could not be
+        /// placed is left out.
+        /// </summary>
+        public static Dictionary<string, Dictionary<string, double>> LevelFits(PdfPlanResult plans, RevitColumns revit, PdfOnlyRules rules)
+        {
+            var result = new Dictionary<string, Dictionary<string, double>>();
+            if (plans == null || revit == null || revit.Columns.Count == 0) return result;
+            var all = revit.At(null).Select(c => new ColumnPoint { X = c.X, Y = c.Y, MinZ = c.MinZ, MaxZ = c.MaxZ, Source = c.Source }).ToList();
+            var cuts = revit.Levels.ToDictionary(kv => kv.Key, kv => Standing(revit, kv.Value + CutHeight), StringComparer.OrdinalIgnoreCase);
+
+            var byPage = new Dictionary<int, Dictionary<string, double>>();         // a typical plan's floors share one page: placed once
+            foreach (var plan in plans.Plans)
+            {
+                if (plan.Problem != null || plan.Columns.Count < rules.MinColumns || result.ContainsKey(plan.Floor)) continue;
+                if (byPage.TryGetValue(plan.Page, out var same)) { result[plan.Floor] = same; continue; }
+                var (best, _) = Search(plan.Columns, all, rules);
+                if (best == null) continue;
+                var fits = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in cuts)
+                {
+                    int matched = plan.Columns.Count(p =>
+                    {
+                        var q = best.Apply(p.X, p.Y);
+                        return kv.Value.Any(c => SameShape(p, c, best) && Math.Sqrt(Math.Pow(c.X * 12 - q.X, 2) + Math.Pow(c.Y * 12 - q.Y, 2)) <= rules.SearchTolerance);
+                    });
+                    fits[kv.Key] = kv.Value.Count == 0 ? 0 : 2.0 * matched / (plan.Columns.Count + kv.Value.Count);
+                }
+                result[plan.Floor] = byPage[plan.Page] = fits;
+            }
+            return result;
+        }
+
+        /// <summary>Columns a horizontal plane at <paramref name="z"/> passes through, one per spot.</summary>
+        private static List<ColumnPoint> Standing(RevitColumns revit, double z)
+        {
+            var one = new List<ColumnPoint>();
+            foreach (var c in revit.Columns.Where(c => c.MinZ <= z && c.MaxZ >= z))
+                if (!one.Any(o => Math.Abs(o.X - c.X) < 1.0 / 12 && Math.Abs(o.Y - c.Y) < 1.0 / 12)) one.Add(c);
+            return one;
         }
 
         private static string Ratio(PdfPlan plan) => plan.ScaleText ?? PdfPlanReader.Ratio(plan.Scale);

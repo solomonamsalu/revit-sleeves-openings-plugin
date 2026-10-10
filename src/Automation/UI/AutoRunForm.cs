@@ -50,6 +50,8 @@ namespace SleevesOpenings.Automation.UI
         private readonly PdfOnlyRules _pdfOnly;
         private readonly Func<RiserAssembly, List<string>> _resolveFixtureSleeves;
         private List<ReferenceDrawing> _lastRefs = new List<ReferenceDrawing>();
+        private readonly LevelEvidence.Result _levelHints;             // what the model holds on each level (rooms, links, xrefs, views)
+        private Dictionary<string, Dictionary<string, double>> _columnFits;   // PDF only: each plan's columns against each level's
 
         private bool Plumbing => _plumbing != null;
         /// <summary>Sprinkler / standpipe sleeves (rules.json "sprinkler"): the pipe path, read by <see cref="SprinklerReader"/>.</summary>
@@ -107,8 +109,9 @@ namespace SleevesOpenings.Automation.UI
                            Action<RiserAssembly> layout = null, string discipline = AutomationInputs.Mechanical, PlumbingRules plumbing = null,
                            RevitColumns columns = null, PdfOnlyRules pdfOnly = null, Func<RiserAssembly, List<string>> resolveFixtureSleeves = null,
                            IDictionary<string, PlumbingRules> pipeOptions = null, ModelKindResult model = null, IList<string> allowed = null,
-                           DwgProfile mechanicalProfile = null)
+                           DwgProfile mechanicalProfile = null, LevelEvidence.Result levelHints = null)
         {
+            _levelHints = levelHints ?? new LevelEvidence.Result();
             _pipeOptions = pipeOptions ?? new Dictionary<string, PlumbingRules>();
             _model = model ?? new ModelKindResult { Kind = plumbing == null ? ModelDiscipline.HV : ModelDiscipline.PL, Source = "caller", Reason = "-" };
             _allowed = allowed?.ToList() ?? (plumbing == null ? new List<string> { AutomationInputs.Mechanical } : _pipeOptions.Keys.ToList());
@@ -224,6 +227,7 @@ namespace SleevesOpenings.Automation.UI
             _floors.Columns.Add(lv);
             _floors.Columns.Add(new DataGridViewTextBoxColumn { Name = "How", HeaderText = "Matched by", ReadOnly = true, FillWeight = 50 });
             _floors.Columns.Add(new DataGridViewTextBoxColumn { Name = "Key", Visible = false });
+            _floors.Columns.Add(new DataGridViewTextBoxColumn { Name = "Shown", Visible = false });     // the level as matched, to tell the user's changes
             _floorsPage.Controls.Add(_floors);
 
             _messages = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = SystemColors.Window };
@@ -711,6 +715,16 @@ namespace SleevesOpenings.Automation.UI
                     catch (Exception ex) { msg.AppendLine($"The PDF plans could not be read: {ex.Message}"); App.Log("AutoRun PDF-only read failed: " + ex); }
                 }
 
+                // each plan's columns against the columns standing on each level: evidence for which level a floor is
+                _columnFits = null;
+                if (plans != null && _columns.Columns.Count > 0)
+                {
+                    _status.Text = "Comparing each plan's columns with each level's…";
+                    var p0 = plans; var columns = _columns; var pdfOnly = _pdfOnly;
+                    try { _columnFits = await Task.Run(() => ColumnAligner.LevelFits(p0, columns, pdfOnly)); }
+                    catch (Exception ex) { App.Log("AutoRun column fits failed: " + ex); }
+                }
+
                 msg.Insert(0, $"Model: {_model.Describe()}{Environment.NewLine}");
                 Pdf = pdf; Dwg = dwg; Risers = risers; PdfPlans = plans; Alignment = null; Assembly = null; Diagram = null; SoSet = null; SoCompare = null;
                 Describe(pdf, plans == null ? dwg : null, pdfPath, plans == null ? dwgPath : "-", msg, DisciplineOfSheets(pdf?.Discipline) == _discipline ? pdf.Discipline : Sprinkler ? "SP" : Plumbing ? "P" : "M", DisciplineWord);
@@ -1005,17 +1019,37 @@ namespace SleevesOpenings.Automation.UI
             _floors.Rows.Clear();
             var keys = (pdf?.FloorPlans.Select(s => s.Floor) ?? Enumerable.Empty<string>())
                 .Concat(dwg?.Floors.Select(f => f.Floor) ?? Enumerable.Empty<string>()).Distinct();
-            foreach (var m in FloorMatcher.Run(keys, _levels, _inputs))
+            var evidence = new FloorMatcher.Evidence
             {
+                Printed = pdf?.FloorPlans.Where(s => s.Elevations.Count > 0).GroupBy(s => s.Floor).ToDictionary(g => g.Key, g => g.First().Elevations),
+                ColumnFits = _columnFits,
+                LevelHints = _levelHints.Hints,
+                Titles = (pdf?.FloorPlans.Select(s => (s.Floor, s.Title)) ?? Enumerable.Empty<(string, string)>())
+                         .Concat(dwg?.Floors.Select(f => (f.Floor, f.Title)) ?? Enumerable.Empty<(string, string)>())
+                         .Where(t => t.Item2 != null).GroupBy(t => t.Item1).ToDictionary(g => g.Key, g => string.Join(" ", g.Select(t => t.Item2).Distinct()))
+            };
+            foreach (var kv in evidence.Printed ?? new Dictionary<string, List<double>>())
+                App.Log($"AutoRun: floor match: {kv.Key} plan prints {string.Join(", ", kv.Value.Select(v => v.ToString("0.##") + "'"))}");
+            foreach (var kv in _columnFits ?? new Dictionary<string, Dictionary<string, double>>())
+                App.Log($"AutoRun: floor match: {kv.Key} column fit " + string.Join(", ", kv.Value.Where(v => v.Value > 0).OrderByDescending(v => v.Value).Select(v => $"{v.Key} {v.Value:0.00}")));
+            foreach (var m in FloorMatcher.Run(keys, _levels, _inputs, evidence))
+            {
+                App.Log($"AutoRun: floor match: {m.Floor} -> {m.Level?.Name ?? "-"} by {m.How ?? "nothing"}, {m.Confidence}: {m.Why.Replace("\n", "; ")}");
                 var page = pdf?.FloorPlans.FirstOrDefault(s => s.Floor == m.Floor);
                 var sheet = dwg?.Floors.FirstOrDefault(f => f.Floor == m.Floor);
+                string level = m.Level?.Name ?? AutomationInputs.NotUsed;
+                string how = m.How == null ? "not matched"
+                           : m.Level != null && m.Confidence != FloorSequence.Confidence.High ? $"{m.How} — {m.Confidence.ToString().ToLowerInvariant()} confidence"
+                           : m.How;
                 int i = _floors.Rows.Add(
                     FloorKey.Describe(m.Floor),
-                    page == null ? "—" : $"p{page.Page} {page.SheetNumber}",
-                    sheet == null ? "—" : sheet.Layout ?? "model space",
-                    m.Level?.Name ?? AutomationInputs.NotUsed,
-                    m.How ?? "not matched",
-                    m.Floor);
+                    page == null ? "—" : $"p{page.Page} {page.SheetNumber}" + (page.Typical != null ? $" (typical {FloorKey.DescribeRange(page.Typical)})" : ""),
+                    sheet == null ? "—" : (sheet.Layout ?? "model space") + (sheet.Typical != null && page?.Typical == null ? $" (typical {FloorKey.DescribeRange(sheet.Typical)})" : ""),
+                    level,
+                    how,
+                    m.Floor,
+                    level);
+                _floors.Rows[i].Cells["How"].ToolTipText = m.Why;
                 if (m.Level == null && m.How != "not used") _floors.Rows[i].DefaultCellStyle.BackColor = Color.MistyRose;
                 else if (m.NeedsCheck) _floors.Rows[i].DefaultCellStyle.BackColor = Color.LightYellow;
             }
@@ -1298,13 +1332,11 @@ namespace SleevesOpenings.Automation.UI
             if (_soSet != null) files.Reference = _soSet.Text.Trim();     // "" = no set wanted: not searched for again
             _inputs.Existing = _update.Checked ? ExistingPolicy.Update : ExistingPolicy.KeepAndAddMissing;
 
-            // Remember every floor whose level the user set or changed; automatic matches are recomputed next time.
+            // Remember every floor whose level the user changed (earlier choices stay); automatic matches are recomputed next time.
             foreach (DataGridViewRow row in _floors.Rows)
             {
-                string key = (string)row.Cells["Key"].Value, level = (string)row.Cells["Level"].Value;
-                var auto = FloorMatcher.Run(new[] { key }, _levels, new AutomationInputs()).First().Level?.Name ?? AutomationInputs.NotUsed;
-                if (level == auto) _inputs.FloorLevels.Remove(key);
-                else _inputs.FloorLevels[key] = level;          // AutomationInputs.NotUsed is stored too: the user said skip this floor
+                string key = (string)row.Cells["Key"].Value, level = (string)row.Cells["Level"].Value, shown = (string)row.Cells["Shown"].Value;
+                if (level != shown) _inputs.FloorLevels[key] = level;      // AutomationInputs.NotUsed is stored too: the user said skip this floor
             }
 
             if (_floors.Rows.Cast<DataGridViewRow>().All(r => (string)r.Cells["Level"].Value == AutomationInputs.NotUsed))

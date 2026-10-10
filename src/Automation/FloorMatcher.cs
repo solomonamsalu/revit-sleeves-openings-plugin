@@ -7,10 +7,11 @@ using SleevesOpenings.Setup;
 namespace SleevesOpenings.Automation
 {
     /// <summary>
-    /// Drawing floor (FloorKey) -> Revit level. Pass 1: the user's saved choice, the level's role (Cellar, Roof,
-    /// Bulkhead), the floor named in the level name ("5TH FLOOR", "03.3-TH FLOOR", "Level 5", "FIFTH FLR").
-    /// Pass 2, only for floors still unmatched: count up from the nearest matched floor below. A level is never
-    /// given to two floors; a clash is left unmatched and shown.
+    /// Drawing floor (FloorKey) -> Revit level. The user's saved choices are kept; every other floor is placed by
+    /// FloorSequence: the floors in order on the levels in order, scored on the floor named in the level name, what the
+    /// model holds on each level (LevelEvidence), the level's role (Cellar, Roof, Bulkhead), the elevation printed on the
+    /// plan, how the plan's columns fit each level's columns and the storey heights between them.
+    /// A level never serves two floors. Each match carries a confidence; a low one is shown for checking.
     /// </summary>
     public static class FloorMatcher
     {
@@ -18,76 +19,58 @@ namespace SleevesOpenings.Automation
         {
             public string Floor;
             public Level Level;
-            public string How;      // "saved", "role", "name", "order", "not used", "clash", or null when unmatched
-            /// <summary>Several levels carry this floor's name ("06.6-TH FLOOR" and "06.6 TH FLOOR NEW"); treated as the same floor.</summary>
-            public List<string> Candidates;
-            public bool NeedsCheck => Level == null || How == "clash";
+            public string How;      // "saved", "elevation", "name", "role", "order", "not used", or null when unmatched
+            public FloorSequence.Confidence Confidence = FloorSequence.Confidence.High;
+            /// <summary>The evidence, one line per reason (shown as the row's tooltip).</summary>
+            public string Why = "";
+            /// <summary>Unmatched, or matched with a close alternative (medium / low confidence): shown for the user to check.</summary>
+            public bool NeedsCheck => Level == null || Confidence != FloorSequence.Confidence.High;
         }
 
-        public static List<Match> Run(IEnumerable<string> floors, LevelMap levels, AutomationInputs inputs)
+        /// <summary>What the drawings and the model say beyond names; every part may be null.</summary>
+        public class Evidence
         {
+            /// <summary>Floor -> elevations printed on its plan (PdfSheet.Elevations).</summary>
+            public IDictionary<string, List<double>> Printed;
+            /// <summary>Floor -> level name -> how its plan's columns fit the level's columns (ColumnAligner.LevelFits).</summary>
+            public IDictionary<string, Dictionary<string, double>> ColumnFits;
+            /// <summary>Level name -> the floor the model's contents say (LevelEvidence).</summary>
+            public IDictionary<string, FloorSequence.LevelHint> LevelHints;
+            /// <summary>Floor -> its plan's title (a word it shares with a level name, e.g. STAIR, picks that level).</summary>
+            public IDictionary<string, string> Titles;
+        }
+
+        public static List<Match> Run(IEnumerable<string> floors, LevelMap levels, AutomationInputs inputs, Evidence evidence = null)
+        {
+            evidence = evidence ?? new Evidence();
             var real = levels.All;                                   // ascending, reference levels excluded
             var result = floors.Distinct().OrderBy(FloorKey.Order).Select(k => new Match { Floor = k }).ToList();
 
-            // ---- pass 1: saved, role, name
+            var input = new List<FloorSequence.FloorInfo>();
             foreach (var m in result)
             {
                 inputs.FloorLevels.TryGetValue(m.Floor, out var saved);
                 if (saved == AutomationInputs.NotUsed) { m.How = "not used"; continue; }
-                if (saved != null && real.FirstOrDefault(l => l.Name == saved) is ClassifiedLevel s) { Set(m, s, "saved"); continue; }
-                if (ByRole(m.Floor, levels) is ClassifiedLevel r) { Set(m, r, "role"); continue; }
-                var named = real.Where(l => l.Role != LevelRole.Roof && l.Role != LevelRole.Bulkhead && FloorKey.FromLevelName(l.Name) == m.Floor).ToList();
-                if (named.Count == 1) Set(m, named[0], "name");
-                else if (named.Count > 1) m.Candidates = named.Select(l => l.Name).ToList();
+                List<double> values = null;
+                evidence.Printed?.TryGetValue(m.Floor, out values);
+                Dictionary<string, double> fits = null;
+                evidence.ColumnFits?.TryGetValue(m.Floor, out fits);
+                string title = null;
+                evidence.Titles?.TryGetValue(m.Floor, out title);
+                input.Add(new FloorSequence.FloorInfo { Key = m.Floor, Saved = saved, Printed = values ?? new List<double>(), ColumnFit = fits, Title = title });
             }
 
-            // ---- pass 2: count up from the nearest matched floor below (levels between roles are floors in order)
-            var floorsOnly = real.Where(l => l.Role != LevelRole.Roof && l.Role != LevelRole.Bulkhead).ToList();
-            foreach (var m in result.Where(x => x.Level == null && x.How == null && Number(x.Floor) > 0))
+            FloorSequence.LevelHint Hint(string level) => evidence.LevelHints != null && evidence.LevelHints.TryGetValue(level, out var h) ? h : null;
+            var info = real.Select(l => new FloorSequence.LevelInfo { Name = l.Name, Role = l.Role, Elevation = l.Elevation, Displayed = l.Level.Elevation, Hint = Hint(l.Name) }).ToList();
+            foreach (var r in FloorSequence.Run(input, info))
             {
-                int n = Number(m.Floor);
-                var anchor = result.Where(x => x.Level != null && !x.How.StartsWith("order") && Number(x.Floor) >= 0 && Number(x.Floor) < n)
-                                   .OrderByDescending(x => Number(x.Floor)).FirstOrDefault();
-                int from = anchor == null ? -1 : floorsOnly.FindIndex(l => l.Level.Id == anchor.Level.Id);
-                int steps = anchor == null ? n : n - Number(anchor.Floor);
-                // with no anchor, floor 1 is the first level above the cellar(s)
-                if (anchor == null) from = floorsOnly.FindLastIndex(l => l.Role == LevelRole.Cellar);
-                int i = from + steps;
-                if (i >= 0 && i < floorsOnly.Count)
-                {
-                    // Several levels with this floor's name count as the same floor: take the one at the expected position.
-                    if (m.Candidates == null) Set(m, floorsOnly[i], "order");
-                    else if (m.Candidates.Contains(floorsOnly[i].Name)) Set(m, floorsOnly[i], "name");
-                }
-                if (m.Level == null && m.Candidates != null)
-                    Set(m, floorsOnly.First(l => l.Name == m.Candidates[0]), "name");     // lowest of the same-named levels
+                var m = result.First(x => x.Floor == r.Floor);
+                m.Level = r.Level >= 0 ? real[r.Level].Level : null;
+                m.How = r.How;
+                m.Confidence = r.Confidence;
+                m.Why = string.Join("\n", r.Why);
             }
-
-            // ---- a level may serve one floor only
-            foreach (var g in result.Where(x => x.Level != null).GroupBy(x => x.Level.Id).Where(g => g.Count() > 1))
-                foreach (var m in g.Where(x => x.How.StartsWith("order") || x.How == "name").ToList())
-                    if (g.Count(x => x.Level != null) > 1) { m.Level = null; m.How = "clash"; }
             return result;
-        }
-
-        private static void Set(Match m, ClassifiedLevel l, string how) { m.Level = l.Level; m.How = how; }
-
-        /// <summary>CELLAR = 0, F1.. = n, ROOF/BULKHEAD = -1 (not counted).</summary>
-        private static int Number(string key) =>
-            key == FloorKey.Cellar ? 0 : key.StartsWith("F") && int.TryParse(key.Substring(1), out int n) ? n : -1;
-
-        private static ClassifiedLevel ByRole(string key, LevelMap levels)
-        {
-            switch (key)
-            {
-                case FloorKey.Roof: return levels.MainRoof;
-                case FloorKey.Bulkhead: return levels.Bulkhead;
-                case FloorKey.Cellar:
-                    var cellars = levels.All.Where(l => l.Role == LevelRole.Cellar).ToList();
-                    return cellars.FirstOrDefault(l => FloorKey.FromLevelName(l.Name) == FloorKey.Cellar)
-                        ?? (cellars.Count == 1 ? cellars[0] : cellars.OrderByDescending(l => l.Elevation).FirstOrDefault());
-                default: return null;
-            }
         }
     }
 }

@@ -358,7 +358,9 @@ namespace SleevesOpenings.Automation.Assembly
                         own = true;
                     }
                 }
-                c.Confidence = fromBelow && (own || drawn) ? "high" : "medium";
+                // two floors of one typical plan agree because they are the same drawing: that is not a second plan confirming it
+                c.Confidence = fromBelow && (own || drawn) && !index.SameDrawing(c.Floor, Below(c.Floor)) ? "high" : "medium";
+                if (index.TypicalNote(c.Floor) is string typical && !c.Notes.Contains(typical)) c.Notes.Add(typical);
                 if (fromBelow && !own)
                 {
                     if (drawn) c.Notes.Add($"riser drawn on the {FloorKey.Describe(c.Floor)} plan (no label there)");
