@@ -365,7 +365,26 @@
     "sleeveGap": 1,
     "stackSnap": 12,
     "skipLowestSlab": true,
-    "namePattern": "{service}-{riser}"
+    "namePattern": "{service}-{riser}",
+    "vents": {
+      "_comment": "Vent Placer (Extract panel): the vent (yellow) sleeves of each bathroom's wet-wall row from the model's fixtures, as the Standards Manual's toilet sleeves page draws them (regular toilet: G6 | Y4 5 1/4\" | Y4 7\" | ... | G4 | 1'-2 3/4\" | Y6). Fixture vent pipes come from fixtures.*.vent; pipe sizes in inches of pipe (sleeve = pipe + sleeveOverPipe rounded up), distances in inches c-c along the wall.",
+      "toiletVentFromWaste": 5.25,
+      "lavVentPastToiletVent": 7,
+      "lavVentFromDrain": 10,
+      "stackPipe": 4,
+      "stackPastLastDrain": 12,
+      "stackSameAs": 18,
+      "tubPipe": 2,
+      "showerPipe": 0,
+      "washerPipe": 4,
+      "washerAlong": 24,
+      "tubReach": 48,
+      "wallHungReserve": true,
+      "reserveWasteOffset": 13,
+      "reserveVentOffset": 16,
+      "existingWithin": 4,
+      "slide": 12
+    }
   },
 
   "sprinkler": {

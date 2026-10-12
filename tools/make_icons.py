@@ -312,6 +312,15 @@ def extract_stacks():
     return im
 icons['ExtractStacks'] = extract_stacks
 
+# ---------------- Vent placer: a vent pipe rising through the slab, open at the top, beside its drain circle
+def vent_placer():
+    im, d = base(COL['doc'])
+    line(d, [(16, 70), (112, 70)], 6)                                 # the slab
+    arrow_up(d, 46, 108, 24, w=12, head=16)                           # the vent rising
+    ring(d, 86, 70, 18, 9)                                            # its sleeve
+    return im
+icons['VentPlacer'] = vent_placer
+
 # ---------------- Add-in update (greyed out by Revit until an update is found)
 def update():
     im, d = base(COL['riser'])

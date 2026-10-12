@@ -168,52 +168,8 @@ namespace SleevesOpenings.Automation
             }
 
             // ---- 2. the rest grouped by room / wall
-            (double X, double Y)? Wall(Fixture f)
-            {
-                if (f.Back == null) return null;
-                double d = Is(f, "WC") && !f.WallHung ? ToiletToWallFeet : 0;
-                return (f.X + f.Back[0] * d, f.Y + f.Back[1] * d);
-            }
-            var left = all.Where(f => !served.Contains(f)).ToList();
-            var walled = left.Where(f => f.Back != null).ToList();
-            var parent = walled.ToDictionary(f => f, f => f);
-            Fixture Root(Fixture f) { while (parent[f] != f) f = parent[f] = parent[parent[f]]; return f; }
-            for (int i = 0; i < walled.Count; i++)
-                for (int j = i + 1; j < walled.Count; j++)
-                {
-                    var f = walled[i]; var g = walled[j];
-                    // an island sink is a group of its own (nothing drains through its counter)
-                    if (f.Island || g.Island) continue;
-                    if (Dist(f.X, f.Y, g.X, g.Y) <= RoomFeet) { parent[Root(f)] = Root(g); continue; }
-                    if (Math.Abs(f.Back[0] * g.Back[0] + f.Back[1] * g.Back[1]) < 0.95) continue;        // walls at an angle
-                    var wf = Wall(f).Value; var wg = Wall(g).Value;
-                    double dx = wg.X - wf.X, dy = wg.Y - wf.Y;
-                    double across = Math.Abs(dx * f.Back[0] + dy * f.Back[1]), along = Math.Abs(-dx * f.Back[1] + dy * f.Back[0]);
-                    if (across <= SameWallFeet && along <= AlongWallFeet) parent[Root(f)] = Root(g);
-                }
-            var groups = walled.GroupBy(Root).Select(g => g.ToList()).ToList();
-            var loose = new List<Fixture>();
-            foreach (var f in left.Where(f => f.Back == null))
-            {
-                // tubs and showers (no wall known): the group of their room
-                var near = groups.Where(g => !g.Any(o => o.Island)).Select(g => (G: g, D: g.Min(o => Dist(o.X, o.Y, f.X, f.Y))))
-                                 .Where(t => t.D <= RoomFeet).OrderBy(t => t.D).FirstOrDefault();
-                if (near.G != null) near.G.Add(f);
-                else loose.Add(f);
-            }
-
-            // every toilet its own stack (Standards Manual, toilet sleeves page: each toilet a green 6 in the wall behind
-            // it, double toilets included): a group with two toilets (two bathrooms on one wall line, 1299 Findlay 2A/2B)
-            // is split, each other fixture going with its nearest toilet
-            groups = groups.SelectMany(g =>
-            {
-                var toilets = g.Where(f => Is(f, "WC") && f.Back != null).ToList();
-                if (toilets.Count < 2) return new List<List<Fixture>> { g };
-                var parts = toilets.Select(t => new List<Fixture> { t }).ToList();
-                foreach (var f in g.Where(f => !toilets.Contains(f)))
-                    parts.OrderBy(p => Dist(p[0].X, p[0].Y, f.X, f.Y)).First().Add(f);
-                return parts;
-            }).ToList();
+            (double X, double Y)? Wall(Fixture f) => WallPoint(f);
+            var groups = WetGroups(all.Where(f => !served.Contains(f)).ToList(), out var loose);
 
             var chases = Chases(shafts);
             // ---- 3. one stack per toilet (its group); the other groups are their fixtures only
@@ -400,6 +356,65 @@ namespace SleevesOpenings.Automation
             foreach (var s in result.Stacks.OrderByDescending(s => Math.Round(s.Y)).ThenBy(s => s.X)) s.Id = "M" + ++n;
             result.Stacks = result.Stacks.OrderBy(s => int.Parse(s.Id.Substring(1))).ToList();
             return result;
+        }
+
+        /// <summary>Where a fixture's wall is: a toilet's 1'-1" + half a wall behind its drain, the others at their drain; null = not known.</summary>
+        public static (double X, double Y)? WallPoint(Fixture f)
+        {
+            if (f.Back == null) return null;
+            double d = string.Equals(f.Code, "WC", StringComparison.OrdinalIgnoreCase) && !f.WallHung ? ToiletToWallFeet : 0;
+            return (f.X + f.Back[0] * d, f.Y + f.Back[1] * d);
+        }
+
+        /// <summary>
+        /// The wet groups of a floor's fixtures (Extract Stacks, Vent Placer): the same room (within 6 ft) or the same wall
+        /// line (either face, up to 8 ft along); tubs and showers (no wall known) with the group of their room, else
+        /// <paramref name="loose"/>; an island sink a group of its own; a group with two toilets split, each other fixture
+        /// going with its nearest toilet (manual, toilet sleeves page: every toilet its own stack).
+        /// </summary>
+        public static List<List<Fixture>> WetGroups(List<Fixture> left, out List<Fixture> loose)
+        {
+            bool Is(Fixture f, string code) => string.Equals(f.Code, code, StringComparison.OrdinalIgnoreCase);
+            (double X, double Y)? Wall(Fixture f) => WallPoint(f);
+            var walled = left.Where(f => f.Back != null).ToList();
+            var parent = walled.ToDictionary(f => f, f => f);
+            Fixture Root(Fixture f) { while (parent[f] != f) f = parent[f] = parent[parent[f]]; return f; }
+            for (int i = 0; i < walled.Count; i++)
+                for (int j = i + 1; j < walled.Count; j++)
+                {
+                    var f = walled[i]; var g = walled[j];
+                    // an island sink is a group of its own (nothing drains through its counter)
+                    if (f.Island || g.Island) continue;
+                    if (Dist(f.X, f.Y, g.X, g.Y) <= RoomFeet) { parent[Root(f)] = Root(g); continue; }
+                    if (Math.Abs(f.Back[0] * g.Back[0] + f.Back[1] * g.Back[1]) < 0.95) continue;        // walls at an angle
+                    var wf = Wall(f).Value; var wg = Wall(g).Value;
+                    double dx = wg.X - wf.X, dy = wg.Y - wf.Y;
+                    double across = Math.Abs(dx * f.Back[0] + dy * f.Back[1]), along = Math.Abs(-dx * f.Back[1] + dy * f.Back[0]);
+                    if (across <= SameWallFeet && along <= AlongWallFeet) parent[Root(f)] = Root(g);
+                }
+            var groups = walled.GroupBy(Root).Select(g => g.ToList()).ToList();
+            loose = new List<Fixture>();
+            foreach (var f in left.Where(f => f.Back == null))
+            {
+                // tubs and showers (no wall known): the group of their room
+                var near = groups.Where(g => !g.Any(o => o.Island)).Select(g => (G: g, D: g.Min(o => Dist(o.X, o.Y, f.X, f.Y))))
+                                 .Where(t => t.D <= RoomFeet).OrderBy(t => t.D).FirstOrDefault();
+                if (near.G != null) near.G.Add(f);
+                else loose.Add(f);
+            }
+
+            // every toilet its own stack (Standards Manual, toilet sleeves page: each toilet a green 6 in the wall behind
+            // it, double toilets included): a group with two toilets (two bathrooms on one wall line, 1299 Findlay 2A/2B)
+            // is split, each other fixture going with its nearest toilet
+            return groups.SelectMany(g =>
+            {
+                var toilets = g.Where(f => Is(f, "WC") && f.Back != null).ToList();
+                if (toilets.Count < 2) return new List<List<Fixture>> { g };
+                var parts = toilets.Select(t => new List<Fixture> { t }).ToList();
+                foreach (var f in g.Where(f => !toilets.Contains(f)))
+                    parts.OrderBy(p => Dist(p[0].X, p[0].Y, f.X, f.Y)).First().Add(f);
+                return parts;
+            }).ToList();
         }
 
         private static List<List<Pipe>> Clusters(List<Pipe> pipes, double reach)

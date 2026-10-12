@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><Nullable>disable</Nullable><ImplicitUsings>disable</ImplicitUsings><LangVersion>latest</LangVersion></PropertyGroup>
+  <ItemGroup><Compile Include="../../src/Automation/StackFinder.cs" /><Compile Include="../../src/Automation/VentFinder.cs" /><Compile Include="../../src/Automation/PlumbingRules.cs" /><Compile Include="../../src/Automation/Drawings/DwgProfile.cs" /></ItemGroup>
+  <ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup>
+</Project>

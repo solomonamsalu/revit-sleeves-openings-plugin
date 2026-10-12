@@ -119,6 +119,8 @@ namespace SleevesOpenings.Automation
         [JsonProperty("toiletStacks")] public bool ToiletStacks { get; set; } = true;
         /// <summary>Inches: an engineer's sanitary riser this close to a toilet serves it (no stack of the office rule there).</summary>
         [JsonProperty("toiletStackReach")] public double ToiletStackReach { get; set; } = 96;
+        /// <summary>Vent Placer: where the vent (yellow) sleeves go in each bathroom's wet wall (Standards Manual, toilet sleeves page).</summary>
+        [JsonProperty("vents")] public VentRules Vents { get; set; } = new VentRules();
         /// <summary>Regex on the DWG layers of what an alteration removes ("TO REMOVE"): a fixture block inserted on one is never sleeved.</summary>
         [JsonProperty("dwgRemoveLayers")] public string DwgRemoveLayers { get; set; } = @"TO REMOVE|REMOVE|DEMO";
 
@@ -254,6 +256,45 @@ namespace SleevesOpenings.Automation
         /// above, up-down = one 10"); null = the same as left-right.
         /// </summary>
         [JsonProperty("vertical")] public FixtureLayout Vertical { get; set; }
+    }
+
+    /// <summary>
+    /// rules.json "plumbing.vents": the Vent Placer's layout of each bathroom's wet-wall row, as the Standards Manual's
+    /// toilet sleeves page draws it (regular: G6 | Y4 5 1/4" | Y4 7" | ... | G4 | 1'-2 3/4" | Y6). Pipe sizes are inches
+    /// of pipe (the sleeve is pipe + sleeveOverPipe rounded up); distances are inches centre to centre along the wall.
+    /// </summary>
+    public class VentRules
+    {
+        /// <summary>The toilet's vent touches its waste stack in the wall: this far c-c, on the side toward the rest of the row.</summary>
+        [JsonProperty("toiletVentFromWaste")] public double ToiletVentFromWaste { get; set; } = 5.25;
+        /// <summary>A lavatory's vent: this far past the toilet's vent toward the lavatory...</summary>
+        [JsonProperty("lavVentPastToiletVent")] public double LavVentPastToiletVent { get; set; } = 7;
+        /// <summary>...else (no toilet in the row, or that spot is taken) this far from the lavatory's drain, on the toilet's side.</summary>
+        [JsonProperty("lavVentFromDrain")] public double LavVentFromDrain { get; set; } = 10;
+        /// <summary>Vent stack pipe (6" sleeve); 0 = no vent stack.</summary>
+        [JsonProperty("stackPipe")] public double StackPipe { get; set; } = 4;
+        /// <summary>The vent stack: this far past the lavatory's drain (the last drain of the row), away from the toilet (manual 10 1/4" to 1'-2 3/4").</summary>
+        [JsonProperty("stackPastLastDrain")] public double StackPastLastDrain { get; set; } = 12;
+        /// <summary>A vent stack on another floor this close is the same stack: this floor's lines up with it (risers run straight).</summary>
+        [JsonProperty("stackSameAs")] public double StackSameAs { get; set; } = 18;
+        /// <summary>Tub vent pipe (0 = none): in the wall of its row, at the drain end.</summary>
+        [JsonProperty("tubPipe")] public double TubPipe { get; set; } = 2;
+        /// <summary>Shower vent pipe (0 = none; the manual shows none).</summary>
+        [JsonProperty("showerPipe")] public double ShowerPipe { get; set; }
+        /// <summary>Washer vent pipe (0 = none) and how far along the wall from its drain (Wallabout video: 6 + 6 about 2'-0" apart).</summary>
+        [JsonProperty("washerPipe")] public double WasherPipe { get; set; } = 4;
+        [JsonProperty("washerAlong")] public double WasherAlong { get; set; } = 24;
+        /// <summary>A tub this far (inches) from its row's wall at most gets its vent there; farther = add it by hand.</summary>
+        [JsonProperty("tubReach")] public double TubReach { get; set; } = 48;
+        /// <summary>Wall-hung toilets: the reserve waste and vent sleeves the manual draws (flagged: always verify the toilet type).</summary>
+        [JsonProperty("wallHungReserve")] public bool WallHungReserve { get; set; } = true;
+        /// <summary>Wall-hung: the reserve waste this far off the toilet's centre line (outer side), the reserve vent this far on the other side, the vent 7" past it.</summary>
+        [JsonProperty("reserveWasteOffset")] public double ReserveWasteOffset { get; set; } = 13;
+        [JsonProperty("reserveVentOffset")] public double ReserveVentOffset { get; set; } = 16;
+        /// <summary>A vent sleeve already in the model this close (inches) to a spot is that vent: nothing more there.</summary>
+        [JsonProperty("existingWithin")] public double ExistingWithin { get; set; } = 4;
+        /// <summary>How far (inches) a vent may slide along the wall to clear the sleeves already there.</summary>
+        [JsonProperty("slide")] public double Slide { get; set; } = 12;
     }
 
     /// <summary>Another layout of a fixture's sleeves: how many, how far apart (c-c inches) and their size (inches).</summary>

@@ -130,6 +130,10 @@ namespace SleevesOpenings
                 "Choose a floor and find its plumbing stacks from the model alone: vertical pipes modelled in Revit, else the wet walls of its fixtures " +
                 "(a chase drawn on the shaft layers, else the wall behind the toilet), laid out by the office rule (vent 6, waste 6, hot 3, cold 3). " +
                 "Zoom to one, mark them in the plan, export CSV or place their sleeves."));
+            extract.AddItem(Button("VentPlacer", "Vent\nPlacer", asm, typeof(Commands.VentPlacerCommand),
+                "Tick floors and lay out their vent (yellow) sleeves from the model alone, as the Standards Manual's toilet sleeves page draws them: " +
+                "each toilet's vent touching its waste stack, the lavatory's 7\" past it, tub / sink / washer vents, one vent stack per bathroom row " +
+                "(shared back to back), in line floor to floor. Zoom to one, mark them in the plan, export CSV or place them."));
 
             // greyed out until the startup check finds a newer version (UpdateChecker)
             var add = app.CreateRibbonPanel(TabName, "Add-in");
