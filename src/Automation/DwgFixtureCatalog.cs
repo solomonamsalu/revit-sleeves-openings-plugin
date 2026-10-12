@@ -12,11 +12,12 @@ namespace SleevesOpenings.Automation
     /// no one naming anything. Three steps:
     /// 1. <see cref="Read"/>: each floor's file read directly and placed where Revit shows the DWG (transform, units and
     ///    import scale, checked against the lines Revit shows); each block judged by its own clean drawing (shape).
-    /// 2. <see cref="Identify"/>: each kind of block decided once over all its copies, from the plumbing plans' fixture
-    ///    labels next to them (each label votes for its nearest block), its shape and its name (a hint only). Labels and
-    ///    shape agreeing (or name and shape) = certain, saved to the office table (<see cref="FixtureBlockMap"/>) for
-    ///    every later floor and project; one sign alone = used and flagged for a check; nothing clear = not a fixture or
-    ///    reported, never placed. A name in the table (said by a person or learned) wins.
+    /// 2. <see cref="Identify"/>: each kind of block decided once over all its copies from the model alone (user 2026-10-11:
+    ///    no plan labels). The office table first (a person's or a learned name; entries the block's own name contradicts
+    ///    are dropped when the table loads), then the block's name ("Toilet Bowl..." = WC, whatever its drawing looks like:
+    ///    the 1299 Findlay toilet is narrower than its basin), saved to the table; a name saying nothing = its drawing,
+    ///    used and flagged for a check, never saved; nothing clear = not a fixture, never placed. A block lying on a
+    ///    fixture block (a toilet's seat drawn as its own block) is part of that fixture, not a second one.
     /// 3. <see cref="Locate"/>: each identified block's sleeve point(s) by the office rules (<see cref="FixtureDrains.LocateKnown"/>).
     /// Call on Revit's thread.
     /// </summary>
@@ -24,8 +25,8 @@ namespace SleevesOpenings.Automation
     {
         /// <summary>Share of the blocks that must fall on Revit's fixture lines for the file to be trusted to line up.</summary>
         private const double MinFit = 0.5;
-        /// <summary>A label this far (inches) from a block's box can vote for it.</summary>
-        private const double VoteInches = 36;
+        /// <summary>A block whose box lies this much (share of its area) inside a bigger fixture block's box is part of it.</summary>
+        private const double PartOf = 0.6;
 
         public class Item
         {
@@ -64,21 +65,14 @@ namespace SleevesOpenings.Automation
             public DwgFixtureReader.Plan Plan;
         }
 
-        /// <summary>A fixture label of the plumbing plans: its code and where it is (feet).</summary>
-        public class Label
-        {
-            public string Level, Tag;
-            public double X, Y;
-        }
-
         /// <summary>Read, identify and locate one floor's blocks (Extract Fixtures).</summary>
-        public static Result ForPlan(DwgFixtureReader.Plan plan, PlumbingRules rules, IList<Label> labels, List<string> notes)
+        public static Result ForPlan(DwgFixtureReader.Plan plan, PlumbingRules rules, List<string> notes)
         {
-            var map = FixtureBlockMap.Load();
+            var map = FixtureBlockMap.Load(App.Log);
             var res = Read(plan, rules, map);
             if (res.Used)
             {
-                notes?.AddRange(Identify(new List<Result> { res }, labels, map));
+                notes?.AddRange(Identify(new List<Result> { res }, map));
                 Locate(res, rules);
             }
             return res;
@@ -137,24 +131,10 @@ namespace SleevesOpenings.Automation
         /// Decides each kind of block not in the office table from all its copies on the floors read; saves the certain
         /// ones to the table. Returns what to tell the user (the kinds left unidentified).
         /// </summary>
-        public static List<string> Identify(List<Result> results, IList<Label> labels, IDictionary<string, string> map)
+        public static List<string> Identify(List<Result> results, IDictionary<string, string> map)
         {
             var notes = new List<string>();
             var items = results.Where(r => r.Used).SelectMany(r => r.Items).ToList();
-            labels = labels ?? new List<Label>();
-
-            // each label votes for the nearest block on its floor (a toilet's label is nearer the toilet than its door)
-            var votes = new Dictionary<Item, List<string>>();
-            foreach (var l in labels.Where(l => l.Tag != null))
-            {
-                var near = items.Where(i => AutoPlacer.SameFloor(i.Level, l.Level))
-                                .Select(i => (I: i, D: Gap(i, l.X * 12, l.Y * 12))).Where(t => t.D <= VoteInches)
-                                .OrderBy(t => t.D).FirstOrDefault();
-                if (near.I == null) continue;
-                if (!votes.TryGetValue(near.I, out var list)) votes[near.I] = list = new List<string>();
-                list.Add(l.Tag.ToUpperInvariant());
-            }
-            var labelledFloors = new HashSet<string>(labels.Select(l => l.Level).Where(x => x != null), StringComparer.OrdinalIgnoreCase);
 
             bool learned = false;
             foreach (var kind in items.Where(i => !i.Named).GroupBy(i => i.Name, StringComparer.OrdinalIgnoreCase))
@@ -162,48 +142,50 @@ namespace SleevesOpenings.Automation
                 var copies = kind.ToList();
                 string name = kind.Key;
 
-                // the labels: the code most of its labelled copies carry
-                var tags = copies.Where(votes.ContainsKey).Select(c => votes[c].GroupBy(t => t).OrderByDescending(g => g.Count()).First().Key).ToList();
-                var topTag = tags.GroupBy(t => t).OrderByDescending(g => g.Count()).FirstOrDefault();
-                string label = topTag != null && topTag.Count() >= Math.Max(1, (tags.Count + 1) / 2) ? topTag.Key : null;
-                int labelled = tags.Count;
-                bool onLabelledFloors = copies.Any(c => labelledFloors.Any(f => AutoPlacer.SameFloor(f, c.Level)));
-
-                // the shape: what most copies' drawings are
+                // the name (or the name of the block it stands for) says what it is; the drawing only where it says nothing
+                string hint = FixtureBlockMap.Suggest(name) ?? copies.Select(c => c.Inner.Select(FixtureBlockMap.Suggest).FirstOrDefault(h => h != null)).FirstOrDefault(h => h != null);
                 var topShape = copies.Select(c => c.Guess).Where(g => g != null).GroupBy(g => g).OrderByDescending(g => g.Count()).FirstOrDefault();
                 string shape = topShape != null && topShape.Count() * 2 >= copies.Count ? topShape.Key : null;
 
-                // the name (and the name of the block it stands for): a hint
-                string hint = FixtureBlockMap.Suggest(name) ?? copies.Select(c => c.Inner.Select(FixtureBlockMap.Suggest).FirstOrDefault(h => h != null)).FirstOrDefault(h => h != null);
-
                 string code = null, why; bool certain = false;
-                if (label != null && FixtureBlockMap.Same(label, shape))
-                { code = label; certain = true; why = $"{labelled} of {copies.Count} copies labelled {label} on the plumbing plans, and its drawing is a {Word(shape)}"; }
-                else if (label != null && FixtureBlockMap.Same(label, hint) && shape == null)
-                { code = label; certain = true; why = $"labelled {label} on the plumbing plans ({labelled} of {copies.Count}) and named like one"; }
-                else if (shape != null && FixtureBlockMap.Same(shape, hint))
-                { code = shape; certain = true; why = $"its drawing is a {Word(shape)} and its name says so"; }
-                else if (label != null && shape == null && labelled >= 2)
-                { code = label; why = $"labelled {label} on the plumbing plans ({labelled} of {copies.Count}); its drawing does not show it: check"; }
-                else if (shape != null && label == null && !(onLabelledFloors && labelled == 0 && copies.Count >= 3 && hint == "none"))
-                { code = shape; why = $"its drawing is a {Word(shape)}" + (onLabelledFloors ? " (no plumbing label next to it)" : " (no plumbing labels to confirm it)") + ": check"; }
-                else if (shape == null && label == null)
+                if (hint == "none")
                 {
-                    why = hint == "none" ? "not a fixture (name and drawing)" : "not a fixture by its drawing, no plumbing label next to it";
-                    if (hint == "none") { map[name] = "none"; learned = true; }
+                    why = "not a fixture (its name)";
+                    map[name] = "none"; learned = true;
                 }
-                else
+                else if (hint != null)
                 {
-                    why = $"unclear: labels say {label ?? "nothing"}, its drawing {(shape == null ? "nothing" : "a " + Word(shape))}";
-                    notes.Add($"Block '{name}' ({copies.Count} cop{(copies.Count == 1 ? "y" : "ies")}): {why}. Not placed.");
+                    code = hint; certain = true;
+                    why = shape == null ? $"named like a {Word(hint)}"
+                        : FixtureBlockMap.Same(hint, shape) ? $"named like a {Word(hint)}, and its drawing is one"
+                        : $"named like a {Word(hint)} (its drawing looks like a {Word(shape)}: the name wins)";
                 }
+                else if (shape != null)
+                {
+                    code = shape;
+                    why = $"its name does not say; its drawing is a {Word(shape)}: check";
+                    // kitchen or laundry sinks: the kitchen layer says KS where the shape only says "a sink"
+                    if (code == "LAV" && copies.Count(c => c.Guess == "KS") * 2 > copies.Count) code = "KS";
+                }
+                else why = "not a fixture: its name does not say and its drawing is none";
 
-                // kitchen or laundry sinks: the kitchen layer says KS where the labels and shape only say "a sink"
-                if (code == "LAV" && copies.Count(c => c.Guess == "KS") * 2 > copies.Count) code = "KS";
                 foreach (var c in copies) { c.Code = code; c.Check = code != null && !certain; c.Why = why; }
                 if (certain) { map[name] = code; learned = true; }
-                App.Log($"DWG fixture blocks: '{name}' x{copies.Count} -> {code ?? "not a fixture"} ({(certain ? "certain" : code == null ? "-" : "check")}): {why}");
+                App.Log($"DWG fixture blocks: '{name}' x{copies.Count} -> {code ?? "not a fixture"} ({(certain ? "by name" : code == null ? "-" : "by drawing, check")}): {why}");
             }
+
+            // a block known only by its drawing that lies on a bigger fixture block is part of it (a toilet's seat drawn
+            // as its own block over the bowl), not a second fixture
+            foreach (var i in items.Where(i => i.Code != null && i.Check && !i.Named))
+            {
+                var host = items.Where(o => o != i && o.Code != null && o.Plan == i.Plan && Area(o) > Area(i) && Overlap(i, o) >= PartOf * Area(i))
+                                .OrderByDescending(Area).FirstOrDefault();
+                if (host == null) continue;
+                App.Log($"DWG fixture blocks: '{i.Name}' at ({i.Cx / 12:0.##}, {i.Cy / 12:0.##}) lies on '{host.Name}' ({host.Code}): part of it, not a fixture of its own");
+                i.Why = $"part of the {Word(host.Code)} block '{host.Name}' it lies on";
+                i.Code = null; i.Check = false;
+            }
+
             if (learned)
             {
                 try { FixtureBlockMap.Save(map.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase)); }
@@ -223,6 +205,7 @@ namespace SleevesOpenings.Automation
                 case "BT": return "tub";
                 case "SH": return "shower";
                 case "W/D": case "WD": return "washer";
+                case "FD": return "floor drain";
                 default: return code?.ToLowerInvariant();
             }
         }
@@ -243,32 +226,6 @@ namespace SleevesOpenings.Automation
             }
         }
 
-        /// <summary>The fixture labels of this model's latest Auto Run (risers.json), for Extract Fixtures run on its own.</summary>
-        public static List<Label> LabelsFromLastRun(Document doc, PlumbingRules rules)
-        {
-            var labels = new List<Label>();
-            try
-            {
-                string safe = string.Concat((doc.Title ?? "model").Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
-                string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SleevesOpenings", "runs", safe);
-                if (!Directory.Exists(root)) return labels;
-                var file = Directory.GetDirectories(root).OrderByDescending(d => d).Select(d => Path.Combine(d, "risers.json")).FirstOrDefault(File.Exists);
-                if (file == null) return labels;
-                var json = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(file));
-                foreach (var o in json["openings"] ?? new Newtonsoft.Json.Linq.JArray())
-                {
-                    string tag = (string)o["tag"], level = (string)o["level"];
-                    double? x = (double?)o["x"], y = (double?)o["y"];
-                    if (tag == null || level == null || x == null || y == null || !rules.Fixtures.ContainsKey(tag)) continue;
-                    if (!((o["from"] as Newtonsoft.Json.Linq.JArray)?.Any(f => ((string)f ?? "").Contains("fixture '")) ?? false)) continue;
-                    labels.Add(new Label { Level = level, Tag = tag, X = x.Value, Y = y.Value });
-                }
-                App.Log($"DWG fixture blocks: {labels.Count} plumbing fixture label(s) from {file}");
-            }
-            catch (Exception ex) { App.Log("DWG fixture blocks: labels of the last run not read: " + ex.Message); }
-            return labels;
-        }
-
         /// <summary>
         /// The lines Revit shows that belong to no block fixture (loose lines: showers and tubs drawn line by line), for
         /// the shape reader.
@@ -280,8 +237,11 @@ namespace SleevesOpenings.Automation
                 return !res.Items.Any(i => cx >= i.X0 - 1 && cx <= i.X1 + 1 && cy >= i.Y0 - 1 && cy <= i.Y1 + 1);
             }).ToList();
 
-        private static double Gap(Item i, double x, double y) =>
-            Math.Sqrt(Math.Pow(Math.Max(Math.Max(i.X0 - x, 0), x - i.X1), 2) + Math.Pow(Math.Max(Math.Max(i.Y0 - y, 0), y - i.Y1), 2));
+        private static double Area(Item i) => Math.Max(0, i.X1 - i.X0) * Math.Max(0, i.Y1 - i.Y0);
+
+        /// <summary>The area two blocks' boxes share (square inches).</summary>
+        private static double Overlap(Item a, Item b) =>
+            Math.Max(0, Math.Min(a.X1, b.X1) - Math.Max(a.X0, b.X0)) * Math.Max(0, Math.Min(a.Y1, b.Y1) - Math.Max(a.Y0, b.Y0));
 
         /// <summary>A file point (units) to model inches at the given feet per unit.</summary>
         private static (double X, double Y) Map(DwgFixtureReader.Plan plan, double feetPerUnit, double x, double y)

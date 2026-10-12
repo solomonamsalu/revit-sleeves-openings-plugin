@@ -294,6 +294,8 @@ namespace SleevesOpenings.Rules
                 .F("plumbing.dwgRemoveLayers", "DWG removal layers", RuleKind.Regex, "Alteration drawings: fixtures drawn or inserted on these layers (\"TO REMOVE\") get no sleeve.")
                 .F("plumbing.dwgSlabEdgeLayers", "DWG slab edge layers", RuleKind.Regex, "A sink with no wall line behind it but the slab edge close behind: against the exterior wall, not an island.")
                 .F("plumbing.dwgShaftLayers", "DWG shaft / chase layers", RuleKind.Regex, "Extract Stacks: a stack goes in the chase drawn on these layers next to its fixtures.")
+                .F("plumbing.toiletStacks", "Auto Run: a stack for toilets no engineer's riser serves", B, "By the Extract Stacks rule (wet wall or chase), flagged for a check. The plans' P# risers always come first.")
+                .F("plumbing.toiletStackReach", "An engineer's riser serves a toilet within", In)
                 .H("Words on the plans")
                 .F("plumbing.upWords", "Means up (slab above)", RuleKind.Words)
                 .F("plumbing.downWords", "Means down (this slab)", RuleKind.Words)

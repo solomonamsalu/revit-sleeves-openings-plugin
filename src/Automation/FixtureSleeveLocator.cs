@@ -158,9 +158,10 @@ namespace SleevesOpenings.Automation
             var dwgShapes = new List<(DwgFixtureReader.Plan Plan, FixtureDrains.Shape Shape)>();
             var dwgLevels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             int fromDwg = 0;
+            var plans = new List<DwgFixtureReader.Plan>();
             if (rules.DwgFixtures && (gaps.Count > 0 || rules.ModelFixtures))
             {
-                try { fromDwg = FromDwg(DwgFixtureReader.Read(host, rules, onlyLevels: onlyLevels), gaps, labels, rules, dwgShapes, dwgLevels, messages); }
+                try { plans = DwgFixtureReader.Read(host, rules, onlyLevels: onlyLevels); fromDwg = FromDwg(plans, gaps, labels, rules, dwgShapes, dwgLevels, messages); }
                 catch (Exception ex) { App.Log("AutoRun DWG fixtures failed: " + ex); messages.Add("Fixtures in the architect's DWGs not read: " + ex.Message); }
             }
 
@@ -197,9 +198,12 @@ namespace SleevesOpenings.Automation
                          $"; {left.Count} left for review in {stacks} stack(s) ({textOnly} not in the architect's DWG or with only the label text).");
             if (rules.ModelFixtures)
                 messages.Add(ModelOnly(fixtures.Where(f => !used.Contains(f)).ToList(), dwgShapes, assembly, rules, existing));
+            messages.Add(Tubs(host, assembly, rules));
+            if (rules.ToiletStacks)
+                messages.Add(ToiletStacks(assembly, rules, existing, plans, onlyLevels));
             messages.Add(WetWall(assembly, rules, existing));
             foreach (var level in outOfSync)
-                messages.Add($"  ! {level}: most fixture labels on the plan have no modelled fixture nearby — the drawings and the model look out of sync on this floor (which is newer?).");
+                messages.Add($"  ! {level}: most fixture labels on the plan have no modelled fixture nearby â€” the drawings and the model look out of sync on this floor (which is newer?).");
             foreach (var line in messages) App.Log("AutoRun " + line.Trim());
             return messages;
         }
@@ -264,6 +268,116 @@ namespace SleevesOpenings.Automation
             return (stacked, drawn, textOnly + review);
         }
 
+        /// <summary>Every tub sleeve to place laid out by the tub's direction on its floor plan (<see cref="TubSleeves"/>).</summary>
+        private static string Tubs(Document host, RiserAssembly assembly, PlumbingRules rules)
+        {
+            var right = new Dictionary<string, XYZ>(StringComparer.OrdinalIgnoreCase);
+            int upDown = 0, across = 0;
+            foreach (var c in assembly.Crossings.Where(c => c.IsFixture && string.Equals(c.Tag, "BT", StringComparison.OrdinalIgnoreCase) &&
+                                                            c.Status == Crossing.Place && c.MergedInto == null && c.HasPosition && c.ExistingIds.Count == 0))
+            {
+                string level = c.Level ?? "";
+                if (!right.TryGetValue(level, out var r)) right[level] = r = TubSleeves.PlanRight(host, level);
+                if (TubSleeves.Apply(c, rules, r)) upDown++; else across++;
+            }
+            var bt = rules.Fixtures.TryGetValue("BT", out var f) ? f : null;
+            return upDown + across == 0 ? "Tubs: none to place." :
+                   $"Tubs: {across} running left-right on the plan ({bt?.Count ?? 1} x {Units.FormatInches(rules.SleeveFor(bt?.Pipe ?? 4))}), " +
+                   $"{upDown} running up-down" + (bt?.Vertical != null ? $" ({(bt.Vertical.Count > 1 ? bt.Vertical.Count + " x " : "")}{Units.FormatInches(bt.Vertical.Sleeve)})" : "") + ".";
+        }
+
+        /// <summary>Fallback stacks on different floors this close (feet) are one stack: one riser name up the building.</summary>
+        private const double ToiletStackSameFeet = 1.5;
+
+        /// <summary>
+        /// Extract Stacks merged into Auto Run: the engineer's P# risers come first; a toilet none of them serves (no
+        /// sanitary riser of the plans within plumbing.toiletStackReach on its floor) gets a stack by the Extract Stacks
+        /// rule (<see cref="StackFinder"/>: in a chase drawn on the shaft layers next to it, else in the wall behind it;
+        /// vent only back to back; hot / cold only where water shows near it). Its sleeves are named S-T1, V-T1... with one
+        /// number per spot up the building, and flagged for a check. Runs before <see cref="WetWall"/> so the fixtures'
+        /// vents keep clear of them and the sinks in their wall are served by them.
+        /// </summary>
+        private static string ToiletStacks(RiserAssembly assembly, PlumbingRules rules, ExistingReport existing, List<DwgFixtureReader.Plan> plans,
+                                           ICollection<string> onlyLevels)
+        {
+            double reach = rules.ToiletStackReach / 12;
+            bool Ticked(string level) => onlyLevels == null || onlyLevels.Any(l => AutoPlacer.SameFloor(l, level));
+            var fixtures = assembly.Crossings.Where(c => c.IsFixture && c.Status == Crossing.Place && c.MergedInto == null && c.HasPosition &&
+                                                         c.Tag != null && rules.Fixtures.ContainsKey(c.Tag) && Ticked(c.Level)).ToList();
+            var risers = assembly.Crossings.Where(o => !o.IsFixture && o.HasPosition && o.Status != Crossing.Skip && o.MergedInto == null).ToList();
+            var found = new List<(Crossing Floor, StackFinder.Stack S)>();
+            int served = 0, noWall = 0;
+            var missing = new List<string>();
+
+            foreach (var floor in fixtures.GroupBy(c => c.Floor))
+            {
+                var level = floor.First().Level;
+                var toilets = floor.Where(c => string.Equals(c.Tag, "WC", StringComparison.OrdinalIgnoreCase)).ToList();
+                if (toilets.Count == 0) continue;
+                var sanitary = risers.Where(o => o.Floor == floor.Key && o.System == "Sanitary").ToList();
+                // a toilet an engineer's riser serves: the P# group is the stack there
+                bool Served(double x, double y) => sanitary.Any(o => Dist(o.X, o.Y, x, y) <= reach);
+                served += toilets.Count(t => Served(t.X, t.Y));
+                if (toilets.All(t => Served(t.X, t.Y))) continue;
+
+                var list = floor.Select(c => new StackFinder.Fixture
+                {
+                    Code = c.Tag, Name = c.Notes.Any(n => n.Contains("wall-hung")) ? "wall-hung" : c.Tag, Source = "Auto Run", X = c.X, Y = c.Y, Back = c.Back,
+                    Points = c.EachPoint && c.Points.Count > 0 ? c.Points.Select(p => (p[0], p[1])).ToList() : new List<(double X, double Y)> { (c.X, c.Y) }
+                }).ToList();
+                noWall += toilets.Count(t => t.Back == null && !Served(t.X, t.Y));
+                var onLevel = plans.Where(p => AutoPlacer.SameFloor(p.Level, level)).ToList();
+                var shafts = onLevel.SelectMany(p => p.Shafts).Select(l => ((l.A.X / 12, l.A.Y / 12), (l.B.X / 12, l.B.Y / 12))).ToList();
+                // water the floor shows: the plans' hot / cold risers, a plumbing DWG's water circles on the level
+                var water = risers.Where(o => o.Floor == floor.Key && (o.System == "HotWater" || o.System == "ColdWater"))
+                                  .Select(o => new StackFinder.Mark { X = o.X, Y = o.Y, System = o.System, Source = "plans" })
+                                  .Concat(onLevel.SelectMany(p => p.Risers.Select(c => new StackFinder.Mark
+                                  {
+                                      X = c.X / 12, Y = c.Y / 12, Source = p.Source,
+                                      System = rules.Services.TryGetValue(rules.ServiceForLayer(c.Layer) ?? "", out var sv) ? sv.System : null
+                                  }))).Where(m => m.System == "HotWater" || m.System == "ColdWater").ToList();
+
+                var result = StackFinder.Find(list, shafts, new List<StackFinder.Pipe>(), water, rules, false);
+                foreach (var s in result.Stacks.Where(s => s.Kind == "toilet stack"))
+                {
+                    if (s.Serves.Any(f => f.Code == "WC" && Served(f.X, f.Y))) continue;
+                    found.Add((floor.First(), s));
+                }
+            }
+
+            // one name per spot up the building: stacked bathrooms share their stack's name (the riser alignment checks rely on it)
+            var names = new List<(double X, double Y, int N)>();
+            int placed = 0, already = 0, stacks = 0;
+            foreach (var (fx, s) in found.OrderBy(t => FloorKey.Order(t.Floor.Floor)))
+            {
+                var name = names.FirstOrDefault(t => Dist(t.X, t.Y, s.X, s.Y) <= ToiletStackSameFeet);
+                if (name.N == 0) { name = (s.X, s.Y, names.Count + 1); names.Add(name); }
+                stacks++;
+                foreach (var v in s.StackSleeves)
+                {
+                    if (existing != null && existing.Items.Any(e => e.Point != null && e.Source != "native opening" && AutoPlacer.SameFloor(e.Level, fx.Level) &&
+                                                                    Dist(v.X, v.Y, e.Point) <= v.Size / 24 + 1.0 / 12)) { already++; continue; }
+                    var c = new Crossing
+                    {
+                        Floor = fx.Floor, Level = fx.Level, Tag = $"{v.Service}-T{name.N}", System = v.System, Size = new DuctSize { Diameter = v.Pipe },
+                        X = v.X, Y = v.Y, HasPosition = true, Status = Crossing.Place, Confidence = "medium", Check = true, FromModel = true,
+                        Pdf = "not in the PDF"
+                    };
+                    c.From.Add($"{FloorKey.Describe(fx.Floor)}: toilet stack by the office rule (no engineer's riser within {Units.FormatInches(rules.ToiletStackReach)})");
+                    c.Notes.Add($"{Units.FormatInches(v.Size)} {v.Service} sleeve {s.How}");
+                    c.Notes.AddRange(s.Notes);
+                    if (s.Missing.Count > 0) c.Notes.Add("not placed: " + string.Join("; ", s.Missing));
+                    assembly.Crossings.Add(c);
+                    placed++;
+                }
+                missing.AddRange(s.Missing.Select(m => $"{FloorKey.Describe(fx.Floor)} T{name.N} {m}"));
+            }
+            foreach (var m in missing) App.Log("AutoRun toilet stack " + m);
+            return $"Toilet stacks: {served} toilet(s) served by the engineer's risers; {stacks} stack(s) laid out by the office rule where no riser serves " +
+                   $"the toilet ({placed} sleeve(s), flagged for a check" + (already > 0 ? $", {already} already in the model" : "") + ")" +
+                   (noWall > 0 ? $"; {noWall} toilet(s) with no known wall behind them (no stack: add it by hand)" : "") + ".";
+        }
+
         /// <summary>Toilet vent sleeve: this far (feet) along the wall behind the toilet from its centre line (manual, toilet sleeves page: 5 1/4").</summary>
         private const double ToiletVentAlongFeet = 5.25 / 12;
         /// <summary>A lavatory's vent sleeve goes on the side of a vent stack this close (feet) in the same wall.</summary>
@@ -277,8 +391,9 @@ namespace SleevesOpenings.Automation
         /// - a sink with a sanitary or vent stack sleeve within its stackReach: the stack serves it, no sleeve of its own;
         /// - a toilet: a vent sleeve in the wall behind it, 5 1/4" off its centre line (away from a stack there);
         /// - a lavatory: a vent sleeve beside its drain sleeve in the wall (on the vent stack's side when one is in that wall);
-        /// - a sink with no stack near (an island, a sink on its own wall): its own row behind it, vent - hot - drain - cold,
-        ///   hot on the left facing it (IRC P2722.2).
+        /// - a sink against a wall with no stack near: its drain only (the rest runs in the wall);
+        /// - an island sink: its own row, vent - hot - drain - cold, vent and hot water on the plan-left of the drain looking
+        ///   at the faucet side (24 Skillman SL102).
         /// The sleeves touch (plumbing.sleeveGap clear), a vent slides along the wall off the sleeves already there, and every
         /// one is flagged for a check. A fixture whose wall is not known gets a note instead.
         /// </summary>
@@ -286,8 +401,8 @@ namespace SleevesOpenings.Automation
         {
             double gap = rules.SleeveGap / 12;
             double R(double pipe) => rules.SleeveFor(pipe) / 2 / 12;
-            double Rc(Crossing o) => R(o.Size?.Diameter ?? 2);
-            int served = 0, vents = 0, water = 0, noWall = 0, already = 0, clash = 0;
+            double Rc(Crossing o) => o.SleeveSize.HasValue ? o.SleeveSize.Value / 2 / 12 : R(o.Size?.Diameter ?? 2);
+            int served = 0, vents = 0, water = 0, noWall = 0, already = 0, clash = 0, wallSinks = 0;
 
             IEnumerable<(double X, double Y, double R)> Taken(string floor) =>
                 assembly.Crossings.Where(o => o.Floor == floor && o.Status == Crossing.Place && o.MergedInto == null && o.HasPosition)
@@ -346,14 +461,18 @@ namespace SleevesOpenings.Automation
 
                 if (fs.Water > 0)
                 {
-                    // its own row behind it: vent - hot - drain - cold, hot on the left
+                    // a sink against a wall: its drain only, the rest runs in the wall (office S&O sets, Extract Stacks)
+                    if (!fx.Notes.Any(n => n.Contains("(island)"))) { wallSinks++; continue; }
+                    // an island: its own row, vent - hot - drain - cold, the vent and hot water on the plan-left of the drain
+                    // looking at the faucet side (24 Skillman SL102; the same side as Extract Stacks)
+                    ax = -ax; ay = -ay;
                     double rh = R(fs.Water), rv = R(fs.Vent);
                     double hot = rw + rh + gap, cold = -(rw + rh + gap), vent = hot + rh + rv + gap;
                     foreach (var (service, system, pipe, along) in new[] { ("HW", "HotWater", fs.Water, hot), ("CW", "ColdWater", fs.Water, cold), ("V", "Vent", fs.Vent, vent) })
                     {
                         if (pipe <= 0) continue;
                         double x = fx.X + ax * along, y = fx.Y + ay * along;
-                        Add(fx, service, system, pipe, x, y, $"in the {fs.Name}'s own row behind it ({(along > 0 ? "left" : "right")} of its drain, facing it): no stack within " +
+                        Add(fx, service, system, pipe, x, y, $"in the island {fs.Name}'s own row ({(along > 0 ? "hot water side" : "cold water side")} of its drain): no stack within " +
                             $"{Units.FormatInches(fs.StackReach)}", Clear(fx.Floor, x, y, R(pipe)));
                     }
                     continue;
@@ -392,6 +511,7 @@ namespace SleevesOpenings.Automation
                    $"sleeve(s) placed by the office rule (flagged for a check)" +
                    (already > 0 ? $", {already} already in the model" : "") +
                    (clash > 0 ? $", {clash} overlapping another sleeve (move by hand)" : "") +
+                   (wallSinks > 0 ? $", {wallSinks} sink(s) against a wall with their drain only" : "") +
                    (noWall > 0 ? $", {noWall} fixture(s) whose wall is not known (add them by hand)" : "") + ".";
         }
 
@@ -442,13 +562,11 @@ namespace SleevesOpenings.Automation
             int n = 0;
             (int, double) Sleeves(string code) => rules.Fixtures.TryGetValue(code, out var fs) ? (fs.Count, fs.Spacing) : (1, 0);
 
-            // the architect's blocks, read from the files: each kind identified once over every floor, from the plumbing
-            // labels next to its copies, its drawing and its name (no one names anything), then located
-            var map = FixtureBlockMap.Load();
+            // the architect's blocks, read from the files: each kind identified once over every floor from the model alone
+            // (its name, else its drawing; the plan labels only compare afterwards), then located
+            var map = FixtureBlockMap.Load(App.Log);
             var cats = plans.Where(p => p.Strokes.Count > 0).ToDictionary(p => p, p => DwgFixtureCatalog.Read(p, rules, map));
-            var votes = labels.Where(c => c.HasPosition && c.Level != null)
-                              .Select(c => new DwgFixtureCatalog.Label { Level = c.Level, Tag = c.Tag, X = c.X, Y = c.Y }).ToList();
-            var unclear = DwgFixtureCatalog.Identify(cats.Values.ToList(), votes, map);
+            var unclear = DwgFixtureCatalog.Identify(cats.Values.ToList(), map);
             foreach (var c in cats.Values.Where(c => c.Used)) DwgFixtureCatalog.Locate(c, rules);
             foreach (var note in unclear.Distinct()) { App.Log("AutoRun fixtures: " + note); messages?.Add("  ! " + note); }
             var kinds = cats.Values.Where(c => c.Used).SelectMany(c => c.Items).Where(i => i.Code != null).GroupBy(i => i.Name)
@@ -920,8 +1038,8 @@ namespace SleevesOpenings.Automation
                 "WC" => @"toilet|water.?closet|\bwc\b",
                 "LAV" => @"lavatory|\blav\b|vanity|basin",
                 "BT" => @"bathtub|\btub\b",
-                "KS" => @"kitchen.*sink|sink.*kitchen|\bks\b",
-                "LS" => @"laundry.*sink|sink.*laundry|utility.*sink|\bls\b",
+                "KS" => @"(kitchen|island).*sink|sink.*(kitchen|island)|\bks\b",
+                "LS" => @"(laundry|utility|mop|service).*sink|sink.*(laundry|utility|mop|service)|\bls\b",
                 "W/D" => @"washer|washing.?machine|\bw/d\b|\bwd\b",
                 "WD" => @"washer|washing.?machine|\bwd\b",
                 "SH" => @"shower",
@@ -963,7 +1081,7 @@ namespace SleevesOpenings.Automation
             }
             int fixtures = result.Count(f => Classify(f.Name, rules) != null);
             messages.Add($"Fixtures found in the model: {fixtures} (this model and {links} Revit link(s)" + (unloaded > 0 ? $", {unloaded} link(s) not loaded" : "") + ")" +
-                         (fixtures == 0 ? " — none: fixtures drawn only in linked DWGs are not read yet; see the log for the families seen" : "") + ".");
+                         (fixtures == 0 ? " â€” none: fixtures drawn only in linked DWGs are not read yet; see the log for the families seen" : "") + ".");
             return result;
         }
 

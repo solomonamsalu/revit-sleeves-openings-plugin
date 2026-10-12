@@ -189,8 +189,15 @@ namespace SleevesOpenings.Automation
                     // a fixture's sleeve stays where the model's fixture drains (the model decides): a column or structure there
                     // is flagged with the warning, never cleared by moving the sleeve off the fixture
                     if (c.IsFixture && warnings.Any(Avoidable))
-                        c.Notes.Add("kept at the fixture (fixture sleeves are not moved to clear): " +
-                                    string.Join("; ", warnings.Where(Avoidable).Select(PlacementGuard.Clean).Distinct()) + "; check");
+                    {
+                        // a sink's / lavatory's / washer's drain in the wall behind it slides along that wall to clear (office
+                        // review: every sleeve 1'-0" from the column face); a toilet, tub or shower drains where it stands
+                        var slid = points.Count == 1 ? SlideAlongWall(c, points[0], hw, hl, spec0.System, guard, warnings, list) : null;
+                        if (slid.HasValue) { points[0] = slid.Value.Point; warnings = slid.Value.Warnings; }
+                        else
+                            c.Notes.Add("kept at the fixture (fixture sleeves are not moved off it to clear): " +
+                                        string.Join("; ", warnings.Where(Avoidable).Select(PlacementGuard.Clean).Distinct()) + "; check");
+                    }
                     else if (points.Count == 1 && (spec0.Role == FamilyRole.RegularOpening || spec0.Role == FamilyRole.RoundSleeve) && c.System != "GarbageChute" &&
                         _rules.Automation.Decisions?.AvoidStructure == true && warnings.Any(Avoidable))
                     {
@@ -283,7 +290,35 @@ namespace SleevesOpenings.Automation
 
         /// <summary>Warnings worth moving or reshaping an opening for: structure (rules 27-28), columns (rule 26), wall edges.</summary>
         private static bool Avoidable(string warning) =>
-            PlacementGuard.IsHard(warning) || warning.Contains("(rule 26") || warning.Contains("edge of wall");
+            PlacementGuard.IsHard(warning) || warning.Contains("(rule 26") || warning.Contains("edge of wall") || warning.Contains("slab edge");
+
+        /// <summary>Fixtures whose drain sleeve sits in the wall behind them (it can shift along the wall).</summary>
+        private static readonly HashSet<string> WallDrains = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "LAV", "KS", "LS", "W/D", "WD" };
+
+        /// <summary>
+        /// A wall fixture's drain sleeve that a column or the slab edge is in the way of: the nearest spot along its wall
+        /// (shiftStep at a time, up to maxShift, either way) free of all of them and of the other openings. Null = none (or
+        /// not a wall fixture, or its wall is not known): it stays at the fixture, flagged.
+        /// </summary>
+        private (XYZ Point, List<string> Warnings)? SlideAlongWall(Crossing c, XYZ at, double hwIn, double hlIn, SystemKind? system, PlacementGuard guard,
+                                                                   List<string> now, List<Crossing> all)
+        {
+            var d = _rules.Automation.Decisions;
+            if (c.Back == null || c.Tag == null || !WallDrains.Contains(c.Tag) || d?.AvoidStructure != true || d.ShiftStep <= 0) return null;
+            double ax = -c.Back[1], ay = c.Back[0];
+            for (double s = d.ShiftStep; s <= d.MaxShift + 1e-6; s += d.ShiftStep)
+                foreach (int sign in new[] { 1, -1 })
+                {
+                    var p = new XYZ(at.X + ax * sign * s / 12, at.Y + ay * sign * s / 12, 0);
+                    var w = guard.Check(p, hwIn, hlIn, system).Distinct().ToList();
+                    if (w.Any(Avoidable) || OnAnother(c, p, hwIn * 2, hlIn * 2, all)) continue;
+                    var cleared = now.Where(Avoidable).Select(PlacementGuard.Clean).Distinct();
+                    c.X = p.X; c.Y = p.Y;
+                    c.Notes.Add($"moved {s:0.#}\" along the wall behind the fixture to clear: {string.Join("; ", cleared)}; check");
+                    return (p, w);
+                }
+            return null;
+        }
 
         /// <summary>
         /// An opening that hits structure, a column or a wall edge: first the same spot with the duct reshaped (same area,
@@ -522,6 +557,9 @@ namespace SleevesOpenings.Automation
         /// <summary>A plumbing / sprinkler sleeve's group on its level ("S-3" -> level|3); null for other openings.</summary>
         private string GroupOf(Crossing c)
         {
+            // a fixture's own sleeves (its drain, its vent / hot / cold row) are no riser group: they stay at their fixture, and
+            // the same names on every sink (HW-KS, V-WC) would otherwise make all of a floor's sinks one group that moves together
+            if (c.IsFixture) return null;
             bool pipe = (_rules.Plumbing?.IsPipeSystem(c.System) ?? false) || (_rules.Sprinkler?.IsPipeSystem(c.System) ?? false);
             int i = c.Tag?.IndexOf('-') ?? -1;
             return pipe && i >= 0 ? c.Level + "|" + c.Tag.Substring(i + 1) : null;
@@ -566,7 +604,7 @@ namespace SleevesOpenings.Automation
             {
                 // plumbing / sprinkler: a round MPI sleeve, pipe + 2" rounded up to the next sleeve size; named "S-P3", "SP-1"
                 var pipeKind = Enum.TryParse(c.System, out SystemKind pk) ? pk : SystemKind.Sanitary;
-                spec = OpeningSpec.Round(pipeKind, pipes.SleeveFor(c.Size.Diameter.Value), c.Tag);
+                spec = OpeningSpec.Round(pipeKind, c.SleeveSize ?? pipes.SleeveFor(c.Size.Diameter.Value), c.Tag);
                 spec.Riser = c.IsFixture ? null : c.Tag;                // a fixture's sleeve is not a floor-to-floor riser
                 return spec;
             }

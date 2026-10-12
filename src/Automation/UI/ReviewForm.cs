@@ -40,7 +40,7 @@ namespace SleevesOpenings.Automation.UI
 
         private static readonly string[] Filters =
         {
-            "Needs attention", "Openings from the drawings", "Reported (not placed)", "Final Check", "S&O set differences", "Everything"
+            "Placed", "Needs attention", "Openings from the drawings", "Reported (not placed)", "Final Check", "S&O set differences", "Everything"
         };
 
         public ReviewForm(UIDocument uidoc, RunReport report, LevelMap levels, string summary, string viewSuffix, string html, string folder)
@@ -104,18 +104,20 @@ namespace SleevesOpenings.Automation.UI
             CancelButton = close;
 
             _filter.SelectedIndexChanged += (s, e) => Fill();
-            _filter.SelectedIndex = _report.Attention.Any() ? 0 : 1;
+            // the placed sleeves first; nothing placed -> what needs attention
+            _filter.SelectedIndex = Rows(0).Any() ? 0 : _report.Attention.Any() ? 1 : 2;
         }
 
         private IEnumerable<ReportRow> Rows(int filter)
         {
             switch (filter)
             {
-                case 0: return _report.Attention;
-                case 1: return _report.Rows.Where(r => r.Section == ReportRow.Opening);
-                case 2: return _report.Rows.Where(r => r.Section == ReportRow.Reported);
-                case 3: return _report.Rows.Where(r => r.Section == ReportRow.FinalCheck);
-                case 4: return _report.Rows.Where(r => r.Section == ReportRow.SoSetDiff || (r.SoSet != null && !r.SoSet.StartsWith("same") && !r.SoSet.StartsWith("inside")));
+                case 0: return _report.Rows.Where(r => r.Section == ReportRow.Opening && string.Equals(r.Result, "placed", StringComparison.OrdinalIgnoreCase));
+                case 1: return _report.Attention;
+                case 2: return _report.Rows.Where(r => r.Section == ReportRow.Opening);
+                case 3: return _report.Rows.Where(r => r.Section == ReportRow.Reported);
+                case 4: return _report.Rows.Where(r => r.Section == ReportRow.FinalCheck);
+                case 5: return _report.Rows.Where(r => r.Section == ReportRow.SoSetDiff || (r.SoSet != null && !r.SoSet.StartsWith("same") && !r.SoSet.StartsWith("inside")));
                 default: return _report.Rows;
             }
         }

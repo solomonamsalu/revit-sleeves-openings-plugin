@@ -162,6 +162,21 @@ namespace SleevesOpenings.Automation.Report
                 sb.Append($"<div class=\"tile {t.Tone} static\"><b>{t.Count}</b><span>{E(t.Label)}</span></div>");
             sb.Append("</nav>");
 
+            // ---- every opening, by floor, with search and filters: first, showing the placed ones
+            sb.Append($"<section id=\"openings\"><div class=\"head\"><h2>Openings by floor</h2><span class=\"count\" id=\"shown\">{openings.Count}</span></div>");
+            sb.Append("<div class=\"tools\"><input id=\"q\" type=\"search\" placeholder=\"Search tag, system, notes…\" aria-label=\"Search\">");
+            sb.Append("<div class=\"filters\" role=\"group\" aria-label=\"Status\"><button type=\"button\" data-filter=\"\">All</button>");
+            foreach (var t in tiles.Where(t => t.Count > 0 && t.Key != "reported" && t.Key != "check"))
+                sb.Append($"<button type=\"button\" data-filter=\"{t.Key}\">{E(t.Label)}</button>");
+            sb.Append("</div></div>");
+            var floors = openings.GroupBy(r => r.Floor).OrderByDescending(g => FloorKey.Order(g.Key)).ToList();
+            sb.Append("<div class=\"floornav\">");
+            foreach (var g in floors) sb.Append($"<a href=\"#f-{Id(g.Key)}\">{E(FloorKey.Describe(g.Key))} <small>{g.Count()}</small></a>");
+            sb.Append("</div>");
+            foreach (var g in floors)
+                sb.Append($"<div class=\"floor\" id=\"f-{Id(g.Key)}\"><h3>{E(g.First().Where)}</h3>{Table(g.OrderBy(r => r.Tag).ToList(), false, true)}</div>");
+            sb.Append("<p class=\"empty\" id=\"none\" hidden>No opening matches.</p></section>");
+
             // ---- needs attention, most urgent first
             sb.Append($"<section id=\"attention\"><div class=\"head\"><h2>Needs attention</h2><span class=\"count\">{attention.Count}</span></div>");
             if (attention.Count == 0) sb.Append("<p class=\"empty\">Nothing to look at: every opening was placed and passes Final Check.</p>");
@@ -182,21 +197,6 @@ namespace SleevesOpenings.Automation.Report
                 }
             }
             sb.Append("</section>");
-
-            // ---- every opening, by floor, with search and filters
-            sb.Append($"<section id=\"openings\"><div class=\"head\"><h2>Openings by floor</h2><span class=\"count\" id=\"shown\">{openings.Count}</span></div>");
-            sb.Append("<div class=\"tools\"><input id=\"q\" type=\"search\" placeholder=\"Search tag, system, notes…\" aria-label=\"Search\">");
-            sb.Append("<div class=\"filters\" role=\"group\" aria-label=\"Status\"><button type=\"button\" class=\"on\" data-filter=\"\">All</button>");
-            foreach (var t in tiles.Where(t => t.Count > 0 && t.Key != "reported" && t.Key != "check"))
-                sb.Append($"<button type=\"button\" data-filter=\"{t.Key}\">{E(t.Label)}</button>");
-            sb.Append("</div></div>");
-            var floors = openings.GroupBy(r => r.Floor).OrderByDescending(g => FloorKey.Order(g.Key)).ToList();
-            sb.Append("<div class=\"floornav\">");
-            foreach (var g in floors) sb.Append($"<a href=\"#f-{Id(g.Key)}\">{E(FloorKey.Describe(g.Key))} <small>{g.Count()}</small></a>");
-            sb.Append("</div>");
-            foreach (var g in floors)
-                sb.Append($"<div class=\"floor\" id=\"f-{Id(g.Key)}\"><h3>{E(g.First().Where)}</h3>{Table(g.OrderBy(r => r.Tag).ToList(), false, true)}</div>");
-            sb.Append("<p class=\"empty\" id=\"none\" hidden>No opening matches.</p></section>");
 
             // ---- the other sections
             foreach (var (section, title, blurb) in new[]
@@ -336,8 +336,8 @@ footer{margin-top:28px;color:var(--muted);font-size:12px;text-align:center}
         /// <summary>Tiles and chips filter the openings list; the search box narrows it; printing opens every collapsed part.</summary>
         private const string Js = @"
 (function(){
-var state={s:'',q:''};
 var rows=[].slice.call(document.querySelectorAll('table.filterable tbody tr'));
+var state={s:rows.some(function(tr){return tr.dataset.s==='placed';})?'placed':'',q:''};
 function apply(){
   var n=0;
   rows.forEach(function(tr){var ok=(!state.s||tr.dataset.s===state.s)&&(!state.q||tr.dataset.t.indexOf(state.q)>=0);tr.hidden=!ok;if(ok)n++;});

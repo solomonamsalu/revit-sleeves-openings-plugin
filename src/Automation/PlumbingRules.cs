@@ -61,7 +61,8 @@ namespace SleevesOpenings.Automation
         {
             ["WC"] = new FixtureSleeve { Name = "toilet", Pipe = 4, Vent = 2 },
             ["LAV"] = new FixtureSleeve { Name = "lavatory", Pipe = 1.5, Vent = 2 },
-            ["BT"] = new FixtureSleeve { Name = "bathtub", Pipe = 4, Count = 2, Spacing = 7 },      // two 6" sleeves, 1" clear
+            // two 6" sleeves, 1" clear, for a tub running left-right on the floor plan; one 10" for one running up-down
+            ["BT"] = new FixtureSleeve { Name = "bathtub", Pipe = 4, Count = 2, Spacing = 7, Vertical = new FixtureLayout { Count = 1, Sleeve = 10 } },
             ["SH"] = new FixtureSleeve { Name = "shower", Pipe = 4 },                                // 6" sleeve (office S&O sets)
             ["KS"] = new FixtureSleeve { Name = "kitchen sink", Pipe = 2, Vent = 2, Water = 1, StackReach = 60 },
             ["LS"] = new FixtureSleeve { Name = "laundry sink", Pipe = 2, Vent = 2, Water = 1, StackReach = 60 },
@@ -110,6 +111,14 @@ namespace SleevesOpenings.Automation
         /// </summary>
         [JsonProperty("stackServices", ObjectCreationHandling = ObjectCreationHandling.Replace)]
         public List<string> StackServices { get; set; } = new List<string> { "S", "V", "HW", "CW" };
+        /// <summary>
+        /// Auto Run: a toilet no engineer's riser serves (no sanitary riser of the plans within <see cref="ToiletStackReach"/>)
+        /// gets a stack by the Extract Stacks rule (wet wall or chase, <see cref="StackServices"/>), flagged for a check.
+        /// The engineer's P# risers always come first.
+        /// </summary>
+        [JsonProperty("toiletStacks")] public bool ToiletStacks { get; set; } = true;
+        /// <summary>Inches: an engineer's sanitary riser this close to a toilet serves it (no stack of the office rule there).</summary>
+        [JsonProperty("toiletStackReach")] public double ToiletStackReach { get; set; } = 96;
         /// <summary>Regex on the DWG layers of what an alteration removes ("TO REMOVE"): a fixture block inserted on one is never sleeved.</summary>
         [JsonProperty("dwgRemoveLayers")] public string DwgRemoveLayers { get; set; } = @"TO REMOVE|REMOVE|DEMO";
 
@@ -240,5 +249,18 @@ namespace SleevesOpenings.Automation
         /// the stack, only the stacks go through the slab (24 Skillman S&amp;O: kitchen sinks have no sleeve of their own).
         /// </summary>
         [JsonProperty("stackReach")] public double StackReach { get; set; }
+        /// <summary>
+        /// Tubs: the sleeves when the tub runs up-down on the floor plan (office rule 2026-10-12: left-right = the two 6"
+        /// above, up-down = one 10"); null = the same as left-right.
+        /// </summary>
+        [JsonProperty("vertical")] public FixtureLayout Vertical { get; set; }
+    }
+
+    /// <summary>Another layout of a fixture's sleeves: how many, how far apart (c-c inches) and their size (inches).</summary>
+    public class FixtureLayout
+    {
+        [JsonProperty("count")] public int Count { get; set; } = 1;
+        [JsonProperty("spacing")] public double Spacing { get; set; }
+        [JsonProperty("sleeve")] public double Sleeve { get; set; }
     }
 }

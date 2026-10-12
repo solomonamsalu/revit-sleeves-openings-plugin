@@ -342,7 +342,7 @@
     "fixtures": {
       "WC": { "name": "toilet", "pipe": 4, "vent": 2 },
       "LAV": { "name": "lavatory", "pipe": 1.5, "vent": 2 },
-      "BT": { "name": "bathtub", "pipe": 4, "count": 2, "spacing": 7 },
+      "BT": { "name": "bathtub", "pipe": 4, "count": 2, "spacing": 7, "vertical": { "count": 1, "sleeve": 10 } },
       "SH": { "name": "shower", "pipe": 4 },
       "KS": { "name": "kitchen sink", "pipe": 2, "vent": 2, "water": 1, "stackReach": 60 },
       "LS": { "name": "laundry sink", "pipe": 2, "vent": 2, "water": 1, "stackReach": 60 },

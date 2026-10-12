@@ -70,6 +70,8 @@ namespace SleevesOpenings.Commands
             public bool FromDwg;
             /// <summary>Unit plan direction ([x, y], model) from the fixture to the wall behind it; null = not known (tub, shower).</summary>
             public double[] Back;
+            /// <summary>Sleeve size (inches) a fixture rule sets (a tub running up-down: 10"); null = from the pipe size.</summary>
+            public double? Sleeve;
             public double Cx => (X0 + X1) / 2;
             public double Cy => (Y0 + Y1) / 2;
             public bool Sleeved(PlumbingRules rules) => Code != null && rules.Fixtures.ContainsKey(Code);
@@ -95,11 +97,10 @@ namespace SleevesOpenings.Commands
             if (dwg)
             {
                 plans = DwgFixtureReader.Read(doc, rules, level.Name);
-                // the plumbing plans' fixture labels (from this model's latest Auto Run) vote on what each block is
-                var labels = DwgFixtureCatalog.LabelsFromLastRun(doc, rules);
+                // the model alone says what each block is (its name, else its drawing): no plan labels
                 foreach (var p in plans)
                 {
-                    var cat = DwgFixtureCatalog.ForPlan(p, rules, labels, notes);
+                    var cat = DwgFixtureCatalog.ForPlan(p, rules, notes);
                     if (cat.Note != null) { notes.Add(cat.Note); App.Log("Extract fixtures: " + cat.Note); }
                     IEnumerable<FixtureDrains.Shape> shapes;
                     if (cat.Used)
@@ -189,6 +190,15 @@ namespace SleevesOpenings.Commands
             var kept = new List<Row>();
             foreach (var r in rows)
                 if (!kept.Any(k => k.Code == r.Code && k.FromDwg == r.FromDwg && k.Points[0].DistanceTo(r.Points[0]) <= SameFixtureFeet)) kept.Add(r);
+
+            // tubs: two 6" along a tub running left-right on the floor plan, one 10" at the drain of one running up-down
+            var right = TubSleeves.PlanRight(doc, level.Name);
+            foreach (var r in kept.Where(r => r.Code == "BT" && r.Points.Count > 0))
+            {
+                var (points, sleeve, how) = TubSleeves.Decide(rules, r.Points, TubSleeves.Along(r.Points, r.X0, r.Y0, r.X1, r.Y1), right);
+                r.Points = points; r.Sleeve = sleeve;
+                if (how != null) r.How = (r.How == null ? "" : r.How + "; ") + how;
+            }
 
             var grids = Grids(doc);
             foreach (var r in kept)
@@ -305,6 +315,72 @@ namespace SleevesOpenings.Commands
             return Path.Combine(folder, Safe(level.Name) + ".csv");
         }
 
+        /// <summary>Stacked toilets' stacks this close (feet) on other floors are one stack: its name and spot are reused.</summary>
+        private const double StackSameFeet = 1.5;
+        /// <summary>A sanitary sleeve already this close (feet) to a toilet's stack spot is that stack.</summary>
+        private const double StackThereFeet = 1.0;
+
+        /// <summary>
+        /// Every toilet's waste stack (Standards Manual, toilet sleeves page): one green sanitary sleeve in the wall behind
+        /// it, 4 1/4" off its centre line on the outer side (<see cref="StackFinder"/>; double toilets each get their own),
+        /// unless a sanitary sleeve (not a fixture's own drain) is already at that spot. Sanitary only (user 2026-10-12): the
+        /// vents and water are other things. A stack already on a floor above or below at the spot gives its name and
+        /// position (one S-T# up the building).
+        /// </summary>
+        private static List<Crossing> ToiletStacks(Level level, string floor, List<Row> rows, PlumbingRules plumbing, ExistingReport existing, out string note)
+        {
+            note = null;
+            var list = new List<Crossing>();
+            var sleeved = rows.Where(r => r.Sleeved(plumbing) && r.Points.Count > 0).ToList();
+            if (!plumbing.ToiletStacks || !sleeved.Any(r => r.Code == "WC")) return list;
+            double Dist(double x1, double y1, double x2, double y2) => Math.Sqrt((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2));
+
+            // a sanitary sleeve already here that is not a fixture's own drain is a stack
+            var drains = sleeved.SelectMany(r => r.Points).ToList();
+            var stacksHere = existing.Items.Where(e => e.Point != null && e.System == "Sanitary" && AutoPlacer.SameFloor(e.Level, level.Name) &&
+                                                       !(e.Riser ?? "").StartsWith("FX-", StringComparison.OrdinalIgnoreCase) &&
+                                                       !drains.Any(p => Dist(p.X, p.Y, e.Point.X, e.Point.Y) <= 1.0)).ToList();
+            bool There(double x, double y) => stacksHere.Any(e => Dist(x, y, e.Point.X, e.Point.Y) <= StackThereFeet);
+
+            var fixtures = sleeved.Select(r => new StackFinder.Fixture
+            {
+                Code = r.Code, Name = r.Name, Source = r.Source, Back = r.Back,
+                X = r.Points.Average(p => p.X), Y = r.Points.Average(p => p.Y), Points = r.Points.Select(p => (p.X, p.Y)).ToList()
+            }).ToList();
+            var found = StackFinder.Find(fixtures, new List<((double X, double Y) A, (double X, double Y) B)>(), new List<StackFinder.Pipe>(),
+                                         new List<StackFinder.Mark>(), plumbing, false);
+
+            // the toilet stacks already named on any floor (S-T1...): stacked bathrooms share their stack's name and spot
+            var named = existing.Items.Where(e => e.Point != null && e.Riser != null && System.Text.RegularExpressions.Regex.IsMatch(e.Riser, @"^S-T\d+$"))
+                                      .Select(e => (Name: e.Riser, X: e.Point.X, Y: e.Point.Y)).ToList();
+            int next = named.Select(n => int.Parse(n.Name.Substring(3))).DefaultIfEmpty(0).Max();
+            int served = 0, placed = 0;
+            foreach (var s in found.Stacks.Where(s => s.Kind == "toilet stack"))
+            {
+                foreach (var v in s.StackSleeves.Where(v => v.System == "Sanitary"))
+                {
+                    if (There(v.X, v.Y)) { served++; continue; }
+                    var same = named.Where(n => Dist(n.X, n.Y, v.X, v.Y) <= StackSameFeet).OrderBy(n => Dist(n.X, n.Y, v.X, v.Y)).FirstOrDefault();
+                    double x = same.Name != null ? same.X : v.X, y = same.Name != null ? same.Y : v.Y;
+                    string name = same.Name ?? $"S-T{++next}";
+                    if (same.Name == null) named.Add((name, x, y));
+                    var c = new Crossing
+                    {
+                        Floor = floor, Level = level.Name, Tag = name, System = v.System, Size = new DuctSize { Diameter = v.Pipe },
+                        X = x, Y = y, Status = Crossing.Place, Confidence = "medium", Check = true, FromModel = true, Pdf = "not in the PDF"
+                    };
+                    c.From.Add($"{FloorKey.Describe(floor)}: the toilet's waste stack by the Standards Manual (every toilet a green 6 in the wall behind it)");
+                    c.Notes.Add($"{Units.FormatInches(v.Size)} waste stack {s.How}" + (same.Name != null ? $"; lined up with {same.Name} on another floor" : ""));
+                    list.Add(c);
+                    placed++;
+                }
+            }
+            if (placed + served > 0)
+                note = $"Toilet stacks: {placed} sanitary stack sleeve(s) placed behind the toilets (flagged for a check), {served} already had a sanitary sleeve at the spot.";
+            App.Log("Extract fixtures: " + (note ?? "no toilet stacks needed"));
+            return list;
+        }
+
         /// <summary>
         /// Sleeves at the fixtures, through Auto Run's placer (sizes from rules plumbing.fixtures, office families, structure
         /// checks). A fixture with a sleeve already near its sleeve point is left as it is.
@@ -326,13 +402,15 @@ namespace SleevesOpenings.Commands
                 var c = new Crossing
                 {
                     Floor = floor, Level = level.Name, Tag = r.Code, System = fs.System, Size = new DuctSize { Diameter = fs.Pipe },
-                    X = r.Points.Average(p => p.X), Y = r.Points.Average(p => p.Y), Status = Crossing.Place, Confidence = "medium"
+                    X = r.Points.Average(p => p.X), Y = r.Points.Average(p => p.Y), Status = Crossing.Place, Confidence = "medium",
+                    SleeveSize = r.Sleeve
                 };
                 c.From.Add($"{FloorKey.Describe(floor)}: fixture '{r.Code}' ({fs.Name}) from {r.Source}");
                 if (r.Points.Count > 1) { c.EachPoint = true; c.Points.AddRange(r.Points.Select(p => new[] { p.X, p.Y })); }
                 crossings.Add(c);
             }
-            if (crossings.Count == 0) return $"Nothing to place: {already} fixture(s) already have a sleeve within 1'-6\".";
+            crossings.AddRange(ToiletStacks(level, floor, rows, plumbing, existing, out string stackNote));
+            if (crossings.Count == 0) return $"Nothing to place: {already} fixture(s) already have a sleeve within 1'-6\"." + (stackNote != null ? "\n" + stackNote : "");
 
             var placer = new AutoPlacer(doc, rules, state, existing, state.Automation.Existing);
             placer.LoadMissingFamilies(crossings);
@@ -346,6 +424,7 @@ namespace SleevesOpenings.Commands
             return $"{level.Name}: {outcomes.Count(o => o.Result == PlacementOutcome.Placed)} sleeve(s) placed, " +
                    $"{already + outcomes.Count(o => o.Result == PlacementOutcome.Existing)} already had one, " +
                    $"{outcomes.Count(o => o.Result == PlacementOutcome.Skipped)} skipped (structure or no family), {outcomes.Count(o => o.Result == PlacementOutcome.Failed)} failed." +
+                   (stackNote != null ? "\n" + stackNote : "") +
                    (outcomes.Any(o => o.Result == PlacementOutcome.Skipped || o.Result == PlacementOutcome.Failed)
                        ? "\n\n" + string.Join("\n", outcomes.Where(o => o.Detail != null && o.Result != PlacementOutcome.Existing).Select(o => $"{o.Crossing.Name}: {o.Detail}")) : "");
         }

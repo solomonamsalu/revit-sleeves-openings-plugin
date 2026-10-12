@@ -391,7 +391,14 @@ namespace SleevesOpenings.Automation.Alignment
             // ---- 5. is the drawing each floor was lined up with really at Revit's position?
             ProveRevit(result, loadedFor, grids);
 
-            // ---- messages
+            Summarise(result);
+            return result;
+        }
+
+        /// <summary>The result's messages, from its floors, anchors and Revit proof (again after a later step changes them).</summary>
+        public static void Summarise(AlignmentResult result)
+        {
+            result.Messages.Clear();
             int usable = result.Floors.Count(f => f.Usable);
             result.Messages.Add($"{usable} of {result.Floors.Count} floor(s) line up with a drawing placed at Revit's position.");
             foreach (var f in result.Floors.Where(f => !f.Usable))
@@ -403,7 +410,6 @@ namespace SleevesOpenings.Automation.Alignment
                 ? $"Revit position PROVEN: {result.RevitSummary}."
                 : $"Revit position NOT proven: {result.RevitSummary}. Check the marks in the model before placing.");
             result.Messages.Add(result.Passed ? "Result: PASSED." : "Result: NOT PASSED — nothing will be placed.");
-            return result;
         }
 
         /// <summary>Feet a floor's risers may lie outside the grid lines' extent (balconies, a cellar beyond the grid).</summary>

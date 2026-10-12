@@ -16,7 +16,9 @@ namespace SleevesOpenings.Automation.Drawings
         public int Page;
         public string SheetNumber;       // "M-305.00" when the title block shows one
         public string Title;             // largest plan title on the page, e.g. "5TH FLOOR PLAN"
-        public string Floor;             // FloorKey, null when not a single-floor plan
+        public string Floor;             // FloorKey, null when not a floor plan; the first floor of a typical-floor range
+        /// <summary>Every floor the plan is drawn for: one, or each floor of a range ("2ND-7TH FLOOR PLAN" -> F2..F7).</summary>
+        public List<string> Floors = new List<string>();
         public bool HasAbbreviations;    // an ABBREVIATIONS table header is on the page
         public bool HasSymbols;
         public bool HasRiserDiagram;
@@ -28,6 +30,15 @@ namespace SleevesOpenings.Automation.Drawings
             HasRiserDiagram ? SheetKind.RiserDiagram :
             HasAbbreviations || HasSymbols ? SheetKind.Legend :
             HasSchedule ? SheetKind.Schedule : SheetKind.Other;
+
+        /// <summary>This page as the plan of one of its floors.</summary>
+        public PdfSheet For(string floor)
+        {
+            if (floor == Floor) return this;
+            var copy = (PdfSheet)MemberwiseClone();
+            copy.Floor = floor;
+            return copy;
+        }
     }
 
     public class PdfSheetIndex
@@ -40,7 +51,8 @@ namespace SleevesOpenings.Automation.Drawings
         /// <summary>Tag definitions from the abbreviations table, symbols list and schedules.</summary>
         public SleevesOpenings.Automation.Legend.Legend Legend = new SleevesOpenings.Automation.Legend.Legend();
 
-        public IEnumerable<PdfSheet> FloorPlans => Sheets.Where(s => s.Floor != null);
+        /// <summary>One entry per floor: a typical-floor page ("2ND-7TH FLOOR PLAN") is the plan of each floor in its range.</summary>
+        public IEnumerable<PdfSheet> FloorPlans => Sheets.Where(s => s.Floor != null).SelectMany(s => s.Floors.Select(s.For));
 
         private static readonly Regex SheetNo = new Regex(@"^(M|P|SP|FP|FA|A|S|E|H|PL)-\d{3}(\.\d{2})?$", RegexOptions.IgnoreCase);
 
@@ -69,11 +81,14 @@ namespace SleevesOpenings.Automation.Drawings
                     {
                         double top = titled.Max(l => l.Size);
                         var biggest = titled.Where(l => l.Size >= top - 0.5).ToList();
-                        var floors = biggest.Select(l => FloorKey.FromPlanTitle(l.Text)).Where(k => k != null).Distinct().ToList();
-                        if (floors.Count == 1 && top >= 10)
+                        var plans = biggest.Select(l => (Line: l, Floors: FloorKey.FromPlanTitleAll(l.Text))).Where(p => p.Floors.Count > 0).ToList();
+                        if (plans.Select(p => string.Join(",", p.Floors)).Distinct().Count() == 1 && top >= 10)
                         {
-                            sheet.Floor = floors[0];
-                            sheet.Title = biggest.First(l => FloorKey.FromPlanTitle(l.Text) == floors[0]).Text;
+                            sheet.Floors = plans[0].Floors;
+                            sheet.Floor = sheet.Floors[0];
+                            sheet.Title = plans[0].Line.Text;
+                            if (sheet.Floors.Count > 1)
+                                index.Warnings.Add($"Page {page.Number} ({sheet.Title}) is used as the plan of the {FloorKey.Describe(sheet.Floors[0])} to the {FloorKey.Describe(sheet.Floors[sheet.Floors.Count - 1])}.");
                         }
                     }
 

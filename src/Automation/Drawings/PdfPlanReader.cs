@@ -803,7 +803,7 @@ namespace SleevesOpenings.Automation.Drawings
                 found.Add((real / paper, m.Value.Trim(), l));
             }
             if (found.Count == 0) return (fallback, null);
-            var titles = lines.Where(l => FloorKey.FromPlanTitle(l.Text) == sheet.Floor && Regex.IsMatch(l.Text, @"\bPLAN\b", RegexOptions.IgnoreCase)).ToList();
+            var titles = lines.Where(l => FloorKey.FromPlanTitleAll(l.Text).Contains(sheet.Floor) &&Regex.IsMatch(l.Text, @"\bPLAN\b", RegexOptions.IgnoreCase)).ToList();
             if (titles.Count > 0)
             {
                 var title = titles.OrderByDescending(t => t.Size).First();

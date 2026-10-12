@@ -33,6 +33,81 @@ namespace SleevesOpenings.Placement
             _walls = walls ?? new WallGeometry(doc, level, links);
             _columns = OnLevel(links.Collect(BuiltInCategory.OST_StructuralColumns).Concat(links.Collect(BuiltInCategory.OST_Columns)));
             _beams = OnLevel(links.Collect(BuiltInCategory.OST_StructuralFraming));
+            try { _slabs = Slabs(links); }
+            catch (Exception ex) { App.Log("PlacementGuard: slab outlines not read: " + ex.Message); }
+        }
+
+        /// <summary>The outer edges of the level's slabs (floors from the host and the links), host plan; empty = no slab check.</summary>
+        private readonly List<List<XYZ>> _slabs = new List<List<XYZ>>();
+
+        /// <summary>
+        /// Each floor on this level (its box spans the level, like the columns): the outer loop of every upward face, host
+        /// plan. A slab's own openings (shafts) are not edges: a sleeve in one is still over the slab.
+        /// </summary>
+        private List<List<XYZ>> Slabs(LinkedModels links)
+        {
+            var loops = new List<List<XYZ>>();
+            double z = _level.ProjectElevation;
+            foreach (var (e, box, src) in links.Collect(BuiltInCategory.OST_Floors))
+            {
+                if (!(e is Floor) || box.Min.Z - 1 > z || box.Max.Z + 1 < z) continue;
+                foreach (var solid in Solids(e.get_Geometry(new Options())))
+                    foreach (Face f in solid.Faces)
+                    {
+                        if (!(f is PlanarFace pf) || src.Transform.OfVector(pf.FaceNormal).Z < 0.9) continue;
+                        var outer = pf.GetEdgesAsCurveLoops()
+                                      .Select(l => l.SelectMany(c => c.Tessellate().Skip(1)).Select(p => src.Transform.OfPoint(p)).ToList())
+                                      .Where(l => l.Count >= 3).OrderByDescending(l => Math.Abs(Area(l))).FirstOrDefault();
+                        if (outer != null) loops.Add(outer);
+                    }
+            }
+            return loops;
+        }
+
+        private static IEnumerable<Solid> Solids(GeometryElement geo)
+        {
+            if (geo == null) yield break;
+            foreach (var g in geo)
+            {
+                if (g is Solid s && s.Volume > 0) yield return s;
+                else if (g is GeometryInstance gi)
+                    foreach (var inner in Solids(gi.GetInstanceGeometry())) yield return inner;
+            }
+        }
+
+        private static double Area(List<XYZ> l)
+        {
+            double a = 0;
+            for (int i = 0; i < l.Count; i++) { var p = l[i]; var q = l[(i + 1) % l.Count]; a += p.X * q.Y - q.X * p.Y; }
+            return a / 2;
+        }
+
+        private static bool Inside(List<XYZ> l, double x, double y)
+        {
+            bool inside = false;
+            for (int i = 0, j = l.Count - 1; i < l.Count; j = i++)
+                if ((l[i].Y > y) != (l[j].Y > y) && x < (l[j].X - l[i].X) * (y - l[i].Y) / (l[j].Y - l[i].Y) + l[i].X) inside = !inside;
+            return inside;
+        }
+
+        private bool OnSlab(double x, double y) => _slabs.Any(l => Inside(l, x, y));
+
+        /// <summary>
+        /// The general rule that a sleeve goes through the slab: its centre off every slab of the level = hard (the plans put
+        /// it beyond the building: moved in, else not placed); part of it over the edge = to clear (moved in like a column).
+        /// Null when it is on the slab or the level has no slab to check against.
+        /// </summary>
+        private string SlabEdge(XYZ pt, double hw, double hl)
+        {
+            if (_slabs.Count == 0) return null;
+            if (!OnSlab(pt.X, pt.Y)) return "!Outside the slab edge: the plans put it beyond the building (general rule: through the slab)";
+            for (int k = 0; k < 16; k++)
+            {
+                double a = k * Math.PI / 8;
+                if (!OnSlab(pt.X + hw * Math.Cos(a), pt.Y + hl * Math.Sin(a)))
+                    return "Over the slab edge: part of it is beyond the slab (general rule: through the slab)";
+            }
+            return null;
         }
 
         private List<Structural> OnLevel(IEnumerable<(Element Element, BoundingBoxXYZ Box, LinkedModels.Source Source)> elems)
@@ -69,6 +144,10 @@ namespace SleevesOpenings.Placement
             foreach (var b in _beams)
                 if (Overlaps(pt, hw, hl, b.Box))
                     warnings.Add($"!Inside structural beam {b.Label} (rule 28: never)");
+
+            // General rule: through the slab, never beyond its edge
+            var edge = SlabEdge(pt, hw, hl);
+            if (edge != null) warnings.Add(edge);
 
             // General rule: never at the edge of a wall
             foreach (var w in _walls.Straddled(pt, r))

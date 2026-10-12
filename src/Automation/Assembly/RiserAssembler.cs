@@ -81,6 +81,8 @@ namespace SleevesOpenings.Automation.Assembly
         public bool FromModel;
         /// <summary>Fixture sleeves: unit plan direction (Revit, [x, y]) from the fixture to the wall behind it; null = not known.</summary>
         public double[] Back;
+        /// <summary>Sleeve size (inches) set by a fixture rule (a tub running up-down: 10"); null = pipe + 2" rounded up.</summary>
+        public double? SleeveSize;
     }
 
     /// <summary>Something the drawings show that will not be placed, with the reason.</summary>

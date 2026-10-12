@@ -30,6 +30,29 @@ namespace SleevesOpenings.Automation.Drawings
         {
             public List<(double X, double Y)> Pts = new List<(double X, double Y)>();
             public bool Curved, Closed, Round, Straight, Kitchen;
+            /// <summary>An arc: its centre (placed), radius (block units) and sweep (radians), to join arcs into circles.</summary>
+            internal (double X, double Y)? ArcCentre;
+            internal double ArcRadius, ArcSweep;
+        }
+
+        /// <summary>
+        /// Arcs of one centre and radius that close the circle between them (a drain circle drawn as two half arcs, as in the
+        /// 1299 Findlay tub blocks) become one round closed line, so the shape reader sees the circle.
+        /// </summary>
+        private static void JoinArcs(List<Raw> lines)
+        {
+            var arcs = lines.Where(l => l.ArcCentre.HasValue && !l.Round).ToList();
+            var used = new HashSet<Raw>();
+            foreach (var a in arcs)
+            {
+                if (used.Contains(a)) continue;
+                double tol = 0.01 * a.ArcRadius + 1e-3;
+                var set = arcs.Where(b => !used.Contains(b) && Math.Abs(b.ArcRadius - a.ArcRadius) <= tol &&
+                                          Math.Abs(b.ArcCentre.Value.X - a.ArcCentre.Value.X) <= tol && Math.Abs(b.ArcCentre.Value.Y - a.ArcCentre.Value.Y) <= tol).ToList();
+                if (set.Count < 2 || set.Sum(b => b.ArcSweep) < 2 * Math.PI - 0.05) continue;
+                foreach (var b in set) { used.Add(b); lines.Remove(b); }
+                lines.Add(new Raw { Pts = set.SelectMany(b => b.Pts).ToList(), Curved = true, Closed = true, Round = true, Kitchen = a.Kitchen });
+            }
         }
 
         public class Found
@@ -166,6 +189,7 @@ namespace SleevesOpenings.Automation.Drawings
                     if (len > 1e-9) { f.Dx = (ex - f.Ix) / len; f.Dy = (ey - f.Iy) / len; }
                     f.Mirrored = inner.Det < 0;
                     Walk(ins.Block.Entities, inner, innerLayer, depth + 1, f, output, layers, map, inches);
+                    JoinArcs(f.Lines);
                     double size = f.Size * inches;
 
                     // the blocks it is made of, each on its own
@@ -175,6 +199,7 @@ namespace SleevesOpenings.Automation.Drawings
                         if (Layers.Is(layers.Remove, LayerOf(child)) || child.Block?.Entities == null) continue;
                         var part = new Found { Name = NameOf(child) };
                         Walk(new Entity[] { child }, inner, innerLayer, depth + 1, part, output, layers, map, inches);
+                        JoinArcs(part.Lines);
                         if (part.Lines.Count > 0) parts.Add(part);
                     }
                     int fixtureParts = parts.Count(q => q.Size * inches >= MinFixtureInches && q.Size * inches < MaxFixtureInches);
@@ -253,6 +278,8 @@ namespace SleevesOpenings.Automation.Drawings
                         }
                         r.Curved = true;
                         r.Closed = r.Round = s1 - s0 >= 2 * Math.PI - 1e-3;
+                        r.ArcCentre = xf.Apply(flip ? -a.Center.X : a.Center.X, a.Center.Y);
+                        r.ArcRadius = a.Radius; r.ArcSweep = s1 - s0;
                         break;
                     }
                 case Circle c:
@@ -357,18 +384,43 @@ namespace SleevesOpenings.Automation.Drawings
     {
         public static string FilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SleevesOpenings", "fixture-blocks.json");
 
-        public static Dictionary<string, string> Load()
+        /// <summary>
+        /// The office table. An entry the block's own name contradicts ("Toilet Bowl..." saved as LAV, learned once from plan
+        /// labels next to the wrong fixture) is dropped and the table saved again, so the name decides it afresh.
+        /// </summary>
+        public static Dictionary<string, string> Load(Action<string> log = null)
         {
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 if (File.Exists(FilePath))
                 {
                     var read = Newtonsoft.Json.JsonConvert.DeserializeObject<Dictionary<string, string>>(File.ReadAllText(FilePath));
-                    if (read != null) return new Dictionary<string, string>(read, StringComparer.OrdinalIgnoreCase);
+                    if (read != null) map = new Dictionary<string, string>(read, StringComparer.OrdinalIgnoreCase);
                 }
             }
             catch (Exception) { }
-            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            var wrong = map.Where(kv => Contradicts(kv.Value, Suggest(kv.Key))).ToList();
+            if (wrong.Count > 0)
+            {
+                foreach (var kv in wrong)
+                {
+                    log?.Invoke($"Fixture block table: '{kv.Key}' = {kv.Value} dropped, its name says {Suggest(kv.Key)}");
+                    map.Remove(kv.Key);
+                }
+                try { Save(map); } catch (Exception ex) { log?.Invoke("Fixture block table: not saved: " + ex.Message); }
+            }
+            return map;
+        }
+
+        /// <summary>A table code and the code the name suggests are two different fixtures (a toilet is not a lavatory, a kitchen sink not a lavatory).</summary>
+        public static bool Contradicts(string code, string named)
+        {
+            if (code == null || named == null || code == "none" || named == "none") return false;
+            if (string.Equals(code, named, StringComparison.OrdinalIgnoreCase)) return false;
+            var washers = new[] { "W/D", "WD" };
+            return !(washers.Contains(code) && washers.Contains(named));
         }
 
         public static void Save(Dictionary<string, string> map)
@@ -379,19 +431,26 @@ namespace SleevesOpenings.Automation.Drawings
             File.WriteAllText(FilePath, Newtonsoft.Json.JsonConvert.SerializeObject(sorted, Newtonsoft.Json.Formatting.Indented));
         }
 
+        /// <summary>
+        /// Name to code, most specific first: things that are never fixtures though their names hold a fixture's word (a
+        /// dishwasher, a toilet's seat or lid, a countertop), then the fixtures ("Washbasin" before "wash", "Laundry Sink"
+        /// before "laundry"), then everything else that is not one.
+        /// </summary>
         private static readonly (Regex Rx, string Code)[] Hints =
         {
+            (new Regex(@"dish.?wash|\bdw\b|counter.?top|cabinet|grab.?bar|accessor|mirror|faucet|towel|^(?!.*(bowl|closet)).*(\bseat\b|assento|\blid\b)", RegexOptions.IgnoreCase), "none"),
             (new Regex(@"toilet|water.?closet|\bwc\b|commode", RegexOptions.IgnoreCase), "WC"),
-            (new Regex(@"door|\bdr\b|window|wdw|range|oven|cook|stove|ref|fridge|dish|\bdw\b|micro|hood|chair|table|bed|sofa|desk|closet|shelf|tag|symbol|north|arrow|column|stair|elev", RegexOptions.IgnoreCase), "none"),
-            (new Regex(@"\btubs?\b|bathtub|bath.?tub|\btub\s*\(", RegexOptions.IgnoreCase), "BT"),
+            (new Regex(@"wash.?basin|basin|lavator|\blav\b|vanity|\bvan\b|\bwhb\b", RegexOptions.IgnoreCase), "LAV"),
+            (new Regex(@"(laundry|utility|mop|service).*sink|sink.*(laundry|utility|mop|service)|\bls\b", RegexOptions.IgnoreCase), "LS"),
+            (new Regex(@"sink|\bks\b", RegexOptions.IgnoreCase), "KS"),
+            (new Regex(@"\btubs?\b|bath.?tub|\btub\s*\(", RegexOptions.IgnoreCase), "BT"),
             (new Regex(@"shower|\bsh\b", RegexOptions.IgnoreCase), "SH"),
-            (new Regex(@"wash|dryer|w.?d\b|laundry", RegexOptions.IgnoreCase), "W/D"),
-            (new Regex(@"van|lav|basin", RegexOptions.IgnoreCase), "LAV"),
-            (new Regex(@"sink", RegexOptions.IgnoreCase), "KS"),
+            (new Regex(@"washer|washing.?machine|dryer|\bw.?d\b|laundry", RegexOptions.IgnoreCase), "W/D"),
             (new Regex(@"floor.?drain|\bfd\b", RegexOptions.IgnoreCase), "FD"),
+            (new Regex(@"door|\bdr\b|window|wdw|range|oven|cook|stove|refrig|fridge|micro|hood|chair|table|\bbed\b|sofa|desk|closet|shelf|\btag\b|symbol|north|arrow|column|stair|elev", RegexOptions.IgnoreCase), "none"),
         };
 
-        /// <summary>A code the name suggests (a hint, never enough alone), else null.</summary>
+        /// <summary>The code the block's name says (WC, LAV... or "none"), else null: the name decides what a block is.</summary>
         public static string Suggest(string name)
         {
             foreach (var (rx, code) in Hints) if (rx.IsMatch(name ?? "")) return code;

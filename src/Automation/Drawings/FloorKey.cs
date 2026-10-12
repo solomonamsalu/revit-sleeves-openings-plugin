@@ -8,7 +8,7 @@ namespace SleevesOpenings.Automation.Drawings
     /// <summary>
     /// A floor as drawings name it, normalised so a drawing title ("5TH FLOOR PLAN", "FIFTH FLOOR", "ROOF PLAN")
     /// and a Revit level name ("5TH FLOOR", "Level 5", "FOURTH FLR. (60.37')") can be matched.
-    /// Keys: CELLAR, F1..Fn, ROOF, BULKHEAD.
+    /// Keys: CELLAR (also BASEMENT, UNDERGROUND), F1..Fn, ROOF, BULKHEAD.
     /// </summary>
     public static class FloorKey
     {
@@ -55,6 +55,24 @@ namespace SleevesOpenings.Automation.Drawings
             return keys[0];
         }
 
+        private static readonly Regex Range = new Regex(@"\b(\d{1,2})\s*(?:ST|ND|RD|TH)\s*(?:-|–|TO|THRU|THROUGH)\s*(\d{1,2})\s*(?:ST|ND|RD|TH)\b", RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// Floors of a plan title: one floor as <see cref="FromPlanTitle"/>, or a typical-floor range expanded
+        /// ("2ND-7TH FLOOR PLAN", "2ND TO 7TH FLOOR PLAN" -> F2..F7: one plan drawn for every floor in it). Empty when the
+        /// text is not a plan title or names floors that are not one range ("CELLAR AND 1ST FLOOR PLAN").
+        /// </summary>
+        public static List<string> FromPlanTitleAll(string title)
+        {
+            var one = FromPlanTitle(title);
+            if (one != null) return new List<string> { one };
+            if (string.IsNullOrWhiteSpace(title) || !PlanTitle.IsMatch(title) || Find(title).Count != 2) return new List<string>();
+            var m = Range.Match(Before(title, PlanTitle));
+            if (!m.Success) return new List<string>();
+            int a = int.Parse(m.Groups[1].Value), b = int.Parse(m.Groups[2].Value);
+            return a < b ? Enumerable.Range(a, b - a + 1).Select(n => "F" + n).ToList() : new List<string>();
+        }
+
         /// <summary>Floor named anywhere in a level name. Null when none or ambiguous.</summary>
         public static string FromLevelName(string name)
         {
@@ -71,7 +89,7 @@ namespace SleevesOpenings.Automation.Drawings
             foreach (Match m in Ordinal.Matches(up)) hits.Add((m.Index, "F" + int.Parse(m.Groups[1].Value)));
             for (int i = 0; i < Words.Length; i++)
                 foreach (Match m in Regex.Matches(up, $@"\b{Words[i]}\b")) hits.Add((m.Index, "F" + (i + 1)));
-            foreach (Match m in Regex.Matches(up, @"\b(SUB-?CELLAR|CELLAR|CELLER|BASEMENT)\b")) hits.Add((m.Index, Cellar));
+            foreach (Match m in Regex.Matches(up, @"\b(SUB-?CELLAR|CELLAR|CELLER|BASEMENT|UNDERGROUND)\b")) hits.Add((m.Index, Cellar));
             foreach (Match m in Regex.Matches(up, @"\b(BULKHEAD|BULK HEAD|PENTHOUSE)\b")) hits.Add((m.Index, Bulkhead));
             foreach (Match m in Regex.Matches(up, @"\bROO?F\b")) hits.Add((m.Index, Roof));
             // "LEVEL 5", "L5", "FLOOR 5"

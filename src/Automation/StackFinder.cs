@@ -11,7 +11,7 @@ namespace SleevesOpenings.Automation
     /// set, manual toilet sleeves page):
     /// 1. a vertical pipe modelled in Revit -> its sleeve exactly on it, its own system;
     /// 2. the other fixtures grouped by room / wall (same room within 6 ft, or the same wall line, either face);
-    /// 3. a group with a toilet -> a stack (only toilets make stacks):
+    /// 3. each toilet -> its own stack (only toilets make stacks; a group holding two toilets is split, manual):
     ///    - waste 6 in the wall behind the toilet, 4 1/4" off its centre line, on the outer side (manual); or in a pipe
     ///      chase drawn next to it (a small outline on the shaft layers with no chute or duct in it);
     ///    - vent 6 only where a fixture sits on the other face of that wall (back to back): between the two drains;
@@ -147,6 +147,10 @@ namespace SleevesOpenings.Automation
                 return Add(s, service, sv.System, sv.Pipe, x, y);
             }
             bool Clear(double x, double y, double r) => placed.All(v => Dist(v.X, v.Y, x, y) >= v.Size / 24 + r + gap - 1e-6);
+            // the fixtures' drain sleeves, there whether or not this run places them: a stack sleeve keeps clear of them too
+            var drainsAt = all.SelectMany(f => (f.Points.Count > 0 ? f.Points : new List<(double X, double Y)> { (f.X, f.Y) })
+                                                   .Select(p => (p.X, p.Y, R: R(rules.Fixtures[f.Code].Pipe)))).ToList();
+            bool ClearOfDrains(double x, double y, double r) => drainsAt.All(d => Dist(d.X, d.Y, x, y) >= d.R + r + gap - 1e-6);
             string Letter(string system) => rules.Services.FirstOrDefault(kv => kv.Value.System == system).Key;
             bool Allowed(string system) { var l = Letter(system); return l != null && rules.StackServices.Contains(l); }
 
@@ -198,8 +202,21 @@ namespace SleevesOpenings.Automation
                 else loose.Add(f);
             }
 
+            // every toilet its own stack (Standards Manual, toilet sleeves page: each toilet a green 6 in the wall behind
+            // it, double toilets included): a group with two toilets (two bathrooms on one wall line, 1299 Findlay 2A/2B)
+            // is split, each other fixture going with its nearest toilet
+            groups = groups.SelectMany(g =>
+            {
+                var toilets = g.Where(f => Is(f, "WC") && f.Back != null).ToList();
+                if (toilets.Count < 2) return new List<List<Fixture>> { g };
+                var parts = toilets.Select(t => new List<Fixture> { t }).ToList();
+                foreach (var f in g.Where(f => !toilets.Contains(f)))
+                    parts.OrderBy(p => Dist(p[0].X, p[0].Y, f.X, f.Y)).First().Add(f);
+                return parts;
+            }).ToList();
+
             var chases = Chases(shafts);
-            // ---- 3. one stack per group with a toilet; the other groups are their fixtures only
+            // ---- 3. one stack per toilet (its group); the other groups are their fixtures only
             var rows = new List<(Stack S, List<Fixture> G, Fixture Toilet, double[] A, int Side)>();
             foreach (var group in groups)
             {
@@ -290,7 +307,7 @@ namespace SleevesOpenings.Automation
                         for (double extra = 0; extra <= SlideFeet + 1e-9 && tv == null; extra += 1.0 / 12)
                         {
                             var q = At(t0 + away * extra);
-                            if (Clear(q.X, q.Y, r)) tv = t0 + away * extra;
+                            if (Clear(q.X, q.Y, r) && ClearOfDrains(q.X, q.Y, r)) tv = t0 + away * extra;
                         }
                         var p = At(tv ?? t0);
                         Service(s, vent.Key, p.X, p.Y);
@@ -335,7 +352,12 @@ namespace SleevesOpenings.Automation
                             bool cold = fs.Water > 0 && waterAt.Any(m => m.System == "ColdWater" && Dist(m.X, m.Y, f.X, f.Y) <= WaterFeet);
                             double tl = rd;
                             if (hot) { tl += rw + gap; Add(s, "HW", "HotWater", fs.Water, f.X + lx * (tl), f.Y + ly * (tl), f.Code, ++owners); tl += rw; }
-                            else if (fs.Water > 0) s.Missing.Add($"HW: no hot water pipe or riser within {WaterFeet:0} ft of the island sink on this floor");
+                            else if (fs.Water > 0)
+                            {
+                                // its spot is kept: the vent sits where the office draws it, past the hot water's place
+                                tl += 2 * rw + gap;
+                                s.Missing.Add($"HW: no hot water pipe or riser within {WaterFeet:0} ft of the island sink on this floor (its place left free)");
+                            }
                             if (fs.Vent > 0) { tl += rv + gap; Add(s, "V", "Vent", fs.Vent, f.X + lx * tl, f.Y + ly * tl, f.Code, ++owners); }
                             if (cold) { double tr = rd + rw + gap; Add(s, "CW", "ColdWater", fs.Water, f.X - lx * tr, f.Y - ly * tr, f.Code, ++owners); }
                             else if (fs.Water > 0) s.Missing.Add($"CW: no cold water pipe or riser within {WaterFeet:0} ft of the island sink on this floor");

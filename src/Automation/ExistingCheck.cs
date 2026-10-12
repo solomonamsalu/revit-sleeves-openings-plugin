@@ -18,6 +18,8 @@ namespace SleevesOpenings.Automation
         public string Family;
         public string Source;      // "add-in" (stamped), "hand-placed" (matches rules.json adopt), "native opening"
         public XYZ Point;          // plan centre (feet); null when unknown
+        /// <summary>The riser id it was placed or adopted under ("S-T1", "S-P3", "FX-WC-2"); null when unknown (hand-placed).</summary>
+        public string Riser;
     }
 
     public class ExistingReport
@@ -59,7 +61,8 @@ namespace SleevesOpenings.Automation
                 report.Items.Add(new ExistingItem
                 {
                     Id = o.Instance.Id, System = o.Data.System ?? "?", Level = o.Level.Name, Elevation = o.Level.Elevation,
-                    Family = o.Instance.Symbol.Family.Name, Source = o.Data.Adopted ? "adopted" : "add-in", Point = Centre(o.Instance)
+                    Family = o.Instance.Symbol.Family.Name, Source = o.Data.Adopted ? "adopted" : "add-in", Point = Centre(o.Instance),
+                    Riser = o.Riser
                 });
             }
 
