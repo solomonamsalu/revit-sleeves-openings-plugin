@@ -16,9 +16,11 @@ namespace SleevesOpenings.Automation.Alignment
         {
             var list = new List<ReferenceDrawing>();
             var roots = new List<string>();
-            if (!string.IsNullOrEmpty(doc.PathName))
+            // a workshared model is open as a local copy in the user's Documents; the project files sit by the central one
+            string home = Setup.ModelFiles.HomePath(doc);
+            if (!string.IsNullOrEmpty(home))
             {
-                var dir = Path.GetDirectoryName(doc.PathName);
+                var dir = Path.GetDirectoryName(home);
                 roots.Add(dir);
                 roots.Add(Path.GetDirectoryName(dir));
             }

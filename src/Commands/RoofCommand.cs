@@ -55,12 +55,17 @@ namespace SleevesOpenings.Commands
 
                 PlaceCommandBase.EnsureSharedParams(doc, rules, state);
 
+                // the families and their size parameters are resolved first: finding the parameters opens its own
+                // transaction, and without them the roof openings keep the family's size instead of the roof size
+                var generator = new RoofGenerator(doc, rules, state, levels);
+                generator.PrepareFamilies();
+
                 RoofReport report;
                 using (var t = new Transaction(doc, "Sleeves & Openings: Generate roof openings"))
                 {
                     t.Start();
                     var view = doc.ActiveView is ViewPlan vp ? vp : new FilteredElementCollector(doc).OfClass(typeof(ViewPlan)).Cast<ViewPlan>().First(v => !v.IsTemplate);
-                    report = new RoofGenerator(doc, rules, state, levels).Run(view, source, roof, form.Value("space") == "Yes", form.Value("skip") == "Yes");
+                    report = generator.Run(view, source, roof, form.Value("space") == "Yes", form.Value("skip") == "Yes");
                     t.Commit();
                 }
 

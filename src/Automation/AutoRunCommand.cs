@@ -57,7 +57,7 @@ namespace SleevesOpenings.Automation
                 App.Log($"AutoRun: model '{doc.Title}' is {model.Describe()}; can run {string.Join(", ", allowed)}; opens as {discipline}");
 
                 var folders = allowed.Select(d => pipeOptions.TryGetValue(d, out var o) ? o.Profile : rules.DwgProfile)
-                    .Distinct().Select(p => ReferenceFiles.FindFolder(doc.PathName, p.ReferenceFolders))
+                    .Distinct().Select(p => ReferenceFiles.FindFolder(ModelFiles.HomePath(doc), p.ReferenceFolders))
                     .Concat(allowed.Select(d => state.Automation.For(d).Xrefs)).ToList();
                 var modelRefs = CadReferences.Collect(doc, folders);
                 App.Log($"AutoRun: {modelRefs.Count} DWG(s) imported/linked in the model: " +

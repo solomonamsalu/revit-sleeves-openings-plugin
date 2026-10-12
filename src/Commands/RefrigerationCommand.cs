@@ -61,6 +61,10 @@ namespace SleevesOpenings.Commands
                     return Result.Cancelled;
                 }
 
+                // rules.json leaves the size parameters unnamed: find them on the family, or the opening keeps the
+                // family type's own size. Probes in its own transaction, so it runs before the placing one is open.
+                FamilyMapping.GuessParams(doc, sym, map);
+
                 PlaceCommandBase.EnsureSharedParams(doc, rules, state);
 
                 foreach (var st in stacks)

@@ -28,6 +28,33 @@ namespace SleevesOpenings.Roof
         private readonly RuleSet _rules;
         private readonly ProjectState _state;
         private readonly LevelMap _levels;
+        private readonly Dictionary<string, (FamilyMapEntry Map, FamilySymbol Symbol)> _families =
+            new Dictionary<string, (FamilyMapEntry, FamilySymbol)>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Resolves every opening family and the names of its size parameters. Call before the placing transaction is
+        /// open: rules.json leaves the size parameters unnamed, and finding them probes the family in a transaction of
+        /// its own. Without it the roof openings keep each family type's own size instead of the roof size.
+        /// </summary>
+        public void PrepareFamilies()
+        {
+            foreach (var role in FamilyRole.All)
+            {
+                var map = FamilyMapping.Get(_rules, _state, role);
+                var symbol = FamilyMapping.FindSymbol(_doc, map);
+                if (symbol != null)
+                    try { FamilyMapping.GuessParams(_doc, symbol, map); } catch (Exception) { /* keep what the rules say */ }
+                _families[role] = (map, symbol);
+            }
+        }
+
+        /// <summary>The family for a role: the one prepared before the transaction, else resolved now (sizes unnamed).</summary>
+        private (FamilyMapEntry Map, FamilySymbol Symbol) Family(string role)
+        {
+            if (_families.TryGetValue(role, out var found)) return found;
+            var map = FamilyMapping.Get(_rules, _state, role);
+            return (map, FamilyMapping.FindSymbol(_doc, map));
+        }
 
         public RoofGenerator(Document doc, RuleSet rules, ProjectState state, LevelMap levels)
         {
@@ -90,8 +117,7 @@ namespace SleevesOpenings.Roof
                 if (skipExisting && onRoof.Any(o => o.Riser != null && o.Riser == src.Riser))
                 { report.Skipped++; report.Lines.Add($"  skip {src.Riser} (already on {roof.Name})"); continue; }
 
-                var map = FamilyMapping.Get(_rules, _state, spec.Role);
-                var symbol = FamilyMapping.FindSymbol(_doc, map);
+                var (map, symbol) = Family(spec.Role);
                 if (symbol == null) { report.Lines.Add($"! no family mapped for {FamilyRole.Describe(spec.Role)} — {src.Riser} not created"); continue; }
 
                 var inst = placer.Place(spec, symbol, map, roof, src.Point);

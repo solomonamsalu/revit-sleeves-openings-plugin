@@ -54,10 +54,12 @@ namespace SleevesOpenings.Automation.Drawings
                 var paper = layout.AssociatedBlock?.Entities?.ToList();
                 if (paper == null) continue;
 
-                // a typical-floor title ("2ND-7TH FLOOR PLAN") makes the sheet the plan of every floor in the range
-                var floors = Texts(paper, 0).Select(Clean).Select(t => (Text: t, Floors: FloorKey.FromPlanTitleAll(t)))
+                // One title may cover several floors (the typical floors drawn once); two different titles are a
+                // sheet with several plans, which is not read.
+                var floors = Texts(paper, 0).Select(Clean).Select(t => (Text: t, Floors: FloorKey.PlanFloors(t)))
                                             .Where(t => t.Floors.Count > 0).ToList();
-                if (floors.Select(t => string.Join(",", t.Floors)).Distinct().Count() != 1) continue;   // no plan, or a sheet with several plans
+                var distinct = floors.Select(t => string.Join(",", t.Floors)).Distinct().ToList();
+                if (distinct.Count != 1) continue;          // no plan, or a sheet with several plans (handled later if needed)
 
                 var vp = PlanViewport(paper);
                 var f = new DwgFloor { Floor = floors[0].Floors[0], Title = floors[0].Text, Layout = layout.Name };
@@ -79,8 +81,13 @@ namespace SleevesOpenings.Automation.Drawings
                 }
                 else index.Warnings.Add($"{layout.Name}: {f.Title} has no scaled viewport; its model-space region is unknown.");
                 index.Floors.Add(f);
-                foreach (var more in floors[0].Floors.Skip(1))
-                    index.Floors.Add(new DwgFloor { Floor = more, Title = f.Title, Layout = f.Layout, Scale = f.Scale, MinX = f.MinX, MinY = f.MinY, MaxX = f.MaxX, MaxY = f.MaxY });
+                // the typical floors share this one drawing: each gets its own entry over the same region
+                foreach (var also in floors[0].Floors.Skip(1))
+                    index.Floors.Add(new DwgFloor
+                    {
+                        Floor = also, Title = f.Title, Layout = f.Layout, Scale = f.Scale,
+                        MinX = f.MinX, MinY = f.MinY, MaxX = f.MaxX, MaxY = f.MaxY
+                    });
                 if (floors[0].Floors.Count > 1)
                     index.Warnings.Add($"{layout.Name} ({f.Title}) is used as the plan of the {FloorKey.Describe(floors[0].Floors[0])} to the {FloorKey.Describe(floors[0].Floors.Last())}.");
             }
@@ -143,7 +150,7 @@ namespace SleevesOpenings.Automation.Drawings
             {
                 string c = Clean(text);
                 if (c.Length == 0 || Regex.IsMatch(c, @"^[A-Z]{1,2}-\d{3}")) return;   // drawing-index row
-                foreach (var fl in FloorKey.FromPlanTitleAll(c)) hits.Add((fl, c, Math.Abs(height)));
+                foreach (var fl in FloorKey.PlanFloors(c)) hits.Add((fl, c, Math.Abs(height)));
             }
         }
 

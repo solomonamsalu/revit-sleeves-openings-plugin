@@ -16,8 +16,8 @@ namespace SleevesOpenings.Automation.Drawings
         public int Page;
         public string SheetNumber;       // "M-305.00" when the title block shows one
         public string Title;             // largest plan title on the page, e.g. "5TH FLOOR PLAN"
-        public string Floor;             // FloorKey, null when not a floor plan; the first floor of a typical-floor range
-        /// <summary>Every floor the plan is drawn for: one, or each floor of a range ("2ND-7TH FLOOR PLAN" -> F2..F7).</summary>
+        public string Floor;             // FloorKey, null when the page is not a floor plan; the lowest when it covers several
+        /// <summary>Every floor this page covers: one, or all of them when the typical floors are drawn once ("2ND TO 7TH FLOOR PLAN").</summary>
         public List<string> Floors = new List<string>();
         public bool HasAbbreviations;    // an ABBREVIATIONS table header is on the page
         public bool HasSymbols;
@@ -81,14 +81,18 @@ namespace SleevesOpenings.Automation.Drawings
                     {
                         double top = titled.Max(l => l.Size);
                         var biggest = titled.Where(l => l.Size >= top - 0.5).ToList();
-                        var plans = biggest.Select(l => (Line: l, Floors: FloorKey.FromPlanTitleAll(l.Text))).Where(p => p.Floors.Count > 0).ToList();
-                        if (plans.Select(p => string.Join(",", p.Floors)).Distinct().Count() == 1 && top >= 10)
+                        // One title may cover several floors (the typical floors drawn once); several different
+                        // titles of the same size is a drawing index, not a plan.
+                        var titles = biggest.Select(l => (l.Text, Floors: FloorKey.PlanFloors(l.Text)))
+                                            .Where(t => t.Floors.Count > 0).ToList();
+                        var distinct = titles.Select(t => string.Join(",", t.Floors)).Distinct().ToList();
+                        if (distinct.Count == 1 && top >= 10)
                         {
-                            sheet.Floors = plans[0].Floors;
-                            sheet.Floor = sheet.Floors[0];
-                            sheet.Title = plans[0].Line.Text;
+                            sheet.Floors = titles[0].Floors;
+                            sheet.Floor = sheet.Floors.OrderBy(FloorKey.Order).First();
+                            sheet.Title = titles[0].Text;
                             if (sheet.Floors.Count > 1)
-                                index.Warnings.Add($"Page {page.Number} ({sheet.Title}) is used as the plan of the {FloorKey.Describe(sheet.Floors[0])} to the {FloorKey.Describe(sheet.Floors[sheet.Floors.Count - 1])}.");
+                                index.Warnings.Add($"Page {page.Number} ({sheet.Title}) is used as the plan of the {FloorKey.Describe(sheet.Floors.OrderBy(FloorKey.Order).First())} to the {FloorKey.Describe(sheet.Floors.OrderBy(FloorKey.Order).Last())}.");
                         }
                     }
 

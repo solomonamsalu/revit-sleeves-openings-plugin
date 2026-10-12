@@ -78,5 +78,29 @@ namespace SleevesOpenings.Automation.Drawings
 
         /// <summary>Regex on single-word text naming a fixture at its spot ("WC", "LAV", "BT"); kept per floor in <see cref="DwgRiserResult.Fixtures"/>. Null = off.</summary>
         [JsonProperty("fixtureText")] public string FixtureText { get; set; }
+
+        // ---- architectural drawings (electrical riser: how many apartments each floor holds, where the electrical room is)
+
+        /// <summary>Regex on folder names holding the per-floor architectural xrefs at Revit's 0,0, searched next to the model.</summary>
+        [JsonProperty("architecturalFolders")] public string ArchitecturalFolders { get; set; } = @"^XREF\s*-?\s*(AR|A|ARCH|ARCHITECTURAL)$";
+
+        /// <summary>Regex on the block name (or a dynamic block's source name) of the apartment number tag. One insert = one apartment.</summary>
+        [JsonProperty("apartmentTagBlocks")] public string ApartmentTagBlocks { get; set; } = @"^APT\s*TAG$";
+
+        /// <summary>Regex on layer names carrying the apartment tags; a block on this layer counts even when its name does not match.</summary>
+        [JsonProperty("apartmentTagLayers")] public string ApartmentTagLayers { get; set; } = "APARTMENT";
+
+        /// <summary>Attribute tags holding the apartment number ("#" -> 401). Any attribute whose value reads as a number is used as a fallback.</summary>
+        [JsonProperty("apartmentNumberAttributes", ObjectCreationHandling = ObjectCreationHandling.Replace)]
+        public List<string> ApartmentNumberAttributes { get; set; } = new List<string> { "#", "APT#", "APTNO", "NUMBER", "NO", "UNIT" };
+
+        /// <summary>Regex on text naming the electrical/meter room, which is where the riser starts (electrical rule 3). Null = off.</summary>
+        [JsonProperty("electricalRoomText")] public string ElectricalRoomText { get; set; } = @"^ELEC(TRIC|TRICAL)?\.?\s*(ROOM|RM\.?|CLOSET|CL\.?)?$|^METER\s*(ROOM|RM\.?|BANK)?$";
+
+        /// <summary>
+        /// Regex on text naming the mechanical room. The manual's note under the electrical rules: with no electrical
+        /// room, the electrical services come from the mechanical room and the openings go as close to it as possible.
+        /// </summary>
+        [JsonProperty("mechanicalRoomText")] public string MechanicalRoomText { get; set; } = @"^MECH(ANICAL)?\.?\s*(ROOM|RM\.?|EQUIP(MENT)?)?$|^BOILER\s*(ROOM|RM\.?)?$";
     }
 }
