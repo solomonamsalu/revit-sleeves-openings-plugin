@@ -62,8 +62,8 @@ namespace SleevesOpenings.UI
             var how = new Label
             {
                 Dock = DockStyle.Top, Height = 44, Padding = new Padding(12, 8, 12, 0), ForeColor = Color.DimGray,
-                Text = "From the model only (the fixtures Extract Fixtures finds, the sleeves already placed), by the manual's toilet sleeves page: " +
-                       "each toilet's vent touching its waste stack, the lavatory's 7\" past it, tub / sink / washer vents, one vent stack per bathroom row (shared back to back), in line floor to floor."
+                Text = "From the model only (the fixtures Extract Fixtures finds, the sleeves already placed): each vent touches its own fixture's drain in the wall behind it, " +
+                       "on the manual's side (toilet vent toward the lavatory, lavatory vent toward the toilet); one vent stack per bathroom row at its end (shared back to back), in line floor to floor."
             };
             _summary = new Label { Dock = DockStyle.Top, Height = 30, Padding = new Padding(12, 6, 12, 0), Font = new Font("Segoe UI", 10f, FontStyle.Bold),
                                    Text = "Tick the floors and press Extract." };
@@ -81,7 +81,7 @@ namespace SleevesOpenings.UI
             _grid.CellFormatting += (s, e) =>
             {
                 if (e.RowIndex < 0 || e.RowIndex >= _shown.Count) return;
-                _grid.Rows[e.RowIndex].DefaultCellStyle.ForeColor = _shown[e.RowIndex].Vent.Notes.Count > 0 ? Color.DarkGoldenrod : Color.Black;
+                _grid.Rows[e.RowIndex].DefaultCellStyle.ForeColor = _shown[e.RowIndex].Vent.Notes.Any(n => n.Contains("by hand")) ? Color.DarkGoldenrod : Color.Black;
             };
 
             _detail = new TextBox { Dock = DockStyle.Bottom, Height = 110, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BackColor = SystemColors.Window };
@@ -239,7 +239,7 @@ namespace SleevesOpenings.UI
             var items = Picked();
             if (items.Count == 0) { MessageBox.Show(this, "Extract first.", Text); return; }
             if (MessageBox.Show(this, $"Place {items.Count} vent sleeve(s) on {items.Select(i => i.Floor).Distinct().Count()} floor(s)?\n\n" +
-                                      "Sizes from the rules (plumbing.vents, plumbing.fixtures); every one is flagged for a check. Undo removes them.",
+                                      "Sizes from the rules (plumbing.vents, plumbing.fixtures). Undo removes them.",
                                 Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
             var doc = _uidoc.Document;
             Cursor = Cursors.WaitCursor;

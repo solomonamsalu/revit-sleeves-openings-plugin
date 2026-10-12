@@ -259,41 +259,33 @@ namespace SleevesOpenings.Automation
     }
 
     /// <summary>
-    /// rules.json "plumbing.vents": the Vent Placer's layout of each bathroom's wet-wall row, as the Standards Manual's
-    /// toilet sleeves page draws it (regular: G6 | Y4 5 1/4" | Y4 7" | ... | G4 | 1'-2 3/4" | Y6). Pipe sizes are inches
-    /// of pipe (the sleeve is pipe + sleeveOverPipe rounded up); distances are inches centre to centre along the wall.
+    /// rules.json "plumbing.vents": the Vent Placer. The model decides where (each vent beside its own fixture's drain sleeve
+    /// in the wall behind it), sleeve sizes + plumbing.sleeveGap how close (touching), the Standards Manual's toilet sleeves
+    /// page which side (toilet vent toward the lavatory, lavatory vent toward the toilet, the vent stack at the row's end).
+    /// Pipe sizes are inches of pipe (sleeve = pipe + sleeveOverPipe rounded up).
     /// </summary>
     public class VentRules
     {
-        /// <summary>The toilet's vent touches its waste stack in the wall: this far c-c, on the side toward the rest of the row.</summary>
-        [JsonProperty("toiletVentFromWaste")] public double ToiletVentFromWaste { get; set; } = 5.25;
-        /// <summary>A lavatory's vent: this far past the toilet's vent toward the lavatory...</summary>
-        [JsonProperty("lavVentPastToiletVent")] public double LavVentPastToiletVent { get; set; } = 7;
-        /// <summary>...else (no toilet in the row, or that spot is taken) this far from the lavatory's drain, on the toilet's side.</summary>
-        [JsonProperty("lavVentFromDrain")] public double LavVentFromDrain { get; set; } = 10;
         /// <summary>Vent stack pipe (6" sleeve); 0 = no vent stack.</summary>
         [JsonProperty("stackPipe")] public double StackPipe { get; set; } = 4;
-        /// <summary>The vent stack: this far past the lavatory's drain (the last drain of the row), away from the toilet (manual 10 1/4" to 1'-2 3/4").</summary>
-        [JsonProperty("stackPastLastDrain")] public double StackPastLastDrain { get; set; } = 12;
-        /// <summary>A vent stack on another floor this close is the same stack: this floor's lines up with it (risers run straight).</summary>
+        /// <summary>A vent stack on another floor this close (inches) is the same stack: this floor's lines up with it (risers run straight).</summary>
         [JsonProperty("stackSameAs")] public double StackSameAs { get; set; } = 18;
-        /// <summary>Tub vent pipe (0 = none): in the wall of its row, at the drain end.</summary>
-        [JsonProperty("tubPipe")] public double TubPipe { get; set; } = 2;
+        /// <summary>
+        /// Tub vent pipe (0 = none, the office default 2026-10-12: a tub gets a vent sleeve only when the office standard or
+        /// the engineer's drawing asks for one); when set, it goes in the wall of its row at the drain.
+        /// </summary>
+        [JsonProperty("tubPipe")] public double TubPipe { get; set; }
+        /// <summary>A tub this far (inches) from its row's wall at most gets its vent there (tubPipe set); farther = add it by hand.</summary>
+        [JsonProperty("tubReach")] public double TubReach { get; set; } = 48;
         /// <summary>Shower vent pipe (0 = none; the manual shows none).</summary>
         [JsonProperty("showerPipe")] public double ShowerPipe { get; set; }
-        /// <summary>Washer vent pipe (0 = none) and how far along the wall from its drain (Wallabout video: 6 + 6 about 2'-0" apart).</summary>
+        /// <summary>Washer vent pipe (0 = none): touching its drain.</summary>
         [JsonProperty("washerPipe")] public double WasherPipe { get; set; } = 4;
-        [JsonProperty("washerAlong")] public double WasherAlong { get; set; } = 24;
-        /// <summary>A tub this far (inches) from its row's wall at most gets its vent there; farther = add it by hand.</summary>
-        [JsonProperty("tubReach")] public double TubReach { get; set; } = 48;
-        /// <summary>Wall-hung toilets: the reserve waste and vent sleeves the manual draws (flagged: always verify the toilet type).</summary>
+        /// <summary>Wall-hung toilets: the reserve waste and vent sleeves the manual draws, touching the toilet's waste.</summary>
         [JsonProperty("wallHungReserve")] public bool WallHungReserve { get; set; } = true;
-        /// <summary>Wall-hung: the reserve waste this far off the toilet's centre line (outer side), the reserve vent this far on the other side, the vent 7" past it.</summary>
-        [JsonProperty("reserveWasteOffset")] public double ReserveWasteOffset { get; set; } = 13;
-        [JsonProperty("reserveVentOffset")] public double ReserveVentOffset { get; set; } = 16;
         /// <summary>A vent sleeve already in the model this close (inches) to a spot is that vent: nothing more there.</summary>
         [JsonProperty("existingWithin")] public double ExistingWithin { get; set; } = 4;
-        /// <summary>How far (inches) a vent may slide along the wall to clear the sleeves already there.</summary>
+        /// <summary>How far (inches) a vent may slide on along its side to clear the sleeves there, before it tries the other side.</summary>
         [JsonProperty("slide")] public double Slide { get; set; } = 12;
     }
 

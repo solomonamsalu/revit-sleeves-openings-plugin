@@ -197,11 +197,11 @@ namespace SleevesOpenings.Commands
                 var c = new Crossing
                 {
                     Floor = floor, Level = level.Name, Tag = v.Name, System = v.System, Size = new DuctSize { Diameter = v.Pipe },
-                    X = v.X, Y = v.Y, HasPosition = true, Status = Crossing.Place, Confidence = "medium", Check = true, FromModel = true
+                    X = v.X, Y = v.Y, HasPosition = true, Status = Crossing.Place, Confidence = "high", Check = false, FromModel = true
                 };
                 c.From.Add(v.IsStack ? $"{FloorKey.Describe(floor)}: vent stack {v.Name} of row {i.Row.Id} (Vent Placer)"
                                      : $"{FloorKey.Describe(floor)}: fixture '{v.Fixture}' {v.Kind} (Vent Placer, row {i.Row.Id})");
-                c.Notes.Add($"{v.Size:0}\" {v.Kind}: {v.How}; by the office rule (manual, toilet sleeves page), check");
+                c.Notes.Add($"{v.Size:0}\" {v.Kind}: {v.How}");
                 c.Notes.AddRange(v.Notes);
                 crossings.Add(c);
             }
