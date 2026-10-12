@@ -19,7 +19,7 @@ namespace SleevesOpenings.Automation
         {
             public string Floor;
             public Level Level;
-            public string How;      // "saved", "elevation", "name", "role", "order", "not used", or null when unmatched
+            public string How;      // "saved", "elevation", "name", "model", "columns", "role", "order", "not used", or null when unmatched
             public FloorSequence.Confidence Confidence = FloorSequence.Confidence.High;
             /// <summary>The evidence, one line per reason (shown as the row's tooltip).</summary>
             public string Why = "";

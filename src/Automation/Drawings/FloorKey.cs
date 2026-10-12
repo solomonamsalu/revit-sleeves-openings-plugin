@@ -78,7 +78,7 @@ namespace SleevesOpenings.Automation.Drawings
             return keys.Count == 1 ? keys : new List<string>();
         }
 
-        private static readonly string Ord = @"(?:\d{1,2}\s*-?\s*(?:ST|ND|RD|TH)\b|" + string.Join("|", Words) + @"|(?:LEVEL|FLOOR|L)\s*\d{1,2})";
+        private static readonly string Ord = @"(?:\b\d{1,2}\s*-?\s*(?:ST|ND|RD|TH)\b|\b(?:" + string.Join("|", Words) + @")\b|\b(?:LEVEL|FLOOR|L)\s*\d{1,2}\b)";
         private static readonly Regex RangeRx = new Regex($@"(?<a>{Ord})\s*(?:-|–|—|\bTHRU\b|\bTHROUGH\b|\bTO\b)\s*(?<b>{Ord})", RegexOptions.IgnoreCase);
 
         /// <summary>"2ND THRU 7TH", "2ND-7TH", "SECOND TO SEVENTH" -> F2..F7; empty when the text holds no such range.</summary>
@@ -102,13 +102,29 @@ namespace SleevesOpenings.Automation.Drawings
 
         private static int Number(string key) => key != null && key.StartsWith("F") && int.TryParse(key.Substring(1), out int n) ? n : -1;
 
-        /// <summary>Floor named anywhere in a level name; a name that is only a number ("3", "07") is that floor. Null when none or ambiguous.</summary>
+        /// <summary>Floor named anywhere in a level name. Null when none or ambiguous.</summary>
         public static string FromLevelName(string name)
         {
-            var bare = Regex.Match(name ?? "", @"^\s*0*(\d{1,2})\s*$");
-            if (bare.Success && int.Parse(bare.Groups[1].Value) > 0) return "F" + int.Parse(bare.Groups[1].Value);
             var keys = Find(name ?? "");
             return keys.Count == 1 ? keys[0] : null;
+        }
+
+        /// <summary>
+        /// Floor of a level name for floor matching (FloorSequence, LevelEvidence): as FromLevelName, plus the ways other
+        /// disciplines name levels - a bare number ("3", "07"), "1 FLOOR" (structural models), "STORY 3" (Revit's default).
+        /// Null for "Level 0" (no drawing floor is 0) and when none or ambiguous. Kept apart from FromLevelName, which names
+        /// sheets and schedules (SoSheets) and must not change for existing projects.
+        /// </summary>
+        public static string LevelFloor(string name)
+        {
+            var bare = Regex.Match(name ?? "", @"^\s*0*(\d{1,2})\s*$");
+            if (bare.Success) return int.Parse(bare.Groups[1].Value) > 0 ? "F" + int.Parse(bare.Groups[1].Value) : null;
+            var hits = new List<(int pos, string key)>();
+            string up = (name ?? "").ToUpperInvariant();
+            foreach (Match m in Regex.Matches(up, @"\b(?:STOREY|STORY)\s*-?\s*(\d{1,2})\b")) hits.Add((m.Index, "F" + int.Parse(m.Groups[1].Value)));
+            foreach (Match m in Regex.Matches(up, @"\b(\d{1,2})\s+(?:FLOOR|FLR)\b")) hits.Add((m.Index, "F" + int.Parse(m.Groups[1].Value)));
+            var keys = Find(up).Concat(hits.OrderBy(h => h.pos).Select(h => h.key)).Distinct().ToList();
+            return keys.Count == 1 && keys[0] != "F0" ? keys[0] : null;
         }
 
         /// <summary>Every floor mentioned in the text, in order, without duplicates.</summary>
@@ -123,10 +139,8 @@ namespace SleevesOpenings.Automation.Drawings
             foreach (Match m in Regex.Matches(up, @"\b(SUB-?CELLAR|CELLAR|CELLER|BASEMENT)\b")) hits.Add((m.Index, Cellar));
             foreach (Match m in Regex.Matches(up, @"\b(BULKHEAD|BULK HEAD|PENTHOUSE)\b")) hits.Add((m.Index, Bulkhead));
             foreach (Match m in Regex.Matches(up, @"\bROO?F\b")) hits.Add((m.Index, Roof));
-            // "LEVEL 5", "L5", "FLOOR 5", "STORY 5"
-            foreach (Match m in Regex.Matches(up, @"\b(?:LEVEL|LVL|FLOOR|FLR|STOREY|STORY|L)\s*-?\s*(\d{1,2})\b")) hits.Add((m.Index, "F" + int.Parse(m.Groups[1].Value)));
-            // "1 FLOOR", "2 FLR" (structural models)
-            foreach (Match m in Regex.Matches(up, @"\b(\d{1,2})\s+(?:FLOOR|FLR)\b")) hits.Add((m.Index, "F" + int.Parse(m.Groups[1].Value)));
+            // "LEVEL 5", "L5", "FLOOR 5"
+            foreach (Match m in Regex.Matches(up, @"\b(?:LEVEL|LVL|FLOOR|FLR|L)\s*-?\s*(\d{1,2})\b")) hits.Add((m.Index, "F" + int.Parse(m.Groups[1].Value)));
 
             return hits.OrderBy(h => h.pos).Select(h => h.key).Distinct().ToList();
         }

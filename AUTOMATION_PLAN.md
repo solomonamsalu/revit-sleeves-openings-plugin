@@ -146,6 +146,16 @@ The automation replaces those **inputs**. The rule code stays as it is.
   confirmed only within the range are medium with a "from the typical plan" note, and alignment votes / check risers count
   the page once (`DwgSheetIndex.SameDrawing`). A word shared by the plan title and a level name (STAIR, ELEV) picks between
   levels of the same role.
+- PDF-only position when a page has no usable columns (the engineer's copy of the architectural background often leaves
+  `S-COLS` out): the page's walls (`pdfOnly.wallLayers`) are lined up with the walls of the architect's DWG placed on that
+  level in the model (`WallAligner`, walls read by `DwgFixtureReader`): wall corners on wall corners, page turned 0/90/180/270°.
+  Used only when ≥ 40 corners and ≥ 10% meet and the placement beats any other by 2×; otherwise refused. Wall corners serve
+  as check marks. A placement a few inches away must lose too (1.15×; far ones 2×): a page of repeated corners otherwise
+  fits inches off (Findlay roof: 10").
+- Pages nothing else lines up (too few walls, an outdated background): through the architectural background they share
+  with lined-up pages (`PageLinker`: the dashed property line is identical on every sheet; line ends meet to ¼"). Two
+  lined-up pages must agree within 2". The same check rejects a wall match that two pages contradict by more than 3".
+  Findlay plumbing: 10 of 10 floors (8 by walls, roof and bulkhead through `C-PROP-LINE`, the pages agreeing within 0.9").
   Unnamed typical floors are pinned by the named floors around them. Each row gets a confidence: medium / low rows are
   yellow, the evidence is in the "Matched by" tooltip. Only floors the user changes are saved.
 

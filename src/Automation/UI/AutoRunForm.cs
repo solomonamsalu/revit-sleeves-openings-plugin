@@ -51,6 +51,8 @@ namespace SleevesOpenings.Automation.UI
         private readonly Func<RiserAssembly, List<string>> _resolveFixtureSleeves;
         private List<ReferenceDrawing> _lastRefs = new List<ReferenceDrawing>();
         private readonly LevelEvidence.Result _levelHints;             // what the model holds on each level (rooms, links, xrefs, views)
+        /// <summary>Level name -> the DWGs placed on it with their wall lines (model inches); Revit API, so called on the window's thread.</summary>
+        private readonly Func<string, List<(string Source, List<((double X, double Y) A, (double X, double Y) B)> Walls)>> _modelWalls;
         private Dictionary<string, Dictionary<string, double>> _columnFits;   // PDF only: each plan's columns against each level's
 
         private bool Plumbing => _plumbing != null;
@@ -109,8 +111,10 @@ namespace SleevesOpenings.Automation.UI
                            Action<RiserAssembly> layout = null, string discipline = AutomationInputs.Mechanical, PlumbingRules plumbing = null,
                            RevitColumns columns = null, PdfOnlyRules pdfOnly = null, Func<RiserAssembly, List<string>> resolveFixtureSleeves = null,
                            IDictionary<string, PlumbingRules> pipeOptions = null, ModelKindResult model = null, IList<string> allowed = null,
-                           DwgProfile mechanicalProfile = null, LevelEvidence.Result levelHints = null)
+                           DwgProfile mechanicalProfile = null, LevelEvidence.Result levelHints = null,
+                           Func<string, List<(string Source, List<((double X, double Y) A, (double X, double Y) B)> Walls)>> modelWalls = null)
         {
+            _modelWalls = modelWalls;
             _levelHints = levelHints ?? new LevelEvidence.Result();
             _pipeOptions = pipeOptions ?? new Dictionary<string, PlumbingRules>();
             _model = model ?? new ModelKindResult { Kind = plumbing == null ? ModelDiscipline.HV : ModelDiscipline.PL, Source = "caller", Reason = "-" };
@@ -355,6 +359,10 @@ namespace SleevesOpenings.Automation.UI
             var unmatched = _floors.Rows.Cast<DataGridViewRow>().Where(r => (string)r.Cells["Level"].Value == AutomationInputs.NotUsed)
                                    .Select(r => FloorKey.Describe((string)r.Cells["Key"].Value)).ToList();
             if (unmatched.Count > 0) return $"{string.Join(", ", unmatched)} {(unmatched.Count == 1 ? "is" : "are")} not matched to a Revit level";
+            // a floor matched with a close alternative (yellow): its sleeves would go on a guessed level
+            var unsure = _floors.Rows.Cast<DataGridViewRow>().Where(r => r.DefaultCellStyle.BackColor == Color.LightYellow && (string)r.Cells["Level"].Value != AutomationInputs.NotUsed)
+                                .Select(r => FloorKey.Describe((string)r.Cells["Key"].Value)).ToList();
+            if (unsure.Count > 0) return $"{string.Join(", ", unsure)} {(unsure.Count == 1 ? "is" : "are")} matched to a level with low confidence (check the Floors tab)";
             if (!Assembly.Crossings.Any(c => c.Status == Crossing.Place)) return "nothing was found to place";
             return null;
         }
@@ -752,10 +760,33 @@ namespace SleevesOpenings.Automation.UI
                 {
                     _status.Text = "Lining the PDF plans up with Revit by their columns…";
                     var floorLevels = FloorLevels(); var columns = _columns; var pdfOnly = _pdfOnly;
-                    try { Alignment = await Task.Run(() => ColumnAligner.Run(plans, columns, floorLevels, pdfOnly)); }
+                    // pages without enough columns are lined up by their walls on the DWGs placed on their level: read here (Revit API)
+                    var walls = new Dictionary<string, List<(string Source, List<((double X, double Y) A, (double X, double Y) B)> Walls)>>();
+                    if (_modelWalls != null)
+                        foreach (var level in plans.Plans.Where(p => p.Walls.Count > 0 && p.Columns.Count < pdfOnly.MinColumns)
+                                                         .Select(p => floorLevels.TryGetValue(p.Floor, out var l) ? l : null).Where(l => l != null).Distinct())
+                        {
+                            _status.Text = $"Reading the walls of the drawings on {level}…";
+                            try { walls[level] = _modelWalls(level); }
+                            catch (Exception ex) { App.Log($"AutoRun walls on {level} not read: {ex}"); }
+                        }
+                    foreach (var kv in walls)
+                        App.Log($"AutoRun: walls on {kv.Key}: " + (kv.Value.Count == 0 ? "no DWG with walls" : string.Join(", ", kv.Value.Select(w => $"{w.Source} ({w.Walls.Count} wall lines)"))));
+                    try { Alignment = await Task.Run(() => ColumnAligner.Run(plans, columns, floorLevels, pdfOnly, walls)); }
                     catch (Exception ex) { msg.AppendLine($"Lining up with Revit failed: {ex.Message}"); App.Log("AutoRun PDF-only alignment failed: " + ex); }
                 }
                 FillAlignment(msg);
+                if (Alignment != null)
+                {
+                    // logged on Check (not only on Save): how each page landed in Revit and why
+                    foreach (var f in Alignment.Floors.OrderBy(f => FloorKey.Order(f.Floor)))
+                        App.Log($"AutoRun: position {f.Floor} -> {f.Level ?? "-"}: {f.Status}, {f.Reference?.Method ?? "-"}" +
+                                (f.Map != null ? $", origin ({f.Map.Ox:0.###}, {f.Map.Oy:0.###}) ft, turned {Math.Atan2(f.Map.Sin, f.Map.Cos) * 180 / Math.PI:0.##}°" : "") +
+                                $"; {string.Join("; ", f.Notes)}");
+                    foreach (var x in Alignment.Anchors)
+                        App.Log($"AutoRun: position check {x.Tag} {x.Floor} at ({x.X:0.###}, {x.Y:0.###}) ft, {x.Distance:0.##}\" from {x.Evidence}");
+                    foreach (var m in Alignment.Messages.Where(m => !m.Contains(" — "))) App.Log("AutoRun: position: " + m);
+                }
 
                 if (dwg != null && risers != null && Alignment != null && Plumbing)
                 {

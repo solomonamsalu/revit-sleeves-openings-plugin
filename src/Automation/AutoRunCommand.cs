@@ -75,7 +75,9 @@ namespace SleevesOpenings.Automation
                 }
 
                 // which floor each level is, from what the model holds on it (rooms, linked levels, xrefs, views)
-                var levelHints = LevelEvidence.Collect(doc, levels, modelRefs);
+                LevelEvidence.Result levelHints;
+                try { levelHints = LevelEvidence.Collect(doc, levels, modelRefs); }
+                catch (Exception ex) { levelHints = new LevelEvidence.Result(); App.Log("AutoRun: level evidence not read: " + ex); }
                 App.Log($"AutoRun: level evidence — " + (levelHints.Hints.Count == 0 ? "none" :
                         string.Join("; ", levelHints.Hints.Select(kv => $"{kv.Key} = {FloorKey.Describe(kv.Value.Floor)} ({string.Join(", ", kv.Value.Why)})"))));
                 foreach (var n in levelHints.Notes) App.Log("AutoRun: level evidence: " + n);
@@ -94,7 +96,9 @@ namespace SleevesOpenings.Automation
                                                                            dryerGap: rules.Systems.DryerExhaust.MinSpacing),
                                                   discipline, pipeRules, columns, rules.PdfOnly,
                                                   pipeOptions.ContainsKey(AutomationInputs.Plumbing) ? a => FixtureSleeveLocator.Apply(doc, a, rules.Plumbing, existing) : null,
-                                                  pipeOptions, model, allowed, rules.DwgProfile, levelHints))
+                                                  pipeOptions, model, allowed, rules.DwgProfile, levelHints,
+                                                  level => DwgFixtureReader.Read(doc, rules.Plumbing, level).Where(p => p.Walls.Count > 0)
+                                                                           .Select(p => (p.Source, p.Walls)).ToList()))
                 {
                     if (form.ShowDialog(SleevesOpenings.UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
                     pdf = form.Pdf; dwg = form.Dwg; risersFound = form.Risers?.Risers.Count ?? 0;

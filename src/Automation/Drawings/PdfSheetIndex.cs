@@ -111,7 +111,7 @@ namespace SleevesOpenings.Automation.Drawings
                     sheet.HasRiserDiagram = lines.Any(l => l.Size >= 10 && Regex.IsMatch(l.Text, @"RISER\s+DIAGRAM", RegexOptions.IgnoreCase));
                     sheet.HasSchedule = lines.Any(l => l.Size >= 10 && Regex.IsMatch(l.Text, @"\bSCHEDULES?\b", RegexOptions.IgnoreCase));
 
-                    if (sheet.Floor == null && (sheet.HasAbbreviations || sheet.HasSymbols || sheet.HasSchedule))
+                    if ((sheet.Floor == null || sheet.Typical != null) && (sheet.HasAbbreviations || sheet.HasSymbols || sheet.HasSchedule))
                     {
                         try { LegendReader.ReadPage(page, words, index.Legend); }
                         catch (Exception ex) { index.Warnings.Add($"Page {page.Number}: legend could not be read ({ex.Message})."); }

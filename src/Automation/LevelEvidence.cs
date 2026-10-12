@@ -54,7 +54,7 @@ namespace SleevesOpenings.Automation
             foreach (var (ldoc, t, name) in sources.Where(s => s.Name != null))
                 foreach (var lv in new FilteredElementCollector(ldoc).OfClass(typeof(Level)).Cast<Level>())
                 {
-                    string key = FloorKey.FromLevelName(lv.Name);
+                    string key = FloorKey.LevelFloor(lv.Name);
                     double z = HostZ(t, lv.ProjectElevation);
                     var host = key == null ? null : Nearest(z, LinkTol);
                     if (host != null) votes[host.Name].Add(new Vote { Kind = Links, Floor = key, Why = $"level '{lv.Name}' in {name}" });
@@ -111,7 +111,7 @@ namespace SleevesOpenings.Automation
                 foreach (var n in names)
                 {
                     if (Echo(n, v.GenLevel.Name)) continue;
-                    string key = FloorKey.FromLevelName(n);
+                    string key = FloorKey.LevelFloor(n);
                     if (key != null) votes[v.GenLevel.Name].Add(new Vote { Kind = Views, Floor = key, Why = $"'{n}'" });
                 }
             }

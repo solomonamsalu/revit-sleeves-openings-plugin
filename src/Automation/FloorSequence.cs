@@ -72,13 +72,15 @@ namespace SleevesOpenings.Automation
 
         // ---- scores (points). A floor left unmatched costs Miss: worse than a level with no evidence, better than one named for another floor.
         private const double NameScore = 10, ElevExact = 12, ElevNear = 6, ElevWrong = -12, Miss = -8;
-        private const double RoleMain = 8, RoleOther = 3, RoleWrong = -4, CellarForFloor = -8, Setback = -1, HighestCellar = 1;
+        // a roof / bulkhead plan on a level of another role: only when nothing fits better, and never sure (just above Miss)
+        private const double RoleMain = 8, RoleOther = 3, RoleWrong = -4, UpperWrong = -7, CellarForFloor = -8, Setback = -1, HighestCellar = 1;
         private const double SkipCost = 1, HeightCost = 6, LeadCost = 1;
         private const double HintScore = 8, HintExtra = 2, HintMax = 12, WordScore = 6;
         private const double ColMatch = 3, ColMiss = 6, ColMinBest = 0.5, ColSame = 0.05, ColSlope = 30;
         private const double High = 6, Medium = 2;
         private const double ExactTol = 0.25, NearTol = 0.75, WrongTol = 2.0, SameLevelTol = 1.0, SameHeightTol = 0.1;
-        /// <summary>At most this many floors in a row stay unmatched between two matched ones (keeps a 40-storey tower fast).</summary>
+        /// <summary>Floors in a row left unmatched between two matched ones that are scored step by step; a longer gap is
+        /// bridged by the best chain ending before it (keeps a 40-storey tower fast).</summary>
         private const int MaxGap = 6;
         private const int MaxOffsets = 4;
 
@@ -114,8 +116,7 @@ namespace SleevesOpenings.Automation
                 Floors = floors.OrderBy(f => FloorKey.Order(f.Key)).ToList(),
                 Levels = levels.ToList(),
             };
-            // "Level 0" names no floor a drawing can have: no evidence (not "another floor")
-            m.LevelKeys = m.Levels.Select(l => FloorKey.FromLevelName(l.Name)).Select(k => k == "F0" ? null : k).ToArray();
+            m.LevelKeys = m.Levels.Select(l => FloorKey.LevelFloor(l.Name)).ToArray();
             m.Numbers = m.Floors.Select(f => Number(f.Key)).ToArray();
             m.Z = m.Levels.Select(l => l.Elevation).ToArray();
             m.MainRoof = m.Levels.FindLastIndex(l => l.Role == LevelRole.Roof);
@@ -123,8 +124,6 @@ namespace SleevesOpenings.Automation
             m.HighestCellarIdx = m.Levels.FindLastIndex(l => l.Role == LevelRole.Cellar);
             m.Storey = StoreyHeight(m.Levels);
             m.Saved = m.Floors.Select(f => f.Saved == null ? -1 : m.Levels.FindIndex(l => l.Name == f.Saved)).ToArray();
-            ColumnScores(m);
-            TitleWords(m);
 
             var results = m.Floors.Select(f => new Result { Floor = f.Key }).ToList();
             if (m.Levels.Count == 0 || m.Floors.Count == 0)
@@ -132,12 +131,14 @@ namespace SleevesOpenings.Automation
                 foreach (var r in results) { r.Confidence = Confidence.Low; r.Why.Add("the model has no levels to match"); }
                 return results;
             }
+            ColumnScores(m);
+            TitleWords(m);
 
             var datums = Datums(m);
             var (best, bestDatum) = BestOver(m, datums, null);
             if (double.IsNegativeInfinity(best.Score))
             {
-                // the saved choices are out of order with each other: keep them as chosen, order the rest without them
+                // the saved choices cannot all stay in order (out of order with each other): keep them as chosen, order the rest without them
                 m.SavedInside = false;
                 (best, bestDatum) = BestOver(m, datums, null);
             }
@@ -193,11 +194,11 @@ namespace SleevesOpenings.Automation
                 s += l.Hint.Floor == d ? hint : -hint;
             }
             if (d == FloorKey.Cellar) s += l.Role == LevelRole.Cellar ? RoleOther + (k == m.HighestCellarIdx ? HighestCellar : 0) : RoleWrong;
-            else if (d == FloorKey.Roof) s += l.Role == LevelRole.Roof ? (k == m.MainRoof && !m.Worded[i] ? RoleMain : RoleOther) : RoleWrong;
-            else if (d == FloorKey.Bulkhead) s += l.Role == LevelRole.Bulkhead ? (k == m.TopBulkhead && !m.Worded[i] ? RoleMain : RoleOther) : RoleWrong;
-            if (m.Word[i, k] != null) s += WordScore;
+            else if (d == FloorKey.Roof) s += l.Role == LevelRole.Roof ? (k == m.MainRoof && !m.Worded[i] ? RoleMain : RoleOther) : UpperWrong;
+            else if (d == FloorKey.Bulkhead) s += l.Role == LevelRole.Bulkhead ? (k == m.TopBulkhead && !m.Worded[i] ? RoleMain : RoleOther) : UpperWrong;
             else if (l.Role == LevelRole.Cellar) s += CellarForFloor;
             else if (l.Role == LevelRole.Setback) s += Setback;
+            if (m.Word[i, k] != null) s += WordScore;
             return s;
         }
 
@@ -289,7 +290,20 @@ namespace SleevesOpenings.Automation
 
             var best = new double[F, L];
             var back = new (int P, int J)[F, L];
+            var far = new (int P, int J, double V)[L];
             for (int i = 0; i < F; i++)
+            {
+                // chains ending more than MaxGap floors back: far[k] = the best of them on a level up to k (gap misses included)
+                for (int k = 0; k < L; k++) far[k] = (-1, -1, double.NegativeInfinity);
+                for (int p = 0; p < i - 1 - MaxGap; p++)
+                {
+                    if (!m.SavedInside && m.Saved[p] >= 0) continue;
+                    double gap = Missed(p + 1, i);
+                    if (double.IsNegativeInfinity(gap)) continue;
+                    for (int j = 0; j < L; j++)
+                        if (best[p, j] + gap > far[j].V) far[j] = (p, j, best[p, j] + gap);
+                }
+                for (int k = 1; k < L; k++) if (far[k - 1].V > far[k].V) far[k] = far[k - 1];
                 for (int k = 0; k < L; k++)
                 {
                     best[i, k] = double.NegativeInfinity;
@@ -301,6 +315,12 @@ namespace SleevesOpenings.Automation
                     node += Elev(m, datum, i, k);
 
                     double from = Missed(0, i) + Lead(m, i, k);
+                    if (k > 0 && far[k - 1].P >= 0)
+                    {
+                        var (fp, fj, fv) = far[k - 1];
+                        double v = fv + Step(m, fp, fj, i, k);
+                        if (v > from) { from = v; back[i, k] = (fp, fj); }
+                    }
                     for (int p = Math.Max(0, i - 1 - MaxGap); p < i; p++)
                     {
                         if (!m.SavedInside && m.Saved[p] >= 0) continue;
@@ -315,6 +335,7 @@ namespace SleevesOpenings.Automation
                     }
                     best[i, k] = node + from;
                 }
+            }
 
             var sol = new Solution { Score = Missed(0, F), Assign = Enumerable.Repeat(-1, F).ToArray() };
             int bi = -1, bk = -1;

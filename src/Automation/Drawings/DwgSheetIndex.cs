@@ -127,7 +127,7 @@ namespace SleevesOpenings.Automation.Drawings
             foreach (var dup in index.Floors.GroupBy(f => f.Floor).Where(g => g.Count(x => x.Typical == null) > 1))
                 index.Warnings.Add($"{FloorKey.Describe(dup.Key)} is on several sheets ({string.Join(", ", dup.Where(x => x.Typical == null).Select(f => f.Layout ?? "model"))}); the first is used.");
             index.Floors = index.Floors.GroupBy(f => f.Floor).Select(g => g.OrderBy(x => x.Typical == null ? 0 : 1).First()).OrderBy(f => FloorKey.Order(f.Floor)).ToList();
-            if (index.Floors.Count == 0) index.Warnings.Add("No floor plans found (no layout title block or model-space title names a single floor).");
+            if (index.Floors.Count == 0) index.Warnings.Add("No floor plans found (no layout title block or model-space title names a floor or a typical range of floors).");
             return index;
         }
 
@@ -148,8 +148,10 @@ namespace SleevesOpenings.Automation.Drawings
                 double tallest = hits.Max(x => x.Height);
                 foreach (var g in hits.Where(x => x.Height >= tallest * 0.5).GroupBy(x => x.Floor))
                 {
-                    var range = FloorKey.PlanFloors(g.First().Text);
-                    index.Floors.Add(new DwgFloor { Floor = g.Key, Title = g.First().Text, Typical = range.Count > 1 ? range : null });
+                    // a floor with its own title is not the typical plan's copy
+                    var text = g.Select(x => x.Text).OrderBy(t => FloorKey.PlanFloors(t).Count).First();
+                    var range = FloorKey.PlanFloors(text);
+                    index.Floors.Add(new DwgFloor { Floor = g.Key, Title = text, Typical = range.Count > 1 ? range : null });
                 }
                 index.Warnings.Add("Floors found from model-space titles (no sheet layouts); plan regions are unknown.");
                 return;

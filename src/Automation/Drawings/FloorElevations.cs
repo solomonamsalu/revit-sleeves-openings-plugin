@@ -27,12 +27,12 @@ namespace SleevesOpenings.Automation.Drawings
 
         // 14'-6"  +14'-6 1/2"  -6'-7"  ±0'-0"
         private static readonly Regex FeetInch = new Regex(
-            @"(?<sign>[+\-±]\s*)?(?<!\d)(?<ft>\d{1,4})\s*'\s*-?\s*(?<in>\d{1,2})(?:\s+(?<num>\d{1,2})/(?<den>\d{1,2}))?\s*""");
+            @"(?<sign>(?<![A-Z0-9.])[+\-±]\s*)?(?<!\d)(?<ft>\d{1,4})\s*'\s*-?\s*(?<in>\d{1,2})(?:\s+(?<num>\d{1,2})/(?<den>\d{1,2}))?\s*""", RegexOptions.IgnoreCase);
         // 37.78'  (14.62')  +83.20'
-        private static readonly Regex DecimalFeet = new Regex(@"(?<sign>[+\-±]\s*)?(?<!\d)(?<ft>\d{1,4}\.\d{1,3})\s*'");
+        private static readonly Regex DecimalFeet = new Regex(@"(?<sign>(?<![A-Z0-9.])[+\-±]\s*)?(?<!\d)(?<ft>\d{1,4}\.\d{1,3})\s*'", RegexOptions.IgnoreCase);
 
         private static readonly Regex Spot = new Regex(
-            @"TERRACE|STAIR|LANDING|\bPIT\b|PARAPET|STEEL|\bSTL\b|T\.?\s*O\.?\s*W\b|\bB\.?\s*O\.?\b|\bINV|SILL|\bHEAD\b|CEILING|\bCLG\b|GRADE|SIDEWALK|CURB|" +
+            @"TERRACE|STAIR|LANDING|\bPIT\b|PARAPET|STEEL|\bSTL\b|T\.?\s*O\.?\s*W\b|\bB\.?\s*O\.?\b|\bINV|SILL|(?<!BULK\s)\bHEAD\b|CEILING|\bCLG\b|GRADE|SIDEWALK|CURB|" +
             @"\bLOT\b|BUILDING|RAMP|BEAM|FOOTING|SCALE|MEZZ|BALCONY|PLATFORM|BULKHEAD ROOF|ROOF DECK|TOP OF|" +
             @"\d\s*/\s*\d+\s*""?\s*=|=\s*1\s*'",                                // a scale without the word: 1/4"=1'-0"
             RegexOptions.IgnoreCase);
