@@ -31,6 +31,8 @@ namespace SleevesOpenings.Rules
         [JsonProperty("plumbing")] public Automation.PlumbingRules Plumbing { get; set; } = new Automation.PlumbingRules();
         /// <summary>Sprinkler / standpipe Auto Run (same pipeline as plumbing; risers labelled in words with their size).</summary>
         [JsonProperty("sprinkler")] public Automation.PlumbingRules Sprinkler { get; set; } = global::SleevesOpenings.Automation.PlumbingRules.SprinklerDefaults();
+        /// <summary>Sprinkler Placer: the riser sleeves laid out from the stairs (manual p16), no drawings of the engineer's.</summary>
+        [JsonProperty("sprinklerPlacer")] public Automation.SprinklerPlacerRules SprinklerPlacer { get; set; } = new Automation.SprinklerPlacerRules();
         [JsonProperty("pdfOnly")] public Automation.PdfOnlyRules PdfOnly { get; set; } = new Automation.PdfOnlyRules();
         /// <summary>Auto Run: how an HV model is told from a PL or FP model when its name does not say (contents, then other signs).</summary>
         /// <summary>The S&amp;O set (SL101…) made from a pattern sheet, its notes and its PDF.</summary>

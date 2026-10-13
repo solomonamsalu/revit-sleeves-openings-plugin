@@ -75,7 +75,8 @@ namespace SleevesOpenings.Commands
         }
 
         /// <summary>The floors top down, so each vent stack lines up with the one above it and takes its name.</summary>
-        public static Run Extract(Document doc, List<Level> levels, PlumbingRules rules)
+        /// <param name="water">Also each row's hot + cold water pair (Extract CW/HW).</param>
+        public static Run Extract(Document doc, List<Level> levels, PlumbingRules rules, bool water = false)
         {
             var run = new Run();
             var all = FixtureExtractor.Levels(doc);
@@ -104,7 +105,7 @@ namespace SleevesOpenings.Commands
                     floor.Notes.Add($"{level.Name} is the lowest level: its slab is on grade, no sleeves (plumbing.skipLowestSlab)");
                     continue;
                 }
-                var rows = FixtureExtractor.Extract(doc, level, rules, true, true, false, out _, out _, out var notes);
+                var rows = FixtureExtractor.Extract(doc, level, rules, true, true, false, out var plans, out _, out var notes);
                 floor.Notes.AddRange(notes.Distinct());
                 var fixtures = rows.Where(r => r.Sleeved(rules) && r.Points.Count > 0).Select(r => new StackFinder.Fixture
                 {
@@ -117,9 +118,12 @@ namespace SleevesOpenings.Commands
                                    {
                                        X = e.Point.X, Y = e.Point.Y, System = e.System, Name = e.Riser,
                                        // the families do not say their size here: the office's usual ones
-                                       Size = e.System == "Sanitary" ? 6 : e.System == "Vent" && e.Riser != null && StackName.IsMatch(e.Riser) ? 6 : 4
+                                       Size = e.System == "Sanitary" ? 6 : e.System == "Vent" && e.Riser != null && StackName.IsMatch(e.Riser) ? 6 :
+                                              e.System == "HotWater" || e.System == "ColdWater" ? 3 : 4
                                    }).ToList();
-                var found = VentFinder.Find(fixtures, here, rules, namer, level.Name);
+                // the floor's wall lines (DWG wall layers, feet): where each row ends, for the water pair
+                var walls = water ? plans.SelectMany(p => p.Walls).Select(s => ((s.A.X / 12, s.A.Y / 12), (s.B.X / 12, s.B.Y / 12))).ToList() : null;
+                var found = VentFinder.Find(fixtures, here, rules, namer, level.Name, water, walls);
                 floor.Rows = found.Rows;
                 foreach (var r in found.Rows)
                     foreach (var v in r.Vents)
@@ -197,7 +201,7 @@ namespace SleevesOpenings.Commands
                 var c = new Crossing
                 {
                     Floor = floor, Level = level.Name, Tag = v.Name, System = v.System, Size = new DuctSize { Diameter = v.Pipe },
-                    X = v.X, Y = v.Y, HasPosition = true, Status = Crossing.Place, Confidence = "high", Check = false, FromModel = true
+                    X = v.X, Y = v.Y, HasPosition = true, Status = Crossing.Place, Confidence = "high", Check = v.System == "HotWater" || v.System == "ColdWater", FromModel = true
                 };
                 c.From.Add(v.IsStack ? $"{FloorKey.Describe(floor)}: vent stack {v.Name} of row {i.Row.Id} (Vent Placer)"
                                      : $"{FloorKey.Describe(floor)}: fixture '{v.Fixture}' {v.Kind} (Vent Placer, row {i.Row.Id})");
@@ -216,7 +220,7 @@ namespace SleevesOpenings.Commands
             foreach (var o in outcomes)
                 App.Log($"Vent placer: {o.Result} {o.Crossing.Name} {o.Size} on {o.Crossing.Level}" +
                         (o.Ids.Count > 0 ? " [" + string.Join(",", o.Ids.Select(x => x.ToString())) + "]" : "") + (o.Detail != null ? ": " + o.Detail : ""));
-            return $"{outcomes.Count(o => o.Result == PlacementOutcome.Placed)} vent sleeve(s) placed on {items.Select(i => i.Floor.Level.Name).Distinct().Count()} floor(s), " +
+            return $"{outcomes.Count(o => o.Result == PlacementOutcome.Placed)} sleeve(s) placed on {items.Select(i => i.Floor.Level.Name).Distinct().Count()} floor(s), " +
                    $"{outcomes.Count(o => o.Result == PlacementOutcome.Existing)} already had one, " +
                    $"{outcomes.Count(o => o.Result == PlacementOutcome.Skipped)} skipped (structure or no family), {outcomes.Count(o => o.Result == PlacementOutcome.Failed)} failed." +
                    (outcomes.Any(o => o.Result == PlacementOutcome.Skipped || o.Result == PlacementOutcome.Failed)

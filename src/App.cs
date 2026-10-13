@@ -134,6 +134,15 @@ namespace SleevesOpenings
                 "Tick floors and lay out their vent (yellow) sleeves from the model alone: each vent touches its own fixture's drain in the wall behind it, " +
                 "on the side the Standards Manual uses (toilet vent toward the lavatory, lavatory vent toward the toilet); one vent stack per bathroom row " +
                 "at its end (shared back to back), in line floor to floor. Zoom to one, mark them in the plan, export CSV or place them."));
+            extract.AddItem(Button("ExtractWater", "CW/HW", asm, typeof(Commands.ExtractWaterCommand),
+                "Tick floors and lay out one hot + cold water pair (3\" sleeves, 5 1/4\" apart, hot on the plan's left) per wet row by the office rule: " +
+                "a bathroom's 9 1/2\" past the toilet's centre line away from the lavatory, a sink's or washer's 11 3/4\" past its vent. Also lists the water " +
+                "the model shows (Revit pipes, fixture connectors, heaters, DWG water circles). Zoom, mark in the plan, export CSV or place the pairs."));
+            extract.AddItem(Button("SprinklerPlacer", "Sprinkler\nPlacer", asm, typeof(Commands.SprinklerPlacerCommand),
+                "Tick the floors and lay out the standpipe / sprinkler riser sleeves (red, 3\" pipe = 5\" sleeve) from the stairs alone, by the Standards Manual's " +
+                "p16: in the stairwell, the same spot top to bottom, 5 1/2\" pipe centre to any wall; one riser per stair enclosure (Combined, then Standpipe Only), " +
+                "on a landing corner clear of doors, steps and columns; none in the slab on grade or the bulkhead roof. Step to another corner, swap the kind, " +
+                "change the pipe, add one by clicking; zoom, mark in the plan, export CSV or place them."));
 
             // greyed out until the startup check finds a newer version (UpdateChecker)
             var add = app.CreateRibbonPanel(TabName, "Add-in");

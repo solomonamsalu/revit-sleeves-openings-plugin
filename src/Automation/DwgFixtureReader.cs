@@ -34,6 +34,8 @@ namespace SleevesOpenings.Automation
             public List<((double X, double Y) A, (double X, double Y) B)> Edges = new List<((double X, double Y) A, (double X, double Y) B)>();
             /// <summary>Riser circles of a plumbing DWG on the level (profile riserCircleLayers: P-COLD WATER...): centre, model inches, and layer.</summary>
             public List<(double X, double Y, string Layer)> Risers = new List<(double X, double Y, string Layer)>();
+            /// <summary>Circles on the water layers (plumbing.dwgWaterLayers: P-COLD WATER, P-HOT WATER...): centre and diameter, model inches, and layer.</summary>
+            public List<(double X, double Y, double Diameter, string Layer)> Water = new List<(double X, double Y, double Diameter, string Layer)>();
             /// <summary>Every layer of the drawing with its number of lines (for the log and the scan: which layers to name in the rules).</summary>
             public Dictionary<string, int> Layers = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             /// <summary>Lines skipped because they are, or sit in a block on, a removal layer.</summary>
@@ -60,7 +62,7 @@ namespace SleevesOpenings.Automation
 
         private class Layers
         {
-            public Regex Fixture, Wall, New, Remove, Shaft, Riser, Edge;
+            public Regex Fixture, Wall, New, Remove, Shaft, Riser, Edge, Water;
         }
 
         /// <summary>The layer rules as regexes; an empty rule matches nothing.</summary>
@@ -85,7 +87,8 @@ namespace SleevesOpenings.Automation
                 Fixture = fixture, Wall = wall, New = @new, Remove = remove,
                 Shaft = string.IsNullOrWhiteSpace(rules.DwgShaftLayers) ? null : new Regex(rules.DwgShaftLayers, RegexOptions.IgnoreCase),
                 Riser = string.IsNullOrWhiteSpace(rules.Profile?.RiserCircleLayers) ? null : new Regex(rules.Profile.RiserCircleLayers, RegexOptions.IgnoreCase),
-                Edge = string.IsNullOrWhiteSpace(rules.DwgSlabEdgeLayers) ? null : new Regex(rules.DwgSlabEdgeLayers, RegexOptions.IgnoreCase)
+                Edge = string.IsNullOrWhiteSpace(rules.DwgSlabEdgeLayers) ? null : new Regex(rules.DwgSlabEdgeLayers, RegexOptions.IgnoreCase),
+                Water = string.IsNullOrWhiteSpace(rules.DwgWaterLayers) ? null : new Regex(rules.DwgWaterLayers, RegexOptions.IgnoreCase)
             };
             var best = new Dictionary<string, Plan>(StringComparer.OrdinalIgnoreCase);
             var order = new List<string>();
@@ -147,7 +150,7 @@ namespace SleevesOpenings.Automation
         }
 
         /// <summary>The DWG file behind an import: the link's own path, else a file of that name next to the model (3 folders deep, and one up).</summary>
-        private static string FileOf(Document doc, Element type, string name)
+        internal static string FileOf(Document doc, Element type, string name)
         {
             try
             {
@@ -246,6 +249,8 @@ namespace SleevesOpenings.Automation
                         plan.Edges.Add(((pts[i].X * 12, pts[i].Y * 12), (pts[i + 1].X * 12, pts[i + 1].Y * 12)));
                 if (closedRound && Is(layers.Riser, layer))
                     plan.Risers.Add(((pts.Min(p => p.X) + pts.Max(p => p.X)) * 6, (pts.Min(p => p.Y) + pts.Max(p => p.Y)) * 6, layer));
+                if (closedRound && Is(layers.Water, layer))
+                    plan.Water.Add(((pts.Min(p => p.X) + pts.Max(p => p.X)) * 6, (pts.Min(p => p.Y) + pts.Max(p => p.Y)) * 6, (pts.Max(p => p.X) - pts.Min(p => p.X)) * 12, layer));
                 if (isFixture)
                 {
                     double x0 = pts.Min(p => p.X) * 12, y0 = pts.Min(p => p.Y) * 12, x1 = pts.Max(p => p.X) * 12, y1 = pts.Max(p => p.Y) * 12;

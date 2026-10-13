@@ -105,6 +105,11 @@ namespace SleevesOpenings.Automation
         /// <summary>Regex on the DWG layers holding pipe shafts and chases (Extract Stacks: a stack goes in the chase next to its fixtures).</summary>
         [JsonProperty("dwgShaftLayers")] public string DwgShaftLayers { get; set; } = @"SHAFT|CHASE";
         /// <summary>
+        /// Regex on the DWG layers holding domestic water (Extract CW/HW: the circles on them are water risers and drops; the
+        /// layer says which: RETURN / HWR / RECIRC = hot water return, HOT / HW = hot, COLD / CW = cold).
+        /// </summary>
+        [JsonProperty("dwgWaterLayers")] public string DwgWaterLayers { get; set; } = @"COLD.?WATER|HOT.?WATER|DOM.*W(A?TE?R|TR)|(^|[^A-Z])D?(CWS?|HWS?|HWR|HWC)([^A-Z]|$)|COLW|HOTW";
+        /// <summary>
         /// Extract Stacks: the services of a stack found from the model's fixtures alone (no engineer's drawing), by their
         /// letters in <see cref="Services"/>: one sleeve each, in a touching row in the wet wall (office S&amp;O sets: vent 6,
         /// waste 6, hot 3, cold 3). A stack from a Revit pipe takes the pipe's own system instead.
@@ -121,6 +126,8 @@ namespace SleevesOpenings.Automation
         [JsonProperty("toiletStackReach")] public double ToiletStackReach { get; set; } = 96;
         /// <summary>Vent Placer: where the vent (yellow) sleeves go in each bathroom's wet wall (Standards Manual, toilet sleeves page).</summary>
         [JsonProperty("vents")] public VentRules Vents { get; set; } = new VentRules();
+        /// <summary>Extract CW/HW: where the hot and cold water sleeves go in each wet row (office S&amp;O sets).</summary>
+        [JsonProperty("water")] public WaterRules Water { get; set; } = new WaterRules();
         /// <summary>Regex on the DWG layers of what an alteration removes ("TO REMOVE"): a fixture block inserted on one is never sleeved.</summary>
         [JsonProperty("dwgRemoveLayers")] public string DwgRemoveLayers { get; set; } = @"TO REMOVE|REMOVE|DEMO";
 
@@ -299,6 +306,29 @@ namespace SleevesOpenings.Automation
         [JsonProperty("existingWithin")] public double ExistingWithin { get; set; } = 4;
         /// <summary>How far (inches) a vent may slide on along its side to clear the sleeves there, before it tries the other side.</summary>
         [JsonProperty("slide")] public double Slide { get; set; } = 12;
+    }
+
+    /// <summary>
+    /// Extract CW/HW: one hot + cold water pair per wet row, at the end of the row, as the office S&amp;O sets draw them
+    /// (2026-10-13, to be refined): a bathroom's pair past its toilet on the side away from the lavatory, a sink's or a
+    /// washer's past its vent on the side away from its drain; hot on the plan's left (top on a wall running up-down).
+    /// </summary>
+    public class WaterRules
+    {
+        /// <summary>Hot and cold water pipe (inches; 0 = no water pair): 1" = 3" sleeves.</summary>
+        [JsonProperty("pipe")] public double Pipe { get; set; } = 1;
+        /// <summary>The nearer water sleeve from the toilet's centre line (inches, along the wall, away from the lavatory).</summary>
+        [JsonProperty("fromToilet")] public double FromToilet { get; set; } = 9.5;
+        /// <summary>The nearer water sleeve from a sink's or a washer's vent (inches, along the wall, away from its drain).</summary>
+        [JsonProperty("fromSinkVent")] public double FromSinkVent { get; set; } = 11.75;
+        /// <summary>Hot to cold, centre to centre (inches).</summary>
+        [JsonProperty("spacing")] public double Spacing { get; set; } = 5.25;
+        /// <summary>The far water sleeve's edge stays this far (inches) inside the wall that ends the row (the corner): the pair slides back toward the fixture.</summary>
+        [JsonProperty("cornerClear")] public double CornerClear { get; set; } = 1.5;
+        /// <summary>A water sleeve already in the model (or laid out for another row) this close (inches): that row's pair is there.</summary>
+        [JsonProperty("existingWithin")] public double ExistingWithin { get; set; } = 12;
+        /// <summary>Washers get a pair too (a washer box has hot and cold).</summary>
+        [JsonProperty("washers")] public bool Washers { get; set; } = true;
     }
 
     /// <summary>Another layout of a fixture's sleeves: how many, how far apart (c-c inches) and their size (inches).</summary>

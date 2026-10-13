@@ -204,7 +204,7 @@ namespace SleevesOpenings.Commands
             var r = ctx.Rules.Systems.Standpipe;
             var f = Ask(Title,
                 $"Sleeve = pipe + {Units.FormatInches(r.SleeveOverPipe)}. Keep {Units.FormatInches(r.MinCenterToWall)} centerline-to-wall and {Units.FormatInches(r.MinCenterToCenter)} c-c between adjacent risers.",
-                Num("pipe", "Pipe size (in)", "6"),
+                Num("pipe", "Pipe size (in)", "3"),
                 new UI.InputForm.Field { Key = "kind", Label = "Riser type", Choices = new[] { "Standpipe Only", "Combined Standpipe/Sprinkler" }, Default = "Standpipe Only" },
                 Txt("stair", "Stair", "A"));
             if (f == null) return null;

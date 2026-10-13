@@ -316,6 +316,14 @@ namespace SleevesOpenings.Rules
                 .F("plumbing.vents.wallHungVent", "Wall-hung: toilet vent past the reserve vent (c-c)", In, "Manual p17: 7\". 0 = touching.")
                 .F("plumbing.vents.existingWithin", "A vent already in the model within", In, "That spot gets nothing more.")
                 .F("plumbing.vents.slide", "A vent may slide along its side up to", In, "To clear the sleeves there, before it tries the other side of its drain.")
+                .H("Hot / cold water (Extract CW/HW: one pair per wet row, at the row's end)")
+                .F("plumbing.water.pipe", "Hot and cold water pipe (0 = no water pair)", In, "1\" pipe = 3\" sleeves.")
+                .F("plumbing.water.fromToilet", "Bathroom: nearer water sleeve from the toilet's centre line", In, "Office set: 9 1/2\", along the wall, away from the lavatory.")
+                .F("plumbing.water.fromSinkVent", "Kitchen / laundry / washer: nearer water sleeve from its vent", In, "Office set: 11 3/4\", along the wall, away from the drain.")
+                .F("plumbing.water.spacing", "Hot to cold (c-c)", In, "Office sets: 5 1/4\". Hot on the plan's left (top on a wall running up-down).")
+                .F("plumbing.water.cornerClear", "Keep the pair inside the row's end wall by", In, "Clear between the far sleeve's edge and the wall across the row (the corner, an exterior wall); the pair slides back toward the fixture.")
+                .F("plumbing.water.existingWithin", "A water sleeve already within", In, "Of the row's spot (in the model or another row's): the row's pair is there.")
+                .F("plumbing.water.washers", "Washers get a pair", B)
                 .H("Words on the plans")
                 .F("plumbing.upWords", "Means up (slab above)", RuleKind.Words)
                 .F("plumbing.downWords", "Means down (this slab)", RuleKind.Words)
@@ -344,6 +352,29 @@ namespace SleevesOpenings.Rules
                 .F("sprinkler.skipLowestSlab", "No sleeves in the lowest slab (on grade)", B)
                 .F("sprinkler.unmarked", "No UP / DN written", RuleKind.Choice, null, C(null, "Report, place nothing"), C("DN", "Ends on this floor (DN)"))
                 .F("sprinkler.modelMatch", "Sprinkler model name contains (pattern)", RuleKind.Regex));
+
+            pages.Add(new RulePage { Title = "Sprinkler Placer", Intro = "Riser sleeves laid out from the stairs alone (manual p16): in the stairwell, the same spot top to bottom. Clearances: Pipe sleeves > Standpipe; sleeve sizes: Sprinkler." }
+                .F("sprinklerPlacer.standpipe", "Standpipe building", RuleKind.Choice, "A standpipe in every stair (one Combined + its drain, then Standpipe Only) when the building is taller than the height below.",
+                   C("auto", "By the building's height"), C("yes", "Yes"), C("no", "No: one sprinkler riser"))
+                .F("sprinklerPlacer.standpipeHeight", "Standpipe above (ground floor to top floor, feet)", RuleKind.Number, "NYC: 75 ft.")
+                .F("sprinklerPlacer.belowGrade", "Levels below grade (pattern)", RuleKind.Regex, "Not counted in the height.")
+                .F("sprinklerPlacer.pipe", "Sprinkler-only riser pipe", In, "24 Skillman, 1299 Findlay: 3\" (5\" sleeve).")
+                .F("sprinklerPlacer.standpipePipe", "Standpipe building: riser pipe", In, "2258 Morris: 4\" (6\" sleeve).")
+                .F("sprinklerPlacer.drainPipe", "Combined riser's drain (0 = none)", In, "2258 Morris: 2\" drain, its own 4\" sleeve at the back (in the corner), the riser 8\" c-c in front.")
+                .F("sprinklerPlacer.corner", "Corner of the landing", RuleKind.Choice, "24 Skillman and 2258 Morris: away from the door; 1299 Findlay: beside it. Next corner in the window steps through the others.",
+                   C("awayFromDoor", "Away from the stair door"), C("nearDoor", "Beside the stair door (toward the corridor)"))
+                .F("sprinklerPlacer.columnClear", "Clear of a column face", In, "Structural engineer: no slab penetration within 1'-0\".")
+                .F("sprinklerPlacer.doorClear", "Clear of a door's swing", In)
+                .F("sprinklerPlacer.skipLevels", "Levels with no riser sleeve (pattern)", RuleKind.Regex, "The bulkhead roof: the riser ends under it. The lowest slab follows sprinkler.skipLowestSlab.")
+                .H("Reading the architect's drawings")
+                .F("sprinklerPlacer.stairLayers", "Stair (tread) layers", RuleKind.Regex)
+                .F("sprinklerPlacer.wallLayers", "Wall layers", RuleKind.Regex, "Concrete walls too (S-FNDN at 1299 Findlay).")
+                .F("sprinklerPlacer.doorLayers", "Door layers", RuleKind.Regex)
+                .F("sprinklerPlacer.columnLayers", "Column layers", RuleKind.Regex)
+                .F("sprinklerPlacer.stairNames", "Stair name on the plan (pattern)", RuleKind.Regex)
+                .F("sprinklerPlacer.hintWords", "Words marking the riser's landing (pattern)", RuleKind.Regex, "Not F.P.S.C.: that is a fireproof self-closing door.")
+                .F("sprinklerPlacer.maxLanding", "Look for a landing this far past the flights", In)
+                .F("sprinklerPlacer.fallbackLanding", "No walls drawn: landing depth taken", In));
 
             pages.Add(new RulePage { Title = "Fixtures to verify", Intro = "Manual p.2 'Always verify': fixtures found in the model by name and checked against the sleeves in Final Check." }
                 .H("Shower / floor drain")

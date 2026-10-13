@@ -11,10 +11,10 @@ static class Program
         new F { Code = code, Name = name ?? code, X = xIn / 12, Y = yIn / 12, Back = bx == 0 && by == 0 ? null : new[] { bx, by },
                 Points = new List<(double X, double Y)> { (xIn / 12, yIn / 12) } };
 
-    static void Show(string title, List<F> fx, string expect, double ax, double ay, double ox = 0, double oy = 0, List<VentFinder.Existing> existing = null, VentFinder.Namer namer = null, string floor = "2")
+    static void Show(string title, List<F> fx, string expect, double ax, double ay, double ox = 0, double oy = 0, List<VentFinder.Existing> existing = null, VentFinder.Namer namer = null, string floor = "2", bool water = false, List<((double X, double Y) A, (double X, double Y) B)> walls = null)
     {
         var rules = new PlumbingRules();
-        var r = VentFinder.Find(fx, existing ?? new List<VentFinder.Existing>(), rules, namer ?? new VentFinder.Namer(), floor);
+        var r = VentFinder.Find(fx, existing ?? new List<VentFinder.Existing>(), rules, namer ?? new VentFinder.Namer(), floor, water, walls);
         Console.WriteLine($"== {title}\n   manual: {expect}");
         foreach (var row in r.Rows)
         {
@@ -56,8 +56,30 @@ static class Program
              existing: new List<VentFinder.Existing> { new VentFinder.Existing { X = -3.75 / 12, Y = 0, System = "Sanitary", Size = 6, Name = "S-T4" },
                                                        new VentFinder.Existing { X = 1.5 / 12, Y = 0, System = "Vent", Size = 4, Name = "V-WC" } });
 
+        // ---- hot / cold water (plumbing.water): office B-63b, wall along X at y = 0, bathroom above (back = down);
+        // LAV drain 27.75" left of the toilet CL -> HW 9.5" right of the CL, CW 14.75"
+        Show("Water: B-63b (LAV left)", new List<F> { Fx("WC", 0, 15.5, 0, -1), Fx("LAV", -27.75, 0, 0, -1) },
+             "office: HW +9.5 | CW +14.75 (HW plan-left)", 1, 0, water: true);
+        // mirrored (LAV right): pair on the left; hot still on the plan's left -> HW -14.75, CW -9.5
+        Show("Water: mirrored (LAV right)", new List<F> { Fx("WC", 0, 15.5, 0, -1), Fx("LAV", 27.75, 0, 0, -1) },
+             "pair left of the toilet: HW -14.75 | CW -9.5", 1, 0, water: true);
+        // kitchen: wall along X at y = 0, sink above (back = down), drain on the sink CL at 0; vent touches the drain
+        Show("Water: kitchen sink", new List<F> { Fx("KS", 0, 0, 0, -1) }, "vent then 11.75 past it, HW plan-left", 1, 0, water: true);
+
+        // ---- the row's end (walls in feet): wet wall faces at y = 2" and y = -3" (inches), side wall face at x = 14" (screenshot 10-13)
+        List<((double X, double Y) A, (double X, double Y) B)> W(params double[][] l) => l.Select(q => ((q[0] / 12, q[1] / 12), (q[2] / 12, q[3] / 12))).ToList();
+        var bath = W(new[] { -80.0, 2, 14, 2 }, new[] { -80.0, -3, 30, -3 }, new[] { 14.0, 2, 14, 60 }, new[] { 18.0, -3, 18, 60 });
+        Show("Water: corner 14\" from the toilet CL (screenshot)", new List<F> { Fx("WC", 0, 15.5, 0, -1), Fx("LAV", -27.75, 0, 0, -1) },
+             "pair must stay left of x = 14 - 1.5 - 1.5 = 11 for CW", 1, 0, water: true, walls: bath);
+        var roomy = W(new[] { -80.0, 2, 24, 2 }, new[] { -80.0, -3, 40, -3 }, new[] { 24.0, 2, 24, 60 });
+        Show("Water: corner 24\" away (room)", new List<F> { Fx("WC", 0, 15.5, 0, -1), Fx("LAV", -27.75, 0, 0, -1) },
+             "rule spot (HW ~10.5, CW ~15.75)", 1, 0, water: true, walls: roomy);
+        // kitchen: row up a wall along Y (x = 0), sink to the right (back = -X), drain at y 0; exterior wall inner face at y = 14"
+        var kit = W(new[] { -2.0, -40, -2, 14 }, new[] { 3.0, -40, 3, 14 }, new[] { -10.0, 14, 60, 14 });
+        Show("Water: kitchen, exterior wall 14\" past the drain", new List<F> { Fx("KS", 0, 0, 1, 0) }, "pair below y = 14 - 1.5 - 1.5 = 11", 0, 1, water: true, walls: kit);
+
         // island kitchen sink (no wall: the faucet edge is its back)
         var island = Fx("KS", 100, 100, 0, 1); island.Island = true;
-        Show("Island sink", new List<F> { island }, "Y4 past the hot water's place", 1, 0, 100, 100);
+        Show("Island sink", new List<F> { island }, "Y4 past the hot water's place; with water: vent - hot - drain - cold", 1, 0, 100, 100, water: true);
     }
 }

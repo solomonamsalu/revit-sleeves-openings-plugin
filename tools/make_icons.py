@@ -321,6 +321,26 @@ def vent_placer():
     return im
 icons['VentPlacer'] = vent_placer
 
+# ---------------- Extract CW/HW: two water pipes (hot, cold) through the slab, under a magnifier
+def extract_water():
+    im, d = base(COL['doc'])
+    line(d, [(16, 54), (88, 54)], 6)                                  # the slab
+    ring(d, 34, 54, 13, 8)                                            # hot
+    ring(d, 66, 54, 13, 8)                                            # cold
+    ring(d, 82, 78, 22, 9)                                            # magnifier
+    line(d, [(98, 94), (114, 110)], 12)
+    return im
+icons['ExtractWater'] = extract_water
+
+# ---------------- Sprinkler Placer: a riser rising in the stair (steps) with its sleeve
+def sprinkler_placer():
+    im, d = base(COL['check'])
+    line(d, [(18, 104), (18, 86), (40, 86), (40, 68), (62, 68), (62, 50)], 8)   # the steps
+    arrow_up(d, 92, 112, 22, w=10, head=14)                                   # the riser
+    ring(d, 92, 78, 18, 8)                                                    # its sleeve
+    return im
+icons['SprinklerPlacer'] = sprinkler_placer
+
 # ---------------- Add-in update (greyed out by Revit until an update is found)
 def update():
     im, d = base(COL['riser'])

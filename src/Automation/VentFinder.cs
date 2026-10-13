@@ -122,7 +122,10 @@ namespace SleevesOpenings.Automation
         /// <param name="fixtures">The floor's fixtures (Extract Fixtures' reading), with the wall behind each where known.</param>
         /// <param name="existing">Every sleeve already in the model on this floor.</param>
         /// <param name="namer">Vent stacks of the floors already done in this run (top down) and the names taken.</param>
-        public static Result Find(List<Fixture> fixtures, List<Existing> existing, PlumbingRules rules, Namer namer, string floor = null)
+        /// <param name="water">Also each row's hot + cold water pair (Extract CW/HW, plumbing.water); the Vent Placer leaves it out.</param>
+        /// <param name="walls">The floor's wall lines (feet; the DWGs' wall layers): where a row ends, so the water pair stays before the corner.</param>
+        public static Result Find(List<Fixture> fixtures, List<Existing> existing, PlumbingRules rules, Namer namer, string floor = null, bool water = false,
+                                  List<((double X, double Y) A, (double X, double Y) B)> walls = null)
         {
             var v = rules.Vents ?? new VentRules();
             var result = new Result();
@@ -418,6 +421,151 @@ namespace SleevesOpenings.Automation
                 done.Add((w, stack));
             }
 
+            // ---- hot and cold water (Extract CW/HW): one pair per row, at its end (office S&O sets, 2026-10-13, to be refined)
+            var wr = rules.Water ?? new WaterRules();
+            if (water && wr.Pipe > 0)
+            {
+                double rw = R(wr.Pipe);
+                var waterAt = existing.Where(e => e.System == "HotWater" || e.System == "ColdWater").Select(e => (e.X, e.Y)).ToList();
+                foreach (var w in wets)
+                {
+                    var row = w.Row;
+                    // an island sink: its own row, vent - hot - drain - cold (24 Skillman SL102)
+                    if (w.Group.Count == 1 && w.Group[0].Island)
+                    {
+                        var f = w.Group[0];
+                        var fs = rules.Fixtures[f.Code];
+                        if (fs.Water <= 0) continue;
+                        var (dx, dy) = Drain(f);
+                        double rd = R(fs.Pipe), lx = f.Back[1], ly = -f.Back[0], o = rd + gap + R(fs.Water);
+                        if (waterAt.Any(p => Dist(p.X, p.Y, dx, dy) <= wr.ExistingWithin / 12)) { row.Notes.Add("hot / cold water already in the model at the island sink"); continue; }
+                        foreach (var (k, s, sys, sign) in new[] { ("hot water", "HW", "HotWater", 1), ("cold water", "CW", "ColdWater", -1) })
+                        {
+                            double x = dx + lx * o * sign, y = dy + ly * o * sign;
+                            bool clear = Clear(x, y, R(fs.Water), gap);
+                            var it = Add(w, k, $"{s}-{f.Code}", s, sys, fs.Water, x, y, f.Code, $"in the island sink's own row, {(sign > 0 ? "between its vent and its drain" : "past its drain")} (24 Skillman SL102)");
+                            it.Notes.Add("office rule: check");
+                            if (!clear) it.Notes.Add("overlaps a sleeve already there: move it by hand");
+                            waterAt.Add((x, y));
+                        }
+                        continue;
+                    }
+
+                    Wet own = w;
+                    double anchor, cc, otherAnchor; int dir; string fixture, how;
+                    if (w.Toilet != null)
+                    {
+                        // past the toilet, on the side away from the lavatory (the nearest in the wall); none: its outer side
+                        var lavs = Lavs(w);
+                        dir = lavs.Count > 0 ? (lavs.OrderBy(l => Math.Abs(l)).First() >= 0 ? -1 : 1) : w.Side;
+                        anchor = 0; otherAnchor = 0; cc = wr.FromToilet; fixture = "WC";
+                        how = $"{Units(cc)} from the toilet's centre line, away from the lavatory";
+                    }
+                    else
+                    {
+                        // a kitchen / laundry sink, a washer, else a lavatory: past its vent, on the side away from its drain
+                        var f = w.Group.FirstOrDefault(o => Sink(o) && o.Back != null) ?? (wr.Washers ? w.Group.FirstOrDefault(o => Washer(o) && o.Back != null) : null)
+                             ?? w.Group.FirstOrDefault(o => Is(o, "LAV") && o.Back != null);
+                        if (f == null) continue;
+                        var (dx, dy) = Drain(f);
+                        bool sameWall = Math.Abs(w.Across(dx, dy)) <= SameWallFeet && Math.Abs(f.Back[0] * w.Nx + f.Back[1] * w.Ny) >= 0.95;
+                        if (!sameWall) own = new Wet { Row = row, Group = w.Group, W = (dx, dy), Nx = f.Back[0], Ny = f.Back[1], Ax = -f.Back[1], Ay = f.Back[0] };
+                        double t0 = own.T(dx, dy);
+                        otherAnchor = t0;
+                        var vent = row.Vents.Where(o => o.Fixture == f.Code && o.System == "Vent" && Math.Abs(own.Across(o.X, o.Y)) <= SameWallFeet)
+                                            .OrderBy(o => Dist(o.X, o.Y, dx, dy)).FirstOrDefault();
+                        var ventIn = vent == null ? vents.Where(e => Math.Abs(own.Across(e.X, e.Y)) <= SameWallFeet && Math.Abs(own.T(e.X, e.Y) - t0) <= 1.5)
+                                                         .OrderBy(e => Dist(e.X, e.Y, dx, dy)).FirstOrDefault() : null;
+                        fixture = f.Code;
+                        if (vent != null || ventIn != null)
+                        {
+                            anchor = vent != null ? own.T(vent.X, vent.Y) : own.T(ventIn.X, ventIn.Y);
+                            dir = anchor >= t0 ? 1 : -1;
+                            cc = wr.FromSinkVent;
+                            how = $"{Units(cc)} past the {rules.Fixtures[f.Code].Name}'s vent, away from its drain";
+                        }
+                        else
+                        {
+                            // no vent: past its drain, away from the row's other fixtures
+                            var others = w.Group.Where(o => o != f).Select(Drain).ToList();
+                            dir = others.Count > 0 && others.Average(p => own.T(p.X, p.Y)) > t0 ? -1 : 1;
+                            anchor = t0; cc = wr.FromSinkVent;
+                            how = $"{Units(cc)} past the {rules.Fixtures[f.Code].Name}'s drain (it has no vent)";
+                        }
+                    }
+
+                    // the row's pair already there (in the model, or laid out for the row on the other face of the wall)
+                    double sp = wr.Spacing / 12, t1 = anchor + dir * cc / 12;
+                    var p1 = own.At(t1);
+                    var p2 = own.At(t1 + dir * sp);
+                    if (waterAt.Any(p => Dist(p.X, p.Y, p1.X, p1.Y) <= wr.ExistingWithin / 12 || Dist(p.X, p.Y, p2.X, p2.Y) <= wr.ExistingWithin / 12))
+                    {
+                        row.Notes.Add("hot / cold water already there (in the model, or the row on the other face of the wall): no pair of its own");
+                        continue;
+                    }
+
+                    // the end of the row (the first wall across it past the fixture): the far sleeve stays cornerClear inside its face.
+                    // The rule's spot; else on along the row (up to slide, not past the end); else back toward the fixture.
+                    (double? T, double? End, bool Clamped) Search(double an, int d)
+                    {
+                        double s1 = an + d * cc / 12;
+                        double? end = RowEnd(own, an, d, walls);
+                        double? last = end.HasValue ? end.Value - d * (wr.CornerClear / 12 + rw) : (double?)null;
+                        bool Fits(double t) => !last.HasValue || (t + d * sp - last.Value) * d <= 1e-6;
+                        bool Free(double t) { var a = own.At(t); var b = own.At(t + d * sp); return Clear(a.X, a.Y, rw, gap) && Clear(b.X, b.Y, rw, gap); }
+                        var tries = new List<double>();
+                        for (double k = 0; k <= v.Slide + 1e-9; k += 0.5) tries.Add(s1 + d * k / 12);
+                        double back = Fits(s1) ? s1 : last.Value - d * sp;
+                        for (double k = 0; (back - d * k / 12 - an) * d > 1e-6; k += 0.5) tries.Add(back - d * k / 12);
+                        return (tries.Where(Fits).Cast<double?>().FirstOrDefault(t => Free(t.Value)), end, !Fits(s1));
+                    }
+                    string what = w.Toilet != null ? "toilet" : rules.Fixtures[fixture].Name;
+                    var placeNotes = new List<string>();
+                    var found = Search(anchor, dir);
+                    double? ta = found.T, rowEnd = found.End;
+                    if (ta.HasValue && Math.Abs(ta.Value - t1) > 1e-6)
+                        placeNotes.Add($"moved {Units(Math.Abs(ta.Value - t1) * 12)} " + ((ta.Value - t1) * dir < 0
+                            ? $"back toward the {what}" + (found.Clamped ? " to stay before the wall that ends the row" : " to clear the sleeves there")
+                            : "along the row to clear the sleeves there"));
+                    if (ta == null)
+                    {
+                        // no room at the row's end: the other side of the fixture's sleeves, the same distance from its centre line / drain
+                        var other = Search(otherAnchor, -dir);
+                        string why = found.End.HasValue ? $"no room between the row's sleeves and the wall that ends it ({Units(Math.Abs(found.End.Value - anchor) * 12)} past the " +
+                                                          (w.Toilet != null ? "toilet's centre line" : how.Contains("vent") ? "vent" : "drain") + ")" : "its spot is taken by other sleeves";
+                        if (other.T.HasValue)
+                        {
+                            ta = other.T; rowEnd = other.End; dir = -dir;
+                            placeNotes.Add($"{why}: on the other side of the {what}, {Units(Math.Abs(ta.Value - otherAnchor) * 12)} from its " +
+                                           (w.Toilet != null ? "centre line" : "drain"));
+                            how = $"{Units(cc)} from the {what}'s " + (w.Toilet != null ? "centre line" : "drain") + ", on the other side (no room at the row's end)";
+                        }
+                        else
+                        {
+                            ta = found.Clamped && found.End.HasValue ? found.End.Value - dir * (wr.CornerClear / 12 + rw) - dir * sp : t1;
+                            placeNotes.Add($"{why}, nor on the other side of the {what}: overlaps, move it by hand" +
+                                           (w.Toilet != null ? " (the toilet's waste stack on the lavatory side, as the office draws it, leaves room at the row's end)" : ""));
+                        }
+                    }
+                    if (rowEnd.HasValue) placeNotes.Add($"the row ends {Units(Math.Abs(rowEnd.Value - ta.Value) * 12)} past the nearer water sleeve (wall across it)");
+                    else if (walls != null) placeNotes.Add("no wall across the row found past it: its end is not checked");
+
+                    // hot on the plan's left; on a wall running up-down, at the top (office sets)
+                    p1 = own.At(ta.Value); p2 = own.At(ta.Value + dir * sp);
+                    bool hotNear = Math.Abs(own.Ax) >= Math.Abs(own.Ay) ? p1.X <= p2.X : p1.Y >= p2.Y;
+                    var first = hotNear ? ("hot water", "HW", "HotWater") : ("cold water", "CW", "ColdWater");
+                    var second = hotNear ? ("cold water", "CW", "ColdWater") : ("hot water", "HW", "HotWater");
+                    var near = Add(own, first.Item1, $"{first.Item2}-{fixture}", first.Item2, first.Item3, wr.Pipe, p1.X, p1.Y, fixture, how + " (office S&O sets)");
+                    var far = Add(own, second.Item1, $"{second.Item2}-{fixture}", second.Item2, second.Item3, wr.Pipe, p2.X, p2.Y, fixture, $"{Units(wr.Spacing)} past the {first.Item1} sleeve (office S&O sets)");
+                    foreach (var it in new[] { near, far })
+                    {
+                        it.Notes.AddRange(placeNotes);
+                        it.Notes.Add("office rule: check (hot on the plan's left / top)");
+                        waterAt.Add((it.X, it.Y));
+                    }
+                }
+            }
+
             // ---- fixtures with no row: nothing to place against
             var rest = new Row { Kind = "fixtures", X = loose.FirstOrDefault()?.X ?? 0, Y = loose.FirstOrDefault()?.Y ?? 0 };
             foreach (var f in loose.Where(f => rules.Fixtures[f.Code].Vent > 0 || (Is(f, "BT") && v.TubPipe > 0) || (Is(f, "SH") && v.ShowerPipe > 0)))
@@ -439,6 +587,32 @@ namespace SleevesOpenings.Automation
             return result;
         }
 
+        /// <summary>A wall line within this far (feet) across the row's line can end the row (a side wall's face reaching the wet wall).</summary>
+        private const double RowEndAcrossFeet = 1.5;
+
+        /// <summary>
+        /// Along the row's wall: the first wall line across it past <paramref name="anchor"/> on the <paramref name="dir"/> side (the
+        /// face of the side wall in the corner, an exterior wall's inner face); null = none found or no walls given.
+        /// </summary>
+        private static double? RowEnd(Wet w, double anchor, int dir, List<((double X, double Y) A, (double X, double Y) B)> walls)
+        {
+            if (walls == null) return null;
+            double? best = null;
+            foreach (var (a, b) in walls)
+            {
+                double len = Dist(a.X, a.Y, b.X, b.Y);
+                if (len < 2.0 / 12) continue;                                        // hatch bits
+                double ta = w.T(a.X, a.Y), tb = w.T(b.X, b.Y);
+                if (Math.Abs(ta - tb) > 0.3 * len) continue;                         // not across the row
+                double ca = w.Across(a.X, a.Y), cb = w.Across(b.X, b.Y);
+                if (Math.Max(ca, cb) < -RowEndAcrossFeet || Math.Min(ca, cb) > RowEndAcrossFeet) continue;
+                double t = (ta + tb) / 2;
+                if ((t - anchor) * dir <= 1.0 / 12) continue;                        // behind the fixture
+                if (best == null || (t - best.Value) * dir < 0) best = t;
+            }
+            return best;
+        }
+
         /// <summary>"5 1/4\" from" (the manual's centre-to-centre distance), or "touching" (0).</summary>
         private static string Away(double cc) => cc > 0 ? $"{Units(cc)} from" : "touching";
         private static string Units(double inches)
@@ -447,7 +621,7 @@ namespace SleevesOpenings.Automation
             int whole = (int)rest; int q = (int)Math.Round((rest - whole) * 4);
             if (q == 4) { whole++; q = 0; }
             string frac = q == 0 ? "" : q == 2 ? " 1/2" : $" {q}/4";
-            return ft > 0 ? $"{ft}'-{whole}{frac}\"" : $"{whole}{frac}\"";
+            return ft > 0 ? $"{ft}'-{whole}{frac}\"" : whole == 0 && frac != "" ? $"{frac.Trim()}\"" : $"{whole}{frac}\"";
         }
 
         private static double Dist(double x0, double y0, double x1, double y1) => Math.Sqrt((x0 - x1) * (x0 - x1) + (y0 - y1) * (y0 - y1));
