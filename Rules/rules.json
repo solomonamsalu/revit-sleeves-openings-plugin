@@ -241,7 +241,7 @@
     "autoFix": true,
     "riserDiagram": true,
     "decisions": {
-      "_comment": "Cases the manual or the engineer's notes settle, decided by rule instead of left for review. trustUpFromBelow = a crossing only the floor below shows, labelled UP there, is placed straight above it (manual 23, 45-51). dryersIntoHost = dryer ducts landing on another opening make that opening bigger to take them (rule 74). roofDryerGrid = roof dryer shafts get a 6x6 per duct in straight rows of roofDryerPerRow, dryerExhaust.minSpacing clear between them (rules 78-82). mergeOverlaps = openings on one slab that overlap become one opening around both, named with both tags (manual 21). avoidStructure = an opening in a beam or shear wall (rules 27-28), within 1'-0\" of a column (rule 26) or on a wall edge is first reshaped to the same duct area up to maxAspect:1 (engineer's general note: duct dimensions can be reconfigured up to 4:1 keeping the area), then moved up to maxShift in shiftStep steps; skipped only when neither clears it. Inches.",
+      "_comment": "Cases the manual or the engineer's notes settle, decided by rule instead of left for review. trustUpFromBelow = a crossing only the floor below shows, labelled UP there, is placed straight above it (manual 23, 45-51). dryersIntoHost = dryer ducts landing on another opening make that opening bigger to take them (rule 74). roofDryerGrid = roof dryer shafts get a 6x6 per duct in straight rows of roofDryerPerRow, dryerExhaust.minSpacing clear between them (rules 78-82). mergeOverlaps = openings on one slab that overlap become one opening around both, named with both tags (manual 21). avoidStructure = an opening in a beam or shear wall (rules 27-28), within 1'-0\" of a column (rule 26) or on a wall edge is first reshaped to the same duct area up to maxAspect:1 (engineer's general note: duct dimensions can be reconfigured up to 4:1 keeping the area), then moved up to maxShift in shiftStep steps; skipped only when neither clears it. deadZone = Standards Manual p17: every round sleeve touching a wet wall moves straight across into it, on the line through its middle; two parallel walls up to deadZoneMaxGap apart (a double wall, a chase) = centred between the two walls; toilet, tub, shower and floor drains stay where they drain. Inches.",
       "trustUpFromBelow": true,
       "dryersIntoHost": true,
       "roofDryerGrid": true,
@@ -250,7 +250,9 @@
       "avoidStructure": true,
       "maxAspect": 4,
       "maxShift": 24,
-      "shiftStep": 2
+      "shiftStep": 2,
+      "deadZone": true,
+      "deadZoneMaxGap": 12
     },
     "referenceSet": {
       "enabled": false,
@@ -367,7 +369,7 @@
     "skipLowestSlab": true,
     "namePattern": "{service}-{riser}",
     "vents": {
-      "_comment": "Vent Placer (Extract panel). The model decides where: each vent beside its own fixture's drain sleeve, in the wall behind that fixture (vent pipes from fixtures.*.vent). Touching it: the two sleeves' radii + sleeveGap. The Standards Manual's toilet sleeves page decides only the side: the toilet's vent toward the lavatory, the lavatory's (and a sink's, a washer's) toward the toilet, one vent stack per bathroom row touching the lavatory's drain on the side away from the toilet (the row's end), shared back to back, in line floor to floor. No tub / shower vent unless tubPipe / showerPipe is set. Pipe sizes in inches of pipe, distances in inches.",
+      "_comment": "Vent Placer (Extract panel). The model decides where: each vent beside its own fixture's drain sleeve, in the wall behind that fixture (vent pipes from fixtures.*.vent). How far: the Standards Manual's toilet sleeves page (p17), centre to centre: toiletVent 5 1/4\" from the toilet's waste, lavVent 10\" from the lavatory's drain, stack 10 1/4\" past the lavatory's drain, wall-hung reserveWaste 13\" / reserveVent 1'-4\" from the waste and wallHungVent 7\" past the reserve vent (0 = touching: the two sleeves' radii + sleeveGap; sinks and washers touch). The page also decides the side: the toilet's vent toward the lavatory, the lavatory's (and a sink's, a washer's) toward the toilet, one vent stack per bathroom row touching the lavatory's drain on the side away from the toilet (the row's end), shared back to back, in line floor to floor. No tub / shower vent unless tubPipe / showerPipe is set. Pipe sizes in inches of pipe, distances in inches.",
       "stackPipe": 4,
       "stackSameAs": 18,
       "tubPipe": 0,
@@ -375,6 +377,12 @@
       "showerPipe": 0,
       "washerPipe": 4,
       "wallHungReserve": true,
+      "toiletVent": 5.25,
+      "lavVent": 10,
+      "stack": 10.25,
+      "reserveWaste": 13,
+      "reserveVent": 16,
+      "wallHungVent": 7,
       "existingWithin": 4,
       "slide": 12
     }

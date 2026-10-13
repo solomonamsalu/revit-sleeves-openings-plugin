@@ -200,6 +200,34 @@ namespace SleevesOpenings.Commands
                 if (how != null) r.How = (r.How == null ? "" : r.How + "; ") + how;
             }
 
+            // the wet wall's dead zone (Standards Manual p17): a sleeve in the wall goes on its centre line, between two walls
+            // in the middle of the gap; toilets, tubs, showers and floor drains stay where they drain
+            var decisions = App.Rules(doc).Automation?.Decisions;
+            if (decisions?.DeadZone == true)
+            {
+                WallGeometry walls = null;
+                try { walls = new WallGeometry(doc, level); }
+                catch (Exception ex) { App.Log("Extract fixtures: Revit walls not read: " + ex.Message); }
+                var dwgPlans = plans;
+                double maxGap = Units.InchesToFeet(decisions.DeadZoneMaxGap), tol = Units.InchesToFeet(0.25);
+                foreach (var r in kept.Where(r => r.Sleeved(rules) && !DeadZones.FloorDrain(r.Code, r.Name)))
+                {
+                    double rad = Units.InchesToFeet((r.Sleeve ?? rules.SleeveFor(rules.Fixtures[r.Code].Pipe)) / 2);
+                    double most = 0; WallGeometry.Zone zone = null;
+                    for (int i = 0; i < r.Points.Count; i++)
+                    {
+                        var z = DeadZones.Find(walls, dwgPlans, r.Points[i], rad, maxGap);
+                        if (z == null) continue;
+                        var to = z.Centre(r.Points[i]);
+                        double off = to.DistanceTo(r.Points[i]);
+                        if (off <= tol) continue;
+                        r.Points[i] = to; zone = z; most = Math.Max(most, off);
+                    }
+                    if (zone != null)
+                        r.How = (r.How == null ? "" : r.How + "; ") + $"moved {Units.FormatInches(Math.Round(most * 12, 1))} across into the dead zone ({zone.Describe()})";
+                }
+            }
+
             var grids = Grids(doc);
             foreach (var r in kept)
                 r.Grid = GridRef(grids, r.Points.Count > 0 ? r.Points.Average(p => p.X) : r.Cx, r.Points.Count > 0 ? r.Points.Average(p => p.Y) : r.Cy);
@@ -367,7 +395,7 @@ namespace SleevesOpenings.Commands
                     var c = new Crossing
                     {
                         Floor = floor, Level = level.Name, Tag = name, System = v.System, Size = new DuctSize { Diameter = v.Pipe },
-                        X = x, Y = y, Status = Crossing.Place, Confidence = "medium", Check = true, FromModel = true, Pdf = "not in the PDF"
+                        X = x, Y = y, HasPosition = true, Status = Crossing.Place, Confidence = "medium", Check = true, FromModel = true, Pdf = "not in the PDF"
                     };
                     c.From.Add($"{FloorKey.Describe(floor)}: the toilet's waste stack by the Standards Manual (every toilet a green 6 in the wall behind it)");
                     c.Notes.Add($"{Units.FormatInches(v.Size)} waste stack {s.How}" + (same.Name != null ? $"; lined up with {same.Name} on another floor" : ""));
@@ -402,7 +430,7 @@ namespace SleevesOpenings.Commands
                 var c = new Crossing
                 {
                     Floor = floor, Level = level.Name, Tag = r.Code, System = fs.System, Size = new DuctSize { Diameter = fs.Pipe },
-                    X = r.Points.Average(p => p.X), Y = r.Points.Average(p => p.Y), Status = Crossing.Place, Confidence = "medium",
+                    X = r.Points.Average(p => p.X), Y = r.Points.Average(p => p.Y), HasPosition = true, Status = Crossing.Place, Confidence = "medium",
                     SleeveSize = r.Sleeve
                 };
                 c.From.Add($"{FloorKey.Describe(floor)}: fixture '{r.Code}' ({fs.Name}) from {r.Source}");

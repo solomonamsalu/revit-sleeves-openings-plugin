@@ -149,9 +149,10 @@ namespace SleevesOpenings.Placement
             var edge = SlabEdge(pt, hw, hl);
             if (edge != null) warnings.Add(edge);
 
-            // General rule: never at the edge of a wall
+            // General rule: never at the edge of a wall; a round sleeve in a wet wall's dead zone is meant to be there (manual p17)
+            var zone = DeadZone(pt, Math.Abs(hw - hl) < 1e-6 ? r : -1);
             foreach (var w in _walls.Straddled(pt, r))
-                if (!w.IsShear && !w.IsFoundation)
+                if (!w.IsShear && !w.IsFoundation && !(zone != null && zone.Contains(pt) && zone.Walls.Contains(w)))
                     warnings.Add($"Sits on the edge of wall {w.Label} — no room for sheetrock studs (general rule)");
 
             // Standpipe: 5½" from pipe centre to any wall face
@@ -174,6 +175,14 @@ namespace SleevesOpenings.Placement
             }
 
             return warnings;
+        }
+
+        /// <summary>The wet wall's dead zone a round sleeve of radius r (feet) touches, or null (rule off, r &lt; 0).</summary>
+        public WallGeometry.Zone DeadZone(XYZ pt, double r)
+        {
+            var d = _rules.Automation?.Decisions;
+            if (r < 0 || d == null || !d.DeadZone) return null;
+            return _walls.DeadZone(pt, r, Units.InchesToFeet(d.DeadZoneMaxGap));
         }
 
         public static bool IsHard(string warning) => warning.StartsWith("!");

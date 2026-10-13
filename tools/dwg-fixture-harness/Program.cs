@@ -78,6 +78,8 @@ static class P
         {
             double nx = double.Parse(args[ni + 1]) * 12, ny = double.Parse(args[ni + 2]) * 12;
             double D((string L, double X0, double Y0, double X1, double Y1) q) { double dx = q.X1 - q.X0, dy = q.Y1 - q.Y0, l2 = dx * dx + dy * dy; double t = l2 < 1e-9 ? 0 : Math.Max(0, Math.Min(1, ((nx - q.X0) * dx + (ny - q.Y0) * dy) / l2)); return Math.Sqrt(Math.Pow(q.X0 + t * dx - nx, 2) + Math.Pow(q.Y0 + t * dy - ny, 2)); }
+            foreach (var q in All.Where(q => D(q) <= 40 && Wl.IsMatch(q.L)).OrderBy(q => q.Y0))
+                Console.WriteLine($"  WALL ({q.X0 / 12:0.00},{q.Y0 / 12:0.000})-({q.X1 / 12:0.00},{q.Y1 / 12:0.000})  y-off {(q.Y0 - ny):0.00} in  x-off {(q.X0 - nx):0.00} in");
             foreach (var g in All.Where(q => D(q) <= 24).GroupBy(q => q.L)) Console.WriteLine($"NEAR {g.Key}: {g.Count()} seg, nearest {g.Min(D):0.0} in; e.g. {string.Join(" | ", g.OrderBy(D).Take(3).Select(q => $"({q.X0 / 12:0.00},{q.Y0 / 12:0.00})-({q.X1 / 12:0.00},{q.Y1 / 12:0.00})"))}");
         }
         if (args.Contains("stacks"))

@@ -260,8 +260,8 @@ namespace SleevesOpenings.Automation
 
     /// <summary>
     /// rules.json "plumbing.vents": the Vent Placer. The model decides where (each vent beside its own fixture's drain sleeve
-    /// in the wall behind it), sleeve sizes + plumbing.sleeveGap how close (touching), the Standards Manual's toilet sleeves
-    /// page which side (toilet vent toward the lavatory, lavatory vent toward the toilet, the vent stack at the row's end).
+    /// in the wall behind it), the Standards Manual's toilet sleeves page how far (its centre-to-centre distances; 0 = touching:
+    /// sleeve sizes + plumbing.sleeveGap) and which side (toilet vent toward the lavatory, lavatory vent toward the toilet, the vent stack at the row's end).
     /// Pipe sizes are inches of pipe (sleeve = pipe + sleeveOverPipe rounded up).
     /// </summary>
     public class VentRules
@@ -283,6 +283,18 @@ namespace SleevesOpenings.Automation
         [JsonProperty("washerPipe")] public double WasherPipe { get; set; } = 4;
         /// <summary>Wall-hung toilets: the reserve waste and vent sleeves the manual draws, touching the toilet's waste.</summary>
         [JsonProperty("wallHungReserve")] public bool WallHungReserve { get; set; } = true;
+        /// <summary>Toilet vent centre to the toilet's waste stack centre (inches; manual p17: 5 1/4"); 0 = touching (radii + sleeveGap).</summary>
+        [JsonProperty("toiletVent")] public double ToiletVent { get; set; } = 5.25;
+        /// <summary>Lavatory vent centre to the lavatory's drain centre (inches; manual p17 double toilet: 10"); 0 = touching.</summary>
+        [JsonProperty("lavVent")] public double LavVent { get; set; } = 10;
+        /// <summary>Vent stack centre to the lavatory's drain centre (inches; manual p17 wall-hung: 10 1/4"); 0 = touching.</summary>
+        [JsonProperty("stack")] public double Stack { get; set; } = 10.25;
+        /// <summary>Wall-hung toilet: reserve waste centre to the toilet's waste centre (inches; manual p17: 13"); 0 = touching.</summary>
+        [JsonProperty("reserveWaste")] public double ReserveWaste { get; set; } = 13;
+        /// <summary>Wall-hung toilet: reserve vent centre to the toilet's waste centre (inches; manual p17: 1'-4"); 0 = touching.</summary>
+        [JsonProperty("reserveVent")] public double ReserveVent { get; set; } = 16;
+        /// <summary>Wall-hung toilet: its vent centre to the reserve vent centre (inches; manual p17: 7"); 0 = touching.</summary>
+        [JsonProperty("wallHungVent")] public double WallHungVent { get; set; } = 7;
         /// <summary>A vent sleeve already in the model this close (inches) to a spot is that vent: nothing more there.</summary>
         [JsonProperty("existingWithin")] public double ExistingWithin { get; set; } = 4;
         /// <summary>How far (inches) a vent may slide on along its side to clear the sleeves there, before it tries the other side.</summary>

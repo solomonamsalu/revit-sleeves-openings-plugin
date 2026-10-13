@@ -41,6 +41,13 @@ namespace SleevesOpenings.Automation
         [JsonProperty("maxAspect")] public double MaxAspect { get; set; } = 4;
         [JsonProperty("maxShift")] public double MaxShift { get; set; } = 24;
         [JsonProperty("shiftStep")] public double ShiftStep { get; set; } = 2;
+        /// <summary>
+        /// Standards Manual p17 (the office's "dead zone"): every sleeve touching a wet wall goes into it, moved straight
+        /// across onto one line through its middle; at two parallel walls up to deadZoneMaxGap apart (a double wall, a
+        /// chase) centred between the two walls. Floor drains (toilet, tub, shower, floor drain) stay where they drain.
+        /// </summary>
+        [JsonProperty("deadZone")] public bool DeadZone { get; set; } = true;
+        [JsonProperty("deadZoneMaxGap")] public double DeadZoneMaxGap { get; set; } = 12;
     }
 
     /// <summary>

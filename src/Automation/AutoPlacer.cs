@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Autodesk.Revit.DB;
 using SleevesOpenings.Automation.Assembly;
 using SleevesOpenings.Placement;
@@ -113,6 +114,7 @@ namespace SleevesOpenings.Automation
             var below = new Dictionary<string, (double X, double Y, XYZ At, bool Office)>();
             var pipeSystems = new HashSet<string>(_rules.Plumbing?.Services?.Values.Select(v => v.System) ?? Enumerable.Empty<string>());
             MoveStacks(list, levels);
+            IntoDeadZones(list, levels);
             using (var group = new TransactionGroup(_doc, "Sleeves & Openings: Auto Run - place openings"))
             {
                 group.Start();
@@ -291,6 +293,91 @@ namespace SleevesOpenings.Automation
         /// <summary>Warnings worth moving or reshaping an opening for: structure (rules 27-28), columns (rule 26), wall edges.</summary>
         private static bool Avoidable(string warning) =>
             PlacementGuard.IsHard(warning) || warning.Contains("(rule 26") || warning.Contains("edge of wall") || warning.Contains("slab edge");
+
+        private static readonly Regex FixtureOf = new Regex(@": fixture '([^']+)'");
+
+        /// <summary>A toilet's (not wall-hung), tub's, shower's or floor drain's own drain sleeve: it stays where the fixture drains.</summary>
+        private static bool FloorDrain(Crossing c)
+        {
+            if (!c.IsFixture || c.System != "Sanitary") return false;
+            var code = c.From.Select(f => FixtureOf.Match(f)).Where(m => m.Success).Select(m => m.Groups[1].Value).FirstOrDefault() ?? c.Tag;
+            return DeadZones.FloorDrain(code, string.Join(" ", c.Notes.Concat(c.From)));
+        }
+
+        private readonly Dictionary<ElementId, List<DwgFixtureReader.Plan>> _dwgWalls = new Dictionary<ElementId, List<DwgFixtureReader.Plan>>();
+
+        /// <summary>The architect's DWG drawings of the level (their wall lines), read once; empty when none or unreadable.</summary>
+        private List<DwgFixtureReader.Plan> DwgWalls(Level level)
+        {
+            if (_dwgWalls.TryGetValue(level.Id, out var plans)) return plans;
+            plans = new List<DwgFixtureReader.Plan>();
+            if (_rules.Plumbing != null)
+                try { plans = DwgFixtureReader.Read(_doc, _rules.Plumbing, level.Name); }
+                catch (Exception ex) { App.Log("AutoRun dead zone: DWG walls not read on " + level.Name + ": " + ex.Message); }
+            return _dwgWalls[level.Id] = plans;
+        }
+
+        /// <summary>
+        /// Standards Manual p17 (the office's "dead zone"): every round sleeve touching a wet wall is moved straight across
+        /// into it, onto the line through its middle; at a double wall, centred between the two walls. Its place along the
+        /// wall is kept, so the row's spacing stays. Floor drains (toilet, tub, shower, floor drain) stay where they drain.
+        /// Sleeves the move brings onto each other (two rows on the two faces of one wall, now on one line) are flagged.
+        /// </summary>
+        private void IntoDeadZones(List<Crossing> all, List<Level> levels)
+        {
+            if (_rules.Automation.Decisions?.DeadZone != true) return;
+            double tol = Units.InchesToFeet(0.25);
+            var moved = new List<Crossing>();
+            foreach (var c in all)
+            {
+                if (c.MergedInto != null || c.ExistingIds.Count > 0 || c.Shaft || c.System == "GarbageChute" || FloorDrain(c)) continue;
+                var spec = Spec(c, 1);
+                if (spec.Role != FamilyRole.RoundSleeve || spec.Diameter == null) continue;
+                var level = levels.FirstOrDefault(l => l.Name == c.Level);
+                if (level == null) continue;
+                var guard = Guard(level);
+                double r = Units.InchesToFeet(spec.Diameter.Value / 2);
+                bool each = c.EachPoint && c.Points.Count > 1;
+                var pts = each ? c.Points.Select(p => new XYZ(p[0], p[1], 0)).ToList() : new List<XYZ> { new XYZ(c.X, c.Y, 0) };
+                WallGeometry.Zone zone = null;
+                double most = 0;
+                for (int i = 0; i < pts.Count; i++)
+                {
+                    var z = guard.DeadZone(pts[i], r) ?? DeadZones.FromLines(DwgWalls(level).SelectMany(pl => pl.Walls), pts[i], r,
+                                                                             Units.InchesToFeet(_rules.Automation.Decisions.DeadZoneMaxGap));
+                    if (z == null) continue;
+                    var to = z.Centre(pts[i]);
+                    double off = Dist(to, pts[i]);
+                    if (off <= tol) continue;
+                    pts[i] = to; zone = z; most = Math.Max(most, off);
+                }
+                if (zone == null) continue;
+                if (each)
+                {
+                    c.Points.Clear();
+                    c.Points.AddRange(pts.Select(p => new[] { p.X, p.Y }));
+                }
+                c.X = pts.Average(p => p.X); c.Y = pts.Average(p => p.Y);
+                c.Notes.Add($"moved {Units.FormatInches(Math.Round(most * 12, 1))} across into the wet wall's dead zone ({zone.Describe()}), on its centre line (manual p17)");
+                moved.Add(c);
+            }
+            if (moved.Count == 0) return;
+
+            IEnumerable<XYZ> Spots(Crossing c) => c.EachPoint && c.Points.Count > 1 ? c.Points.Select(p => new XYZ(p[0], p[1], 0)) : new[] { new XYZ(c.X, c.Y, 0) };
+            double Radius(Crossing c) { var sp = Spec(c, 1); return Units.InchesToFeet(((sp.Diameter ?? sp.Width ?? 0)) / 2); }
+            var others = all.Where(o => o.MergedInto == null && o.ExistingIds.Count == 0).ToList();
+            var noted = new HashSet<(Crossing, Crossing)>();
+            foreach (var c in moved)
+                foreach (var o in others)
+                {
+                    if (o == c || o.Level != c.Level || noted.Contains((o, c))) continue;
+                    double reach = Radius(c) + Radius(o) - tol;
+                    if (!Spots(c).Any(p => Spots(o).Any(q => Dist(p, q) < reach))) continue;
+                    noted.Add((c, o));
+                    c.Check = true;
+                    c.Notes.Add($"overlaps {o.Name} in the dead zone: space them along the wall by hand");
+                }
+        }
 
         /// <summary>Fixtures whose drain sleeve sits in the wall behind them (it can shift along the wall).</summary>
         private static readonly HashSet<string> WallDrains = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "LAV", "KS", "LS", "W/D", "WD" };

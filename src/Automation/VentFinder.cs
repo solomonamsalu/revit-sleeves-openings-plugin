@@ -8,8 +8,9 @@ namespace SleevesOpenings.Automation
 {
     /// <summary>
     /// Vent Placer: a floor's vent (yellow) sleeves from the model's fixtures alone. The model decides where (each vent
-    /// beside its own fixture's drain sleeve, in the wall behind that fixture), the rules how close (touching: the two
-    /// sleeves' radii + plumbing.sleeveGap), and the Standards Manual's toilet sleeves page only which side:
+    /// beside its own fixture's drain sleeve, in the wall behind that fixture), the Standards Manual's toilet sleeves page
+    /// (p17) how far, centre to centre (plumbing.vents.toiletVent / lavVent / stack / reserve*; 0 = touching: the two
+    /// sleeves' radii + plumbing.sleeveGap), and which side:
     /// - a toilet: its vent touches its waste stack (the sanitary sleeve in the model there, else where Extract Fixtures
     ///   puts it), on the side toward the lavatory;
     /// - a wall-hung toilet: the waste on its centre line in the wall; reserve waste touching it on the side away from the
@@ -141,7 +142,7 @@ namespace SleevesOpenings.Automation
             foreach (var f in all)
                 foreach (var p in f.Points.Count > 0 ? f.Points : new List<(double X, double Y)> { (f.X, f.Y) })
                     taken.Add((p.X, p.Y, R(rules.Fixtures[f.Code].Pipe)));
-            bool Clear(double x, double y, double r) => taken.All(t => Dist(t.X, t.Y, x, y) >= t.R + r + gap - 1e-6);
+            bool Clear(double x, double y, double r, double g) => taken.All(t => Dist(t.X, t.Y, x, y) >= t.R + r + g - 1e-6);
             var vents = existing.Where(e => e.System == "Vent").ToList();
             Existing VentAt(double x, double y) => vents.FirstOrDefault(e => Dist(e.X, e.Y, x, y) <= v.ExistingWithin / 12);
 
@@ -157,12 +158,15 @@ namespace SleevesOpenings.Automation
                 return vent;
             }
 
-            // a sleeve touching the one at anchor (radius ra, along the row's wall) on its dir side; blocked = it slides on
-            // along that side up to v.Slide, then the other side; null = a vent is already in the model there
+            // a sleeve beside the one at anchor (radius ra, along the row's wall) on its dir side: cc inches centre to centre
+            // (the manual's distance), 0 = touching (radii + sleeveGap); blocked = it slides on along that side up to
+            // v.Slide, then the other side; null = a vent is already in the model there
             double? Touching(Wet w, string kind, string fixture, double pipe, double anchor, double ra, int dir, string how,
-                             string service = "V", string system = "Vent", string name = null)
+                             string service = "V", string system = "Vent", string name = null, double cc = 0)
             {
-                double r = R(pipe), touch = ra + r + gap;
+                double r = R(pipe), touch = cc > 0 ? Math.Max(cc / 12, ra + r) : ra + r + gap;
+                // at the manual's distance the sleeves may be closer than sleeveGap (5 1/4" = 6" and 4" sleeves 1/4" apart)
+                double g = cc > 0 ? Math.Min(gap, touch - ra - r) : gap;
                 foreach (int s in new[] { dir, -dir })
                 {
                     var q0 = w.At(anchor + s * touch);
@@ -178,7 +182,7 @@ namespace SleevesOpenings.Automation
                     {
                         double t = anchor + s * (touch + extra);
                         var q = w.At(t);
-                        if (!Clear(q.X, q.Y, r)) continue;
+                        if (!Clear(q.X, q.Y, r, g)) continue;
                         var vent = Add(w, kind, name ?? $"{service}-{fixture}", service, system, pipe, q.X, q.Y, fixture, how);
                         if (s != dir) vent.Notes.Add("its side is taken by other sleeves: placed on the other side");
                         if (extra > 1e-6) vent.Notes.Add($"moved {extra * 12:0}\" along the wall to clear the sleeves there");
@@ -253,15 +257,15 @@ namespace SleevesOpenings.Automation
                         row.Notes.Add("wall-hung toilet: its waste in the wall on its centre line");
                         if (v.WallHungReserve)
                         {
-                            Touching(w, "reserve waste", "WC", wastePipe, tw, rs, -dir, "reserve waste touching the wall-hung toilet's waste, away from the lavatory (manual)",
-                                     "S", "Sanitary", "S-WC-RES");
-                            double tr = Touching(w, "reserve vent", "WC", ventPipe, tw, rs, dir, "reserve vent touching the wall-hung toilet's waste, toward the lavatory (manual)",
-                                                 name: "V-WC-RES") ?? tw;
-                            w.ToiletVent = Touching(w, "toilet vent", "WC", ventPipe, tr, R(ventPipe), dir, "touching the reserve vent, toward the lavatory (manual)");
+                            Touching(w, "reserve waste", "WC", wastePipe, tw, rs, -dir, $"reserve waste {Away(v.ReserveWaste)} the wall-hung toilet's waste, away from the lavatory (manual p17)",
+                                     "S", "Sanitary", "S-WC-RES", v.ReserveWaste);
+                            double tr = Touching(w, "reserve vent", "WC", ventPipe, tw, rs, dir, $"reserve vent {Away(v.ReserveVent)} the wall-hung toilet's waste, toward the lavatory (manual p17)",
+                                                 name: "V-WC-RES", cc: v.ReserveVent) ?? tw;
+                            w.ToiletVent = Touching(w, "toilet vent", "WC", ventPipe, tr, R(ventPipe), dir, $"{Away(v.WallHungVent)} the reserve vent, toward the lavatory (manual p17)", cc: v.WallHungVent);
                         }
-                        else w.ToiletVent = Touching(w, "toilet vent", "WC", ventPipe, tw, rs, dir, "touching the wall-hung toilet's waste, toward the lavatory (manual)");
+                        else w.ToiletVent = Touching(w, "toilet vent", "WC", ventPipe, tw, rs, dir, $"{Away(v.ToiletVent)} the wall-hung toilet's waste, toward the lavatory (manual p17)", cc: v.ToiletVent);
                     }
-                    else w.ToiletVent = Touching(w, "toilet vent", "WC", ventPipe, tw, rs, dir, "touching the toilet's waste stack, toward the lavatory (manual)");
+                    else w.ToiletVent = Touching(w, "toilet vent", "WC", ventPipe, tw, rs, dir, $"{Away(v.ToiletVent)} the toilet's waste stack, toward the lavatory (manual p17)", cc: v.ToiletVent);
                 }
 
                 // ---- the other fixtures of the row: each vent touches its own drain, on the toilet's side
@@ -297,7 +301,7 @@ namespace SleevesOpenings.Automation
                         double tl = rd + (fs.Water > 0 ? 2 * R(fs.Water) + gap : 0) + gap + rv;
                         double x = dx + lx * tl, y = dy + ly * tl;
                         if (VentAt(x, y) != null) { row.Skipped.Add($"{f.Code} vent: a vent sleeve is already in the model there"); continue; }
-                        bool clear = Clear(x, y, rv);
+                        bool clear = Clear(x, y, rv, gap);
                         var vent = Add(w, "island sink vent", $"V-{f.Code}", "V", "Vent", fs.Vent, x, y, f.Code, "in the island sink's own row, past the hot water's place (24 Skillman SL102)");
                         if (!clear) vent.Notes.Add("overlaps a sleeve already there: move it by hand");
                         continue;
@@ -321,7 +325,15 @@ namespace SleevesOpenings.Automation
                         if (others.Count > 0) side = others.Average(o => own.T(o.X, o.Y)) >= t0 ? 1 : -1;
                     }
                     string kind = Is(f, "LAV") ? "lavatory vent" : Washer(f) ? "washer vent" : "sink vent";
-                    Touching(own, kind, f.Code, pipeV, t0, rd, side, $"touching the {fs.Name}'s drain in the wall behind it, on the toilet's side (manual)");
+                    double cc = Is(f, "LAV") ? v.LavVent : 0;
+                    if (cc > 0)
+                    {
+                        // the toilet's vent already at that spot serves the lavatory too (manual p17 wall-hung: one Y4 10" from the G4)
+                        var at = own.At(t0 + side * cc / 12);
+                        var by = row.Vents.FirstOrDefault(o => o.Fixture == "WC" && o.System == "Vent" && Dist(o.X, o.Y, at.X, at.Y) < R(pipeV) + o.Size / 24);
+                        if (by != null) { by.Notes.Add($"also the {fs.Name}'s vent ({Units(cc)} from its drain, manual p17)"); continue; }
+                    }
+                    Touching(own, kind, f.Code, pipeV, t0, rd, side, $"{Away(cc)} the {fs.Name}'s drain in the wall behind it, on the toilet's side (manual p17)", cc: cc);
                 }
             }
 
@@ -379,19 +391,20 @@ namespace SleevesOpenings.Automation
                     continue;
                 }
 
-                var p0 = w.At(anchor + dir * (ra + R(stackPipe) + gap));
+                double stackTouch = lavs.Count > 0 && v.Stack > 0 ? Math.Max(v.Stack / 12, ra + R(stackPipe)) : ra + R(stackPipe) + gap;
+                var p0 = w.At(anchor + dir * stackTouch);
                 // the same stack on the floors done before: line up with it (risers run straight, manual 22-23)
                 var same = namer.Stacks.Where(s => s.Floor != floor && Dist(s.X, s.Y, p0.X, p0.Y) <= v.StackSameAs / 12).OrderBy(s => Dist(s.X, s.Y, p0.X, p0.Y)).FirstOrDefault();
                 Vent stack = null;
-                if (same != null && Clear(same.X, same.Y, R(stackPipe)))
+                if (same != null && Clear(same.X, same.Y, R(stackPipe), Math.Min(gap, stackTouch - ra - R(stackPipe))))
                     stack = Add(w, "vent stack", same.Name, "V", "Vent", stackPipe, same.X, same.Y, null,
                                 $"in line with {same.Name} on {same.Floor} ({Dist(same.X, same.Y, p0.X, p0.Y) * 12:0}\" from this row's own spot)");
                 else
                 {
                     int before = row.Vents.Count;
                     Touching(w, "vent stack", null, stackPipe, anchor, ra, dir,
-                             lavs.Count > 0 ? "touching the lavatory's drain, on the side away from the toilet: the end of the row (manual)"
-                                            : "touching the toilet's vent, at the end of the row (no lavatory in this wall)", name: "?");
+                             lavs.Count > 0 ? $"{Away(v.Stack)} the lavatory's drain, on the side away from the toilet: the end of the row (manual p17)"
+                                            : "touching the toilet's vent, at the end of the row (no lavatory in this wall)", name: "?", cc: lavs.Count > 0 ? v.Stack : 0);
                     stack = row.Vents.Count > before ? row.Vents.Last() : null;
                     if (stack != null)
                     {
@@ -424,6 +437,17 @@ namespace SleevesOpenings.Automation
             }
             result.Rows = rows;
             return result;
+        }
+
+        /// <summary>"5 1/4\" from" (the manual's centre-to-centre distance), or "touching" (0).</summary>
+        private static string Away(double cc) => cc > 0 ? $"{Units(cc)} from" : "touching";
+        private static string Units(double inches)
+        {
+            int ft = (int)(inches / 12); double rest = inches - ft * 12;
+            int whole = (int)rest; int q = (int)Math.Round((rest - whole) * 4);
+            if (q == 4) { whole++; q = 0; }
+            string frac = q == 0 ? "" : q == 2 ? " 1/2" : $" {q}/4";
+            return ft > 0 ? $"{ft}'-{whole}{frac}\"" : $"{whole}{frac}\"";
         }
 
         private static double Dist(double x0, double y0, double x1, double y1) => Math.Sqrt((x0 - x1) * (x0 - x1) + (y0 - y1) * (y0 - y1));
