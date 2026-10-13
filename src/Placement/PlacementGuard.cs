@@ -93,6 +93,15 @@ namespace SleevesOpenings.Placement
         private bool OnSlab(double x, double y) => _slabs.Any(l => Inside(l, x, y));
 
         /// <summary>
+        /// The whole footprint (half-sizes in feet) is over this level's slab; true when the level has no slab to check
+        /// against. For searches that must not go beyond the building's edge.
+        /// </summary>
+        public bool WithinSlab(XYZ pt, double halfWidthFt, double halfLengthFt) => SlabEdge(pt, halfWidthFt, halfLengthFt) == null;
+
+        /// <summary>The level has slab outlines to check against.</summary>
+        public bool HasSlab => _slabs.Count > 0;
+
+        /// <summary>
         /// The general rule that a sleeve goes through the slab: its centre off every slab of the level = hard (the plans put
         /// it beyond the building: moved in, else not placed); part of it over the edge = to clear (moved in like a column).
         /// Null when it is on the slab or the level has no slab to check against.

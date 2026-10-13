@@ -102,7 +102,15 @@
       "extraCirclesForRoof": 1,
       "roofSleeveDiameter": 2,
       "circleDiameter": 0.75,
-      "openingMargin": 0
+      "openingMargin": 0,
+      "_search": "Finding the riser's spot (rules 3, 10, 20-21): searched within searchRadius of the electrical room in searchStep steps; the opening sits wallGapMin..wallGapMax from a wall face and openingClearance clear of other openings.",
+      "searchRadius": 360,
+      "searchStep": 6,
+      "wallGapMin": 1,
+      "wallGapMax": 12,
+      "openingClearance": 2,
+      "_avoidDoorways": "true = the riser keeps out of doorways and door swings (doorway width, a leaf deep, both sides of the wall). Off until the office decides.",
+      "avoidDoorways": false
     },
     "storm": {
       "sleeveOverPipe": 2,
@@ -220,9 +228,17 @@
     "apartmentTagBlocks": "^APT\\s*TAG$",
     "apartmentTagLayers": "APARTMENT",
     "apartmentNumberAttributes": [ "#", "APT#", "APTNO", "NUMBER", "NO", "UNIT" ],
+    "_apartmentLabelText": "When a drawing has no apartment tag blocks, apartments are counted from their names written as text ('L2 BEDROOM APART. 1C', 'APT 4B'); the group named n is the unit.",
+    "apartmentLabelText": "(?:APT|APART(?:MENT)?|UNIT)\\.?\\s*(?:NO\\.?|#)?\\s*(?<n>\\d{1,2}[A-Z]|\\d{3,4}[A-Z]?)\\b",
+    "_architecturalWallLayers": "Electrical riser search: the architect's wall layers (what the riser goes against) and door layers (it keeps out of doorways and swings).",
+    "architecturalWallLayers": "WALL",
+    "architecturalDoorLayers": "DOOR",
     "_electricalRoomText": "Text naming the room the riser starts from (electrical rule 3). When no electrical room is named anywhere, the mechanical room is used instead, as the manual's note under the electrical rules says.",
     "electricalRoomText": "^ELEC(TRIC|TRICAL)?\\.?\\s*(ROOM|RM\\.?|CLOSET|CL\\.?)?$|^METER\\s*(ROOM|RM\\.?|BANK)?$",
-    "mechanicalRoomText": "^MECH(ANICAL)?\\.?\\s*(ROOM|RM\\.?|EQUIP(MENT)?)?$|^BOILER\\s*(ROOM|RM\\.?)?$"
+    "mechanicalRoomText": "^MECH(ANICAL)?\\.?\\s*(ROOM|RM\\.?|EQUIP(MENT)?)?$|^BOILER\\s*(ROOM|RM\\.?)?$",
+    "_riserSpaceText": "Electrical riser search: room names in the architect's drawings where a riser belongs (rules 20-21: closets, shafts, chases, dead spaces), and room names it must not go through (living spaces, corridors, elevator, stairs). A name matching both counts as a riser space.",
+    "riserSpaceText": "^(CL|CLO|CLOS|CLST)\\.?$|CLOSET|^W\\.?\\s*I\\.?\\s*C\\.?$|LINEN|COAT|PANTRY|SHAFT|CHASE|^MECH|^ELEC|METER|UTIL|STOR|JANITOR|^J\\.?C\\.?$|TRASH|REFUSE|COMPACTOR|BOILER|PLUMB|DEAD\\s*SPACE",
+    "livingSpaceText": "BED\\s*R(OO)?M|^BR\\.?\\s*\\d*$|LIVING|DINING|KITCHEN|^KIT\\.?$|BATH|TOILET|POWDER|FOYER|^HALL|CORRIDOR|LOBBY|OFFICE|^DEN$|STUDY|FAMILY|LAUNDRY|PLAY|GYM|MEDIA|LOUNGE|BALCONY|TERRACE|BABY|NURSERY|DINETTE|K'?NETTE|KITCHENETTE|PARKING|GARAGE|ELEVATOR|^ELEV\\.?$|STAIR"
   },
 
   "sleeveViews": {

@@ -8,6 +8,7 @@ using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
 using SleevesOpenings.Electrical;
 using SleevesOpenings.Placement;
+using SleevesOpenings.Risers;
 using SleevesOpenings.Setup;
 using SleevesOpenings.UI;
 using OperationCanceledException = Autodesk.Revit.Exceptions.OperationCanceledException;
@@ -36,29 +37,57 @@ namespace SleevesOpenings.Commands
                 var rules = App.Rules(doc);
                 var state = ProjectStore.Load(doc);
                 var levels = LevelClassifier.Classify(doc, rules, state);
+                var e = rules.Systems.Electrical;
 
-                if (!WorkGate.Ensure(doc, rules, state)) return Result.Cancelled;
+                App.Log("ELEC| ================= Electrical riser started =================");
+                App.Log("ELEC| model '" + doc.Title + "' at " + (doc.PathName ?? "(unsaved)") + "; active view '" + plan.Name + "' on level '" + plan.GenLevel?.Name + "'");
+                App.Log("ELEC| rules: spacing " + e.ConduitSpacingCenterToCenter + "\", circle " + e.CircleDiameter + "\", +" + e.ExtraCirclesForRoof +
+                        " for roof, margin " + e.OpeningMargin + "\", roof sleeve " + e.RoofSleeveDiameter + "\"; search " + e.SearchRadius + "\" in " + e.SearchStep +
+                        "\" steps, " + e.WallGapMin + "-" + e.WallGapMax + "\" from a wall; saved xref folder = " + (state.ElectricalXrefFolder ?? "(none)"));
+                foreach (var l in levels.Everything)
+                    App.Log("ELEC| LEVEL '" + l.Level.Name + "' role " + l.Role + ", elevation " + l.Level.Elevation.ToString("0.###") +
+                            " ft, project elevation " + l.Level.ProjectElevation.ToString("0.###") + " ft");
+
+                if (!WorkGate.Ensure(doc, rules, state)) { App.Log("ELEC| stopped at the general-rules gate"); return Result.Cancelled; }
 
                 // The architect's per-floor xrefs carry both numbers this needs: apartments per floor and the electrical room.
                 ElectricalSurvey survey = null;
-                List<ElectricalSegment> segments = null;
+                List<ElectricalFloor> floors = null;
+                List<ClassifiedLevel> riserLevels = null;
+                List<string> leftOut = null;
+                bool auto = false;
+                int columns = 0;
                 string folder = null;
 
                 // the drafter may point at the drawings when they are not next to the model; then it is read again
-                while (segments == null)
+                while (floors == null)
                 {
                     Cursor.Current = Cursors.WaitCursor;
+                    ElectricalReader.Trace = App.Log;
                     try { survey = ElectricalSurvey.Run(doc, rules, state, levels, folder); }
-                    finally { Cursor.Current = Cursors.Default; }
-                    App.Log("Electrical: read " + survey.Read.Floors.Count + " architectural floor(s), " + survey.Read.Total +
-                            " apartments, room " + (survey.Start == null ? "not found" : "on " + survey.StartFloor) +
-                            (survey.Read.Folder == null ? "" : ", from " + survey.Read.Folder));
+                    finally { Cursor.Current = Cursors.Default; ElectricalReader.Trace = null; }
+                    foreach (var w in survey.Read.Warnings) App.Log("ELEC| WARNING " + w);
+
+                    riserLevels = RiserLevels(doc, levels, survey, out leftOut);
+                    if (riserLevels.Count == 0)
+                    {
+                        TaskDialog.Show("Electrical", "No floor above the electrical room has a floor plan, so the riser has nowhere to go.\n\n" + string.Join("\n", leftOut));
+                        return Result.Cancelled;
+                    }
 
                     DialogResult answer;
-                    using (var form = new ElectricalForm(levels, rules.Systems.Electrical, survey))
+                    using (var form = new ElectricalForm(riserLevels, levels, e, survey, string.Join("; ", leftOut), survey.Start != null))
                     {
                         answer = form.ShowDialog(UI.RevitWindow.Instance);
-                        if (answer == DialogResult.OK) segments = form.Result;
+                        App.Log("ELEC| FORM closed with " + answer + (answer == DialogResult.OK ? ", find the spot: " + form.AutoLocate + ", circles per row: " + form.Columns : ""));
+                        foreach (var f in form.Floors.Reverse())
+                        {
+                            var read = survey.For(f.Level);
+                            App.Log("ELEC| FORM level '" + f.Level.Name + "': apartments " + f.Apartments + (f.OffsetAbove ? ", OFFSET ABOVE" : "") +
+                                    " (drawings said " + (read == null ? "nothing" : read.Apartments + " from " + read.File) + ")" +
+                                    (read != null && read.Apartments != f.Apartments ? " [EDITED by user]" : ""));
+                        }
+                        if (answer == DialogResult.OK) { floors = form.Floors.ToList(); auto = form.AutoLocate; columns = form.Columns; }
                     }
                     if (answer == ElectricalForm.FindDrawings)
                     {
@@ -75,9 +104,113 @@ namespace SleevesOpenings.Commands
                     }
                     if (answer != DialogResult.OK) return Result.Cancelled;
                 }
-                if (segments == null || segments.Count == 0) return Result.Cancelled;
 
-                // Families: blue box for the floors, round sleeve for the roof.
+                // One riser (the manual describes one): a riser already in the model is replaced, not stacked on.
+                var existing = RiserIndex.AllOpenings(doc).Where(o => o.Data.System == SystemKind.Electrical.ToString()).ToList();
+                bool replace = false;
+                if (existing.Count > 0)
+                {
+                    var ids = existing.Select(o => o.Riser ?? "?").Distinct().ToList();
+                    App.Log("ELEC| EXISTING " + existing.Count + " electrical opening(s), riser(s) " + string.Join(", ", ids));
+                    var td = new TaskDialog("Electrical riser")
+                    {
+                        MainInstruction = $"This model already has {existing.Count} ELECTRIC opening(s)",
+                        MainContent = "Riser " + string.Join(", ", ids) + " on " + string.Join(", ", existing.Select(o => o.Level.Name).Distinct()) +
+                                      ".\n\nThe manual has one electrical riser. Replacing deletes those openings and their conduit circles.",
+                        AllowCancellation = true
+                    };
+                    td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Replace the existing riser");
+                    td.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, "Keep it and add another");
+                    var pick = td.Show();
+                    if (pick == TaskDialogResult.CommandLink1) replace = true;
+                    else if (pick != TaskDialogResult.CommandLink2) return Result.Cancelled;
+                    App.Log("ELEC| EXISTING user chose " + (replace ? "REPLACE" : "KEEP and add"));
+                }
+                var replacing = replace ? new HashSet<ElementId>(existing.Select(o => o.Instance.Id)) : new HashSet<ElementId>();
+
+                // Where it goes: found from the drawings (rules 3, 10-15, 20-21, 26-28), or clicked and then checked the same way.
+                Cursor.Current = Cursors.WaitCursor;
+                ElectricalLocator locator;
+                try { locator = new ElectricalLocator(doc, rules, floors.Select(f => f.Level).ToList(), survey, replacing, m => App.Log("ELEC| " + m)); }
+                finally { Cursor.Current = Cursors.Default; }
+
+                List<ElectricalSegment> segments;
+                var found = new List<RiserRun>();
+                if (auto)
+                {
+                    Cursor.Current = Cursors.WaitCursor;
+                    try
+                    {
+                        found = locator.Plan(survey.Start, i => { var s = ElectricalPlanner.SizeFrom(floors, i, e, columns); return (s.Width, s.Length); });
+                    }
+                    finally { Cursor.Current = Cursors.Default; }
+
+                    // the search's runs become the segments: an offset above the last floor of every run but the top one
+                    foreach (var f in floors) f.OffsetAbove = false;
+                    foreach (var run in found.Take(found.Count - 1)) floors[run.To].OffsetAbove = true;
+                    segments = ElectricalPlanner.Segments(floors, e, columns);
+                    for (int i = 0; i < segments.Count && i < found.Count; i++) segments[i].Point = found[i].Point;
+
+                    switch (Propose(segments, found, survey))
+                    {
+                        case TaskDialogResult.CommandLink1: break;
+                        case TaskDialogResult.CommandLink2:
+                            App.Log("ELEC| PROPOSAL declined: the drafter clicks");
+                            auto = false;
+                            foreach (var f in floors) f.OffsetAbove = false;
+                            segments = ElectricalPlanner.Segments(floors, e, columns);
+                            break;
+                        default: App.Log("ELEC| PROPOSAL cancelled"); return Result.Cancelled;
+                    }
+                }
+                else segments = ElectricalPlanner.Segments(floors, e, columns);
+
+                // whatever the search did not settle is clicked, and every clicked spot gets the same checks
+                int first = 0;
+                for (int i = 0; i < segments.Count; i++)
+                {
+                    var seg = segments[i];
+                    int from = first, to = first + seg.Levels.Count - 1;
+                    first = to + 1;
+                    if (seg.Point != null) continue;
+                    while (true)
+                    {
+                        string where = i == 0 ? $"click the riser's spot for floors {seg.FloorsText}"
+                                              : $"the riser offsets above {segments[i - 1].Levels.Last().Name} — click where floors {seg.FloorsText} run";
+                        XYZ p;
+                        try
+                        {
+                            p = uidoc.Selection.PickPoint(ObjectSnapTypes.None,
+                                $"ELECTRIC: {where} — {seg.Circles} circles, {Units.FormatInches(seg.Width)} x {Units.FormatInches(seg.Length)}. Closet/shaft, against a wall.");
+                        }
+                        catch (OperationCanceledException) { App.Log("ELEC| click cancelled for segment " + seg.FloorsText); return Result.Cancelled; }
+
+                        var notes = locator.Review(from, to, p, seg.Width, seg.Length);
+                        App.Log($"ELEC| CLICK segment {seg.FloorsText} at ({p.X:0.###}, {p.Y:0.###}): {(notes.Count == 0 ? "no problems" : string.Join("; ", notes))}");
+                        if (notes.Count == 0) { seg.Point = p; break; }
+                        var td = new TaskDialog("Electrical riser")
+                        {
+                            MainInstruction = "This spot breaks the rules on " + notes.Select(n => n.Split(':')[0]).Distinct().Count() + " floor(s)",
+                            MainContent = string.Join("\n", notes.Take(12)) + (notes.Count > 12 ? $"\n… and {notes.Count - 12} more" : ""),
+                            AllowCancellation = true
+                        };
+                        td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Click again");
+                        td.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, "Place it here anyway");
+                        var pick = td.Show();
+                        if (pick == TaskDialogResult.CommandLink2) { seg.Point = p; App.Log("ELEC| CLICK placed anyway"); break; }
+                        if (pick != TaskDialogResult.CommandLink1) return Result.Cancelled;
+                    }
+                }
+                for (int i = 0; i < segments.Count; i++)
+                {
+                    var s = segments[i];
+                    App.Log($"ELEC| SEGMENT {s.FloorsText} ({string.Join(", ", s.Levels.Select(l => l.Name))}): {s.Circles} circles, grid {s.Columns}x{s.Rows}, " +
+                            $"opening {s.Width}\" x {s.Length}\" at ({s.Point.X:0.###}, {s.Point.Y:0.###})");
+                }
+
+                // Families: blue box for the floors, round sleeve for the roof. Loaded from the add-in's Families folder
+                // when the project has not got them yet, as Auto Run does.
+                LoadMissingFamilies(doc, rules, state, FamilyRole.ElectricalOpening, FamilyRole.RoundSleeve);
                 var boxMap = FamilyMapping.Get(rules, state, FamilyRole.ElectricalOpening);
                 var boxSym = FamilyMapping.FindSymbol(doc, boxMap);
                 if (boxSym == null) { boxMap = FamilyMapping.Get(rules, state, FamilyRole.RegularOpening); boxSym = FamilyMapping.FindSymbol(doc, boxMap); }
@@ -94,35 +227,36 @@ namespace SleevesOpenings.Commands
                 // transaction, so it has to run before the placing one is open.
                 FamilyMapping.GuessParams(doc, boxSym, boxMap);
                 if (rndSym != null) FamilyMapping.GuessParams(doc, rndSym, rndMap);
+                App.Log("ELEC| BOX family '" + boxSym.Family.Name + "' type '" + boxSym.Name + "' placement " + boxSym.Family.FamilyPlacementType +
+                        "; width param '" + boxMap.WidthParam + "', length param '" + boxMap.LengthParam + "', name param '" + boxMap.NameParam + "'");
+                App.Log("ELEC| ROOF SLEEVE " + (rndSym == null ? "family NOT FOUND (no roof sleeve will be placed)" :
+                        "family '" + rndSym.Family.Name + "' type '" + rndSym.Name + "' placement " + rndSym.Family.FamilyPlacementType +
+                        "; diameter param '" + rndMap.DiameterParam + "', size toggles " + rndMap.UsesSizeToggles));
 
                 PlaceCommandBase.EnsureSharedParams(doc, rules, state);
 
-                // Rule 3: as close to the electrical room as a clear path allows. The drawings name that room, so the
-                // first segment can start there; a later segment only exists because the riser offsets, so it is clicked.
-                bool fromRoom = survey.Start != null && UseRoom(survey, segments.Count);
-                for (int i = 0; i < segments.Count; i++)
-                {
-                    var seg = segments[i];
-                    if (i == 0 && fromRoom) { seg.Point = survey.Start; continue; }
-                    try
-                    {
-                        string where = i == 0
-                            ? $"click location for floors {seg.FloorsText}"
-                            : $"the riser offsets above {segments[i - 1].Levels.Last().Name} — click where floors {seg.FloorsText} run";
-                        seg.Point = uidoc.Selection.PickPoint(ObjectSnapTypes.None,
-                            $"ELECTRIC: {where} — {seg.Circles} circles, {Units.FormatInches(seg.Width)} x {Units.FormatInches(seg.Length)}");
-                    }
-                    catch (OperationCanceledException) { return Result.Cancelled; }
-                }
+                // a replaced riser keeps its id, so its schedules and tags still read the same
+                var oldIds = existing.Select(o => o.Riser).Where(r => !string.IsNullOrEmpty(r)).Distinct().ToList();
+                string riser = replace && oldIds.Count == 1 ? oldIds[0] : RiserIndex.NextRiserId(doc, "Electrical");
+                int openings = 0, circles = 0, removed = 0;
 
-                string riser = Risers.RiserIndex.NextRiserId(doc, "Electrical");
-                var e = rules.Systems.Electrical;
-                int openings = 0, circles = 0;
+                // Rule 16-17: at the roof only one conduit remains — one 2" ELECTRIC sleeve, on the roof slab near the riser below
+                var roof = levels.MainRoof?.Level;
+                var roofNotes = new List<string>();
+                XYZ roofAt = segments.Last().Point;
+                if (roof != null && rndSym != null)
+                {
+                    Cursor.Current = Cursors.WaitCursor;
+                    try { roofAt = locator.Roof(roof, roofAt, e.RoofSleeveDiameter, roofNotes) ?? roofAt; }
+                    finally { Cursor.Current = Cursors.Default; }
+                }
 
                 using (var t = new Transaction(doc, "Sleeves & Openings: Electrical riser"))
                 {
                     t.Start();
+                    if (replace) removed = Remove(doc, existing, e);
                     var placer = new Placer(doc, plan);
+                    bool dumped = false;
                     foreach (var seg in segments)
                     {
                         foreach (var level in seg.Levels)
@@ -130,32 +264,39 @@ namespace SleevesOpenings.Commands
                             var spec = OpeningSpec.Rect(SystemKind.Electrical, FamilyRole.ElectricalOpening, seg.Width, seg.Length,
                                 $"{rules.Naming.Electrical} - {seg.Circles} CONDUITS");
                             spec.Riser = riser;
-                            placer.Place(spec, boxSym, boxMap, level, seg.Point);
+                            var inst = placer.Place(spec, boxSym, boxMap, level, seg.Point);
+                            CentreOn(doc, inst, seg.Point, level);
                             openings++;
+                            LogPlaced("BOX", inst, level, boxMap, $"wanted {seg.Width}\" x {seg.Length}\"", !dumped);
+                            dumped = true;
                             circles += ElectricalPlanner.DrawCircles(doc, level, seg, e);
                         }
                     }
 
-                    // Rule 16-17: at the roof only one conduit remains — one 2" ELECTRIC sleeve, indoors if possible.
-                    var roof = levels.MainRoof?.Level;
                     if (roof != null && rndSym != null)
                     {
                         var spec = OpeningSpec.Round(SystemKind.Electrical, e.RoofSleeveDiameter, rules.Naming.Electrical);
                         spec.Riser = riser;
-                        placer.Place(spec, rndSym, rndMap, roof, segments.Last().Point);
+                        var inst = placer.Place(spec, rndSym, rndMap, roof, roofAt);
                         openings++;
+                        LogPlaced("ROOF SLEEVE", inst, roof, rndMap, $"wanted {e.RoofSleeveDiameter}\" dia", false);
+                        foreach (var n in roofNotes) App.Log("ELEC| ROOF check: " + n);
                     }
+                    else App.Log("ELEC| ROOF SLEEVE skipped: " + (roof == null ? "no level has the Roof role" : "no round sleeve family"));
                     t.Commit();
                 }
+                App.Log("ELEC| ================= Electrical riser finished: " + openings + " opening(s), " + circles + " circle(s), riser " + riser +
+                        (replace ? ", replaced " + removed + " element(s)" : "") + " =================");
 
-                App.Log($"Electrical: {openings} openings, {circles} circles, riser {riser}");
                 new TaskDialog("Electrical riser")
                 {
                     MainInstruction = $"{openings} ELECTRIC opening(s) placed, {circles} conduit circles drawn",
                     MainContent = string.Join("\n", segments.Select(s => $"{s.FloorsText}: {s.Circles} circles, {Units.FormatInches(s.Width)} x {Units.FormatInches(s.Length)}")) +
                                   (levels.MainRoof != null ? $"\n{levels.MainRoof.Name}: one {Units.FormatInches(e.RoofSleeveDiameter)} ELECTRIC sleeve" : "") +
-                                  (fromRoom ? $"\n\nStarted at the '{survey.Read.Start.RoomText}' label on {survey.StartFloor} — check it clears the structure." : "") +
-                                  (survey.Any ? "\n\nApartments read from " + System.IO.Path.GetFileName(survey.Read.Folder ?? "") + ":\n" + survey.Describe() : "") +
+                                  (segments.Count > 1 ? $"\n\n{segments.Count - 1} offset(s)." : "\n\nStraight up, no offsets.") +
+                                  (roofNotes.Count > 0 ? "\n\nRoof sleeve: " + string.Join("; ", roofNotes) : "") +
+                                  (leftOut.Count > 0 ? "\n\nNot in the riser: " + string.Join("; ", leftOut) : "") +
+                                  (replace ? $"\n\nReplaced the previous riser ({removed} element(s) removed)." : "") +
                                   "\n\nCircles are detail lines in each level's floor plan (rule 8). Riser id: " + riser
                 }.Show();
                 return Result.Succeeded;
@@ -166,6 +307,182 @@ namespace SleevesOpenings.Commands
                 App.Log("Electrical failed: " + ex);
                 return Result.Failed;
             }
+        }
+
+        /// <summary>
+        /// The slabs the riser passes through, ascending: the floors above the electrical room's floor (the conduits rise
+        /// from it, rule 4), each once. Left out, with the reason: the room's own floor and below, reference levels with no
+        /// floor plan, and a second level for a floor that already has one (e.g. "06.6-TH FLOOR" beside "06.6 TH FLOOR NEW").
+        /// </summary>
+        private static List<ClassifiedLevel> RiserLevels(Document doc, LevelMap levels, ElectricalSurvey survey, out List<string> leftOut)
+        {
+            leftOut = new List<string>();
+            var all = levels.All.Where(l => l.Role != LevelRole.Roof && l.Role != LevelRole.Bulkhead).OrderBy(l => l.Elevation).ToList();
+            if (all.Count == 0) return all;
+
+            var planned = new HashSet<ElementId>(new FilteredElementCollector(doc).OfClass(typeof(ViewPlan)).Cast<ViewPlan>()
+                .Where(v => !v.IsTemplate && v.ViewType == ViewType.FloorPlan && v.GenLevel != null).Select(v => v.GenLevel.Id));
+
+            // the electrical room's floor (rule 2); with none named, the lowest floor, where the manual says to look
+            var roomFloor = survey.Read.Start == null ? null : all.FirstOrDefault(l => survey.For(l.Level) == survey.Read.Start);
+            var start = roomFloor ?? all[0];
+            string startWhy = roomFloor != null ? $"the {survey.Read.Start.RoomText.ToLowerInvariant()}'s floor" : "the lowest floor, where the electrical room is assumed";
+
+            var kept = new List<ClassifiedLevel>();
+            foreach (var l in all)
+            {
+                string why = null;
+                if (l.Elevation < start.Elevation - 1e-6) why = "below the electrical room";
+                else if (l == start) why = startWhy;
+                else if (!planned.Contains(l.Level.Id)) why = "no floor plan (a reference level)";
+                else
+                {
+                    string key = Automation.Drawings.FloorKey.FromLevelName(l.Name);
+                    var twin = key == null ? null : kept.FirstOrDefault(k => Automation.Drawings.FloorKey.FromLevelName(k.Name) == key);
+                    if (twin != null)
+                    {
+                        // one floor, two levels: keep the one the drawings were matched to
+                        if (survey.For(l.Level) != null && survey.For(twin.Level) == null)
+                        {
+                            kept.Remove(twin);
+                            leftOut.Add($"{twin.Name} (same floor as {l.Name})");
+                        }
+                        else why = $"same floor as {twin.Name}";
+                    }
+                }
+                if (why != null) leftOut.Add($"{l.Name} ({why})");
+                else kept.Add(l);
+            }
+            App.Log("ELEC| RISER LEVELS " + string.Join(", ", kept.Select(k => k.Name)) + "; left out: " + (leftOut.Count == 0 ? "none" : string.Join("; ", leftOut)));
+            return kept;
+        }
+
+        /// <summary>Shows what the search found. CommandLink1 = place it, CommandLink2 = click instead.</summary>
+        private static TaskDialogResult Propose(List<ElectricalSegment> segments, List<RiserRun> runs, ElectricalSurvey survey)
+        {
+            var lines = new List<string>();
+            for (int i = 0; i < segments.Count && i < runs.Count; i++)
+            {
+                var s = segments[i]; var r = runs[i];
+                lines.Add(r.Point == null
+                    ? $"{s.FloorsText}: NO SPOT FOUND ({r.Why}) — you will click it"
+                    : $"{s.FloorsText}: {s.Circles} circles, {Units.FormatInches(s.Width)} x {Units.FormatInches(s.Length)}, " +
+                      $"{r.Distance:0.#} ft from {(i == 0 ? "the " + survey.Read.Start.RoomText.ToLowerInvariant() : "the run below")}, in {string.Join(" / ", r.Rooms.Distinct())}" +
+                      (r.Unnamed ? " — NO named closet or shaft would do here, check this spot" : ""));
+            }
+            foreach (var l in lines) App.Log("ELEC| PROPOSAL " + l);
+            var td = new TaskDialog("Electrical riser")
+            {
+                MainInstruction = runs.Any(r => r.Point == null) ? "No allowed spot for some floors — you will click those"
+                                : segments.Count == 1 ? "Found a spot that runs straight up" : $"Found the riser in {segments.Count} runs ({segments.Count - 1} offset(s))",
+                MainContent = string.Join("\n", lines) + "\n\n(\"?\" = the drawing names no room there.) Against a wall, clear of columns, beams, shear walls " +
+                              "and other openings, in a closet or shaft where the drawings name one. Check it on the plans after placing.",
+                AllowCancellation = true
+            };
+            td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Place it there");
+            td.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, "I will click the spot myself");
+            return td.Show();
+        }
+
+        /// <summary>
+        /// Moves the box so its middle sits on the riser point, where the circles are drawn. The office Openings family is not
+        /// drawn around its insertion point (it keeps the box's top edge 6" above it and sizes downward), so placed at the
+        /// point the box sat above its circles. Measured on the box's solid, else on the lines it draws in the level's floor
+        /// plan (this family's box is plan lines only). Inside a transaction.
+        /// </summary>
+        private static void CentreOn(Document doc, FamilyInstance inst, XYZ point, Level level)
+        {
+            doc.Regenerate();                                   // the size just set, so the box is the new one
+            double x0 = double.MaxValue, y0 = double.MaxValue, x1 = double.MinValue, y1 = double.MinValue;
+            void Add(IEnumerable<XYZ> pts)
+            {
+                foreach (var p in pts) { x0 = Math.Min(x0, p.X); y0 = Math.Min(y0, p.Y); x1 = Math.Max(x1, p.X); y1 = Math.Max(y1, p.Y); }
+            }
+            void Take(GeometryElement geo, bool lines)
+            {
+                if (geo == null) return;
+                foreach (var g in geo)
+                {
+                    if (g is GeometryInstance gi) Take(gi.GetInstanceGeometry(), lines);
+                    else if (!lines && g is Solid s && s.Volume > 0) foreach (Edge edge in s.Edges) Add(edge.Tessellate());
+                    else if (lines && g is Curve c) Add(c.Tessellate());
+                }
+            }
+            string measured = "solid";
+            Take(inst.get_Geometry(new Options { DetailLevel = ViewDetailLevel.Fine }), false);
+            if (x0 > x1)
+            {
+                var view = ElectricalPlanner.PlanOf(doc, level);
+                if (view != null) { Take(inst.get_Geometry(new Options { View = view }), true); measured = "plan lines in '" + view.Name + "'"; }
+            }
+            if (x0 > x1) { App.Log($"ELEC| CENTRE box {inst.Id} on '{level.Name}': nothing to measure, left at its insertion point"); return; }
+
+            double dx = point.X - (x0 + x1) / 2, dy = point.Y - (y0 + y1) / 2;
+            App.Log($"ELEC| CENTRE box {inst.Id} on '{level.Name}': {measured} {Units.FormatInches((x1 - x0) * 12)} x {Units.FormatInches((y1 - y0) * 12)}, " +
+                    $"its middle was {Units.FormatInches(Math.Abs(dx) * 12)} {(dx > 0 ? "left" : "right")} and {Units.FormatInches(Math.Abs(dy) * 12)} {(dy > 0 ? "below" : "above")} the riser point" +
+                    (Math.Abs(dx) < 1.0 / 192 && Math.Abs(dy) < 1.0 / 192 ? "; already centred" : "; moved onto it"));
+            if (Math.Abs(dx) < 1.0 / 192 && Math.Abs(dy) < 1.0 / 192) return;   // within 1/16"
+            ElementTransformUtils.MoveElement(doc, inst.Id, new XYZ(dx, dy, 0));
+        }
+
+        /// <summary>Deletes the riser being replaced: its openings and the conduit circles drawn over them. Inside a transaction.</summary>
+        private static int Remove(Document doc, List<OpeningRecord> existing, Rules.ElectricalRules e)
+        {
+            double r = Units.InchesToFeet(e.CircleDiameter) / 2;
+            var doomed = new HashSet<ElementId>(existing.Select(o => o.Instance.Id));
+            foreach (var curve in new FilteredElementCollector(doc).OfClass(typeof(CurveElement)).Cast<CurveElement>())
+            {
+                if (!(curve is DetailCurve) || !(curve.GeometryCurve is Arc arc) || Math.Abs(arc.Radius - r) > 1e-4) continue;
+                var level = (doc.GetElement(curve.OwnerViewId) as ViewPlan)?.GenLevel;
+                if (level == null) continue;
+                // a circle within an opening's reach on that opening's level belongs to it
+                if (existing.Any(o => o.Level.Id == level.Id && RiserRecord.Dist(o.Point, arc.Center) < 3)) doomed.Add(curve.Id);
+            }
+            var deleted = doc.Delete(doomed.ToList());
+            App.Log($"ELEC| REMOVED {existing.Count} opening(s) and {doomed.Count - existing.Count} circle arc(s) of the old riser ({deleted.Count} element(s) in all)");
+            return deleted.Count;
+        }
+
+        /// <summary>Loads each role's office family from rules.json "file" when the project has none mapped. Outside any transaction.</summary>
+        private static void LoadMissingFamilies(Document doc, Rules.RuleSet rules, ProjectState state, params string[] roles)
+        {
+            var missing = roles.Where(r => FamilyMapping.FindSymbol(doc, FamilyMapping.Get(rules, state, r)) == null).ToList();
+            if (missing.Count == 0) return;
+            using (var t = new Transaction(doc, "Sleeves & Openings: load families"))
+            {
+                t.Start();
+                foreach (var role in missing)
+                {
+                    var rule = rules.Family(role);
+                    if (rule == null || string.IsNullOrEmpty(rule.Family) || ProjectSetup.FindFamily(doc, rule.Family) != null) continue;
+                    var path = Rules.RuleLoader.ResolveFamilyFile(rule);
+                    if (path == null || !System.IO.File.Exists(path)) { App.Log("ELEC| FAMILY " + role + ": no file to load (" + path + ")"); continue; }
+                    try { App.Log("ELEC| FAMILY " + role + ": " + (doc.LoadFamily(path, out Family f) ? "loaded '" + f.Name + "'" : "NOT loaded") + " from " + path); }
+                    catch (Exception ex) { App.Log("ELEC| FAMILY " + role + ": loading " + path + " failed: " + ex.Message); }
+                }
+                t.Commit();
+            }
+        }
+
+        /// <summary>Where the instance really ended up and the size it really shows, read back from the model.</summary>
+        private static void LogPlaced(string what, FamilyInstance inst, Level level, FamilyMapEntry map, string wanted, bool dumpParams)
+        {
+            var p = (inst.Location as LocationPoint)?.Point;
+            string Read(string name)
+            {
+                if (string.IsNullOrEmpty(name)) return "(no param)";
+                var prm = inst.LookupParameter(name) ?? inst.Symbol.LookupParameter(name);
+                return prm == null ? "(missing)" : prm.StorageType == StorageType.Double ? Units.FormatInches(prm.AsDouble() * 12) : prm.AsValueString() ?? prm.AsString();
+            }
+            App.Log("ELEC| PLACED " + what + " id " + inst.Id + " on '" + level.Name + "' at " +
+                    (p == null ? "(no point)" : "(" + p.X.ToString("0.###") + ", " + p.Y.ToString("0.###") + ", " + p.Z.ToString("0.###") + ")") +
+                    " ft, type '" + inst.Symbol.Name + "', " + wanted + ", got W=" + Read(map.WidthParam) + " L=" + Read(map.LengthParam) + " D=" + Read(map.DiameterParam));
+            if (!dumpParams) return;
+            // every length the family exposes, so a size that does not stick can be traced to the parameter that drives it
+            foreach (var (owner, e) in new[] { ("instance", (Element)inst), ("type", inst.Symbol) })
+                foreach (Parameter prm in e.Parameters)
+                    if (prm.StorageType == StorageType.Double && prm.Definition != null)
+                        App.Log($"ELEC|   PARAM {owner} '{prm.Definition.Name}' = {prm.AsValueString()}{(prm.IsReadOnly ? " (read-only)" : "")}{(prm.IsShared ? " (shared)" : "")}");
         }
 
         /// <summary>The folder holding the architect's per-floor DWGs; null when the drafter cancels.</summary>
@@ -180,23 +497,6 @@ namespace SleevesOpenings.Commands
                 if (!string.IsNullOrEmpty(start) && System.IO.Directory.Exists(start)) dialog.SelectedPath = start;
                 return dialog.ShowDialog(UI.RevitWindow.Instance) == DialogResult.OK ? dialog.SelectedPath : null;
             }
-        }
-
-        /// <summary>Offers the electrical room the drawings name; false means the drafter clicks the locations instead.</summary>
-        private static bool UseRoom(ElectricalSurvey survey, int segments)
-        {
-            var dialog = new TaskDialog("Electrical riser")
-            {
-                MainInstruction = $"Start at the '{survey.Read.Start.RoomText}' on {survey.StartFloor}?",
-                MainContent = "That is where the label sits in the architect's drawing — mid-room, not against a wall. " +
-                              "The riser has to clear beams and walls, so check it after placing, or click the spot yourself." +
-                              (segments > 1 ? $"\n\nThe other {segments - 1} segment(s) offset, so you will click those either way." : ""),
-                AllowCancellation = false
-            };
-            dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Start at the electrical room",
-                $"({survey.Start.X:0.##}, {survey.Start.Y:0.##}) in the model");
-            dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, "I will click the locations");
-            return dialog.Show() == TaskDialogResult.CommandLink1;
         }
     }
 }

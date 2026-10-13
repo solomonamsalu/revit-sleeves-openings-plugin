@@ -46,9 +46,15 @@ namespace SleevesOpenings.Electrical
             {
                 var floor = survey.Read.Floors.FirstOrDefault(f => f.Floor == m.Floor);
                 if (floor == null) continue;
+                App.Log("ELEC| MATCH floor " + m.Floor + " (" + floor.File + ", " + floor.Apartments + " apts) -> " +
+                        (m.Level == null ? "NO LEVEL" : "level '" + m.Level.Name + "'"));
                 if (m.Level == null) { if (floor.Apartments > 0) survey.Unmatched.Add(FloorKey.Describe(m.Floor) + " (" + floor.Apartments + " apartments)"); continue; }
+                if (survey.ByLevel.ContainsKey(m.Level.Name))
+                    App.Log("ELEC| MATCH CLASH level '" + m.Level.Name + "' already had " + survey.ByLevel[m.Level.Name].File + "; replaced by " + floor.File);
                 survey.ByLevel[m.Level.Name] = floor;
             }
+            foreach (var l in levels.All.Where(l => !survey.ByLevel.ContainsKey(l.Level.Name)))
+                App.Log("ELEC| MATCH level '" + l.Level.Name + "' (" + l.Role + ") has NO drawing");
 
             var start = survey.Read.Start;
             if (start != null)

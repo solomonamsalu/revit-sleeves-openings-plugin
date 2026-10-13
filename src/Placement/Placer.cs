@@ -180,14 +180,23 @@ namespace SleevesOpenings.Placement
                     continue;
                 }
                 var ip = inst.LookupParameter(name);
-                if (ip != null && !ip.IsReadOnly) SetLength(inst, name, val);
+                if (ip != null && !ip.IsReadOnly)
+                {
+                    if (SetLength(inst, name, val)) continue;
+                    // The instance value follows a type parameter half its size (the office Openings family: Width = 2 x
+                    // "width/2", Length = 2 x "Height/2", both type parameters), so setting it does nothing: size the type.
+                    string half = HalfTypeParam(symbol, name);
+                    if (half != null) { typeDriven.Add((half, val)); App.Log($"Size: '{name}' follows the type's '{half}'; sized by type instead"); }
+                }
                 else if (symbol.LookupParameter(name) != null) typeDriven.Add((name, val));
                 else App.Log($"Size not written for {spec.Label ?? spec.System.ToString()} {spec.SizeText}: family " +
                              $"'{symbol.Family.Name}' has no parameter '{name}'.");
             }
             if (typeDriven.Count == 0) return;
 
-            string typeName = spec.SizeText;
+            // named after its base type too: an electrical box (the blue Electrical opening) never takes a Mechanical
+            // opening's type of the same size
+            string typeName = (BaseTypeName(symbol) + " " + spec.SizeText).Trim();
             var target = new FilteredElementCollector(_doc).OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
                 .FirstOrDefault(s => s.Family.Id == symbol.Family.Id && s.Name == typeName);
             if (target == null)
@@ -207,13 +216,51 @@ namespace SleevesOpenings.Placement
             if (spec.DownHeight.HasValue) yield return (map.DownHeightParam, spec.DownHeight.Value);
         }
 
-        private static void SetLength(Element e, string paramName, double inches)
+        /// <summary>Sets a length (inches); false when the value did not stick (a parameter another one drives).</summary>
+        private static bool SetLength(Element e, string paramName, double inches)
         {
             var p = e.LookupParameter(paramName);
-            if (p == null || p.IsReadOnly) return;
-            // A "Radius" parameter gets half the diameter.
-            double value = paramName.IndexOf("radius", StringComparison.OrdinalIgnoreCase) >= 0 ? inches / 2 : inches;
-            p.Set(Units.InchesToFeet(value));
+            if (p == null || p.IsReadOnly) return false;
+            // A "Radius" or a "…/2" parameter gets half the size.
+            bool halfOf = paramName.IndexOf("radius", StringComparison.OrdinalIgnoreCase) >= 0 || HalfName.IsMatch(paramName);
+            double value = halfOf ? inches / 2 : inches;
+            double before = p.AsDouble();
+            bool ok = p.Set(Units.InchesToFeet(value));
+            // a size that does not stick is otherwise invisible until someone measures the opening on the sheet
+            if (ok && Math.Abs(p.AsDouble() - Units.InchesToFeet(value)) <= 1e-6) return true;
+            App.Log($"Size NOT applied: '{paramName}' on {e.Id} ({(e is FamilySymbol ? "type" : "instance")}) wanted {Units.FormatInches(value)}, " +
+                    $"Set returned {ok}, was {Units.FormatInches(before * 12)}, now {Units.FormatInches(p.AsDouble() * 12)}");
+            return false;
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex HalfName =
+            new System.Text.RegularExpressions.Regex(@"^\s*(?<base>.+?)\s*/\s*2\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        private static readonly System.Text.RegularExpressions.Regex WidthLike =
+            new System.Text.RegularExpressions.Regex(@"^(opening\s*)?(width|w)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        private static readonly System.Text.RegularExpressions.Regex LengthLike =
+            new System.Text.RegularExpressions.Regex(@"^(opening\s*)?(length|depth|height|l|h|d)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        /// <summary>The type's "…/2" length parameter for the same dimension as <paramref name="name"/> ("Width" -> "width/2", "Length" -> "Height/2").</summary>
+        private static string HalfTypeParam(FamilySymbol symbol, string name)
+        {
+            bool width = WidthLike.IsMatch(name.Trim()), length = LengthLike.IsMatch(name.Trim());
+            if (!width && !length) return null;
+            foreach (Parameter p in symbol.Parameters)
+            {
+                if (p.StorageType != StorageType.Double || p.IsReadOnly || p.Definition == null) continue;
+                var m = HalfName.Match(p.Definition.Name);
+                if (!m.Success) continue;
+                string b = m.Groups["base"].Value.Trim();
+                if (width ? WidthLike.IsMatch(b) : LengthLike.IsMatch(b)) return p.Definition.Name;
+            }
+            return null;
+        }
+
+        /// <summary>The type's name without a size this placer appended ("Electrical opening 6\" x 5.25\"" -> "Electrical opening").</summary>
+        private static string BaseTypeName(FamilySymbol symbol)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(symbol.Name, "^(?<base>.*?)\\s*(\\d+'\\s*-\\s*)?[\\d.]+\"(\\s*x\\s*(\\d+'\\s*-\\s*)?[\\d.]+\")?$");
+            return m.Success ? m.Groups["base"].Value : symbol.Name;
         }
 
         /// <summary>
