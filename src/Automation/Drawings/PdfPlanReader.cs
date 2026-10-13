@@ -28,6 +28,12 @@ namespace SleevesOpenings.Automation.Drawings
         public string ScaleText;
         public int Layers;
         public List<PdfColumn> Columns = new List<PdfColumn>();
+        /// <summary>Wall lines of the architectural background (pdfOnly.wallLayers), real inches in the sheet's frame: lined up
+        /// with the model's DWG walls when the page has no columns (WallAligner).</summary>
+        public List<((double X, double Y) A, (double X, double Y) B)> Walls = new List<((double X, double Y) A, (double X, double Y) B)>();
+        /// <summary>Line ends of the architectural background (layers of an xref, "BACKGROUND|C-PROP-LINE"), by layer: the
+        /// same on every sheet of the set, so a page is lined up through another page (PageLinker).</summary>
+        public Dictionary<string, List<(double X, double Y)>> Background = new Dictionary<string, List<(double X, double Y)>>(StringComparer.OrdinalIgnoreCase);
         /// <summary>Why nothing was read from the page (scanned, no layers).</summary>
         public string Problem;
     }
@@ -130,10 +136,28 @@ namespace SleevesOpenings.Automation.Drawings
                                 if (plan.Columns.Any(c => Dist(c.X, c.Y, x, y) < 1)) continue;          // outline + hatch, drawn twice
                                 plan.Columns.Add(new PdfColumn { X = x, Y = y, W = rect.W * k, L = rect.L * k });
                             }
+                    // ---- the background's lines by layer (an xref's layers: "X-Clean - 1299 Findlay - R0|C-PROP-LINE")
+                    foreach (var s in shapes.Where(s => s.Layer.Contains("|")))
+                        foreach (var sub in s.Path)
+                        {
+                            if (!plan.Background.TryGetValue(s.Layer, out var layerEnds)) plan.Background[s.Layer] = layerEnds = new List<(double X, double Y)>();
+                            layerEnds.AddRange(Points(sub).Select(Real));
+                        }
+
+                    // ---- walls (architectural background): for the fixtures, and to line the page up when it has no columns
+                    if (wallLayers != null)
+                        foreach (var s in shapes.Where(s => wallLayers.IsMatch(s.Layer)))
+                            foreach (var sub in s.Path)
+                            {
+                                var pts = Points(sub).Select(Real).ToList();
+                                for (int i = 1; i < pts.Count; i++) plan.Walls.Add((pts[i - 1], pts[i]));
+                                if (sub.IsClosed() && pts.Count > 2) plan.Walls.Add((pts[pts.Count - 1], pts[0]));
+                            }
+
                     var floorRegion = new DwgFloor
                     {
                         Floor = sheet.Floor, Title = sheet.Title, Layout = $"PDF page {sheet.Page}", Scale = (int)Math.Round(plan.Scale),
-                        MinX = 0, MinY = 0, MaxX = page.Width * k, MaxY = page.Height * k
+                        MinX = 0, MinY = 0, MaxX = page.Width * k, MaxY = page.Height * k, Typical = sheet.Typical
                     };
                     if (plan.Columns.Count == 0)
                         result.Warnings.Add($"{FloorKey.Describe(sheet.Floor)} (page {sheet.Page}): no columns found on the column layers (rules.json pdfOnly.columnLayers).");
@@ -244,14 +268,7 @@ namespace SleevesOpenings.Automation.Drawings
                                     Circle = ring != null && ring.R * k <= 3
                                 });
                             }
-                        var walls = new List<((double X, double Y) A, (double X, double Y) B)>();
-                        foreach (var s in shapes.Where(s => wallLayers.IsMatch(s.Layer)))
-                            foreach (var sub in s.Path)
-                            {
-                                var pts = Points(sub).Select(Real).ToList();
-                                for (int i = 1; i < pts.Count; i++) walls.Add((pts[i - 1], pts[i]));
-                                if (sub.IsClosed() && pts.Count > 2) walls.Add((pts[pts.Count - 1], pts[0]));
-                            }
+                        var walls = plan.Walls;
                         try
                         {
                             FixtureDrains.Locate(pageFixtures, strokes, walls,
@@ -807,7 +824,7 @@ namespace SleevesOpenings.Automation.Drawings
             }
             if (found.Count == 0) return (fallback, null);
             // the scale is printed under the plan's title; a typical-floors title ("2ND TO 7TH FLOOR PLAN") names this floor among others
-            var titles = lines.Where(l => FloorKey.PlanFloors(l.Text).Contains(sheet.Floor) && Regex.IsMatch(l.Text, @"\bPLAN\b", RegexOptions.IgnoreCase)).ToList();
+            var titles = lines.Where(l => (l.Text == sheet.Title || FloorKey.PlanFloors(l.Text).Contains(sheet.Floor)) && Regex.IsMatch(l.Text, @"\bPLAN\b", RegexOptions.IgnoreCase)).ToList();
             if (titles.Count > 0)
             {
                 var title = titles.OrderByDescending(t => t.Size).First();

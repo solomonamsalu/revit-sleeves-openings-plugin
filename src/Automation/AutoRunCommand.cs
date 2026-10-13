@@ -74,6 +74,14 @@ namespace SleevesOpenings.Automation
                     App.Log($"AutoRun: {columns.Columns.Count} column(s) in the model for PDF-only alignment ({columns.Source})");
                 }
 
+                // which floor each level is, from what the model holds on it (rooms, linked levels, xrefs, views)
+                LevelEvidence.Result levelHints;
+                try { levelHints = LevelEvidence.Collect(doc, levels, modelRefs); }
+                catch (Exception ex) { levelHints = new LevelEvidence.Result(); App.Log("AutoRun: level evidence not read: " + ex); }
+                App.Log($"AutoRun: level evidence — " + (levelHints.Hints.Count == 0 ? "none" :
+                        string.Join("; ", levelHints.Hints.Select(kv => $"{kv.Key} = {FloorKey.Describe(kv.Value.Floor)} ({string.Join(", ", kv.Value.Why)})"))));
+                foreach (var n in levelHints.Notes) App.Log("AutoRun: level evidence: " + n);
+
                 PdfSheetIndex pdf; DwgSheetIndex dwg; int risersFound; PdfPlanResult pdfPlans; AlignmentResult alignment; RiserAssembly assembly; bool mark, place;
                 RiserDiagramResult diagram; SoCompareResult soCompare; SoSetResult soSet; HashSet<string> placeFloors; DwgRiserResult risers;
                 using (var form = new AutoRunForm(existing, state.Automation, levels, rules.Legend, profile, modelRefs, revitGrids, doc.PathName,
@@ -88,7 +96,9 @@ namespace SleevesOpenings.Automation
                                                                            dryerGap: rules.Systems.DryerExhaust.MinSpacing),
                                                   discipline, pipeRules, columns, rules.PdfOnly,
                                                   pipeOptions.ContainsKey(AutomationInputs.Plumbing) ? (a, only) => FixtureSleeveLocator.Apply(doc, a, rules.Plumbing, existing, only) : null,
-                                                  pipeOptions, model, allowed, rules.DwgProfile))
+                                                  pipeOptions, model, allowed, rules.DwgProfile, levelHints,
+                                                  level => DwgFixtureReader.Read(doc, rules.Plumbing, level).Where(p => p.Walls.Count > 0)
+                                                                           .Select(p => (p.Source, p.Walls)).ToList()))
                 {
                     if (form.ShowDialog(SleevesOpenings.UI.RevitWindow.Instance) != DialogResult.OK) return Result.Cancelled;
                     pdf = form.Pdf; dwg = form.Dwg; risers = form.Risers; placeFloors = form.PlaceFloors;

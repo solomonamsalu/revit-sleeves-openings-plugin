@@ -40,12 +40,17 @@ namespace SleevesOpenings.Automation.Alignment
     /// against every pair of Revit columns the same distance apart; the rotation + shift that puts the most PDF columns on
     /// Revit columns of the same shape (and keeps the page's columns inside the building) wins, then it is fitted on all of them. The scale is the sheet's printed scale; the columns' own fit
     /// must agree with it. A floor is used only when enough columns, spread over the building, land within the tolerance,
-    /// and no other placement comes close. A floor with too few columns (a roof) is lined up by its pipes that stack on a
-    /// lined-up floor next to it. Free of the Revit API.
+    /// and no other placement comes close. A page with no usable columns (the engineer's background left them out) is lined
+    /// up by its walls on the walls of the architect's DWG placed on that level in the model (WallAligner). A floor with
+    /// neither (a roof) is lined up by its pipes that stack on a lined-up floor next to it. Free of the Revit API.
     /// </summary>
     public static class ColumnAligner
     {
         public const string Method = "PDF columns on the model's columns";
+        public const string WallMethod = "PDF walls on the walls of the DWG in the model";
+        public const string LinkMethod = "the background lines it shares with lined-up pages";
+        /// <summary>Two pages' positions through a shared background agree within this (inches).</summary>
+        private const double LinkAgree = 2, LinkDisagree = 3;
 
         private class Fit
         {
@@ -56,11 +61,62 @@ namespace SleevesOpenings.Automation.Alignment
             public double Angle => Math.Atan2(Sin, Cos);
         }
 
-        public static AlignmentResult Run(PdfPlanResult plans, RevitColumns revit, IDictionary<string, string> floorLevels, PdfOnlyRules rules)
+        /// <param name="modelWalls">Level name -> the DWGs placed on it in the model, each with its wall lines (model inches);
+        /// null or missing levels: no wall fallback.</param>
+        public static AlignmentResult Run(PdfPlanResult plans, RevitColumns revit, IDictionary<string, string> floorLevels, PdfOnlyRules rules,
+                                          IDictionary<string, List<(string Source, List<((double X, double Y) A, (double X, double Y) B)> Walls)>> modelWalls = null)
         {
             var result = new AlignmentResult();
             revit = revit ?? new RevitColumns();
             var fits = new Dictionary<FloorAlignment, Fit>();
+
+            // No usable columns: the page's walls on the walls of the DWG(s) on its level. Notes why columns did not do.
+            // a typical plan's floors share one page and usually one DWG: matched once
+            var wallCache = new Dictionary<(int Page, string Source, int Lines, long X, long Y), (WallAligner.Result R, string Why)>();
+            bool ByWalls(PdfPlan plan, FloorAlignment fa, string why)
+            {
+                fa.Notes.Add(why);
+                // walls are read only for the levels of pages without enough columns
+                if (modelWalls == null || fa.Level == null || !modelWalls.ContainsKey(fa.Level)) return false;
+                if (plan.Walls.Count == 0) { fa.Notes.Add("no wall lines on the page's wall layers (pdfOnly.wallLayers) to line it up by"); return false; }
+                var drawings = modelWalls[fa.Level];
+                if (drawings.Count == 0)
+                {
+                    fa.Notes.Add($"no DWG with walls placed on {fa.Level} in the model to line it up by");
+                    return false;
+                }
+                WallAligner.Result found = null; string source = null;
+                var refused = new List<string>();
+                foreach (var (name, walls) in drawings)
+                {
+                    // the drawing's placement is part of the key: the same DWG placed elsewhere on another level is its own match
+                    var key = (plan.Page, name, walls.Count, walls.Count == 0 ? 0L : (long)Math.Round(walls.Min(w => Math.Min(w.A.X, w.B.X)) * 10),
+                               walls.Count == 0 ? 0L : (long)Math.Round(walls.Min(w => Math.Min(w.A.Y, w.B.Y)) * 10));
+                    if (!wallCache.TryGetValue(key, out var cached))
+                    {
+                        var r = WallAligner.Match(plan.Walls, walls, out var reason);
+                        wallCache[key] = cached = (r, reason);
+                    }
+                    var (m, no) = cached;
+                    if (m == null) { refused.Add($"{name}: {no}"); continue; }
+                    if (found == null || m.Hits > found.Hits) { found = m; source = name; }
+                }
+                if (found == null) { fa.Notes.Add("its walls do not line up either: " + string.Join("; ", refused)); return false; }
+
+                var f = new Fit { Cos = found.Cos, Sin = found.Sin, Tx = found.Tx, Ty = found.Ty };
+                foreach (var c in found.Corners.Take(50))
+                    f.Pairs.Add((new PdfColumn { X = c.PX, Y = c.PY }, new ColumnPoint { X = c.MX / 12, Y = c.MY / 12, Source = $"wall corner of {source} in the model" }, c.D));
+                fits[fa] = f;
+                fa.Reference = new ReferenceDrawing { Name = $"PDF page {plan.Page}", Method = WallMethod, Floor = plan.Floor, Level = fa.Level };
+                fa.Map = new PlanMap { Scale = 1.0 / 12, Cos = f.Cos, Sin = f.Sin, Ox = f.Tx / 12, Oy = f.Ty / 12 };
+                fa.Shift = new FloorShift { Support = found.Hits, Names = found.Hits, RunnerUp = found.Runner, Comparable = found.Probes };
+                fa.RisersChecked = found.Probes; fa.RisersOnReference = found.Hits; fa.RisersNearReference = found.Corners.Count;
+                fa.Status = FloorAlignment.Confirmed;
+                fa.RevitProven = true;                    // the DWG's walls are where the model has them, as the model's columns are
+                fa.Notes.Add($"lined up by its walls instead: {found.Hits} of {found.Probes} wall corners meet the corners of {source} " +
+                             $"(the architect's drawing as placed on {fa.Level} in the model; the next best placement meets {found.Runner}), turned {found.Degrees}°");
+                return true;
+            }
 
             foreach (var plan in plans.Plans.OrderBy(p => FloorKey.Order(p.Floor)))
             {
@@ -72,11 +128,11 @@ namespace SleevesOpenings.Automation.Alignment
 
                 var model = revit.At(fa.Level);
                 fa.RisersChecked = plan.Columns.Count;
-                if (model.Count == 0) { fa.Notes.Add(revit.Columns.Count == 0 ? "the model has no columns (load the structural link)" : $"no model columns at level {fa.Level}"); continue; }
-                if (plan.Columns.Count < rules.MinColumns) { fa.Notes.Add($"only {plan.Columns.Count} column(s) drawn on the page ({rules.MinColumns} needed)"); continue; }
+                if (plan.Columns.Count < rules.MinColumns) { ByWalls(plan, fa, $"only {plan.Columns.Count} column(s) drawn on the page ({rules.MinColumns} needed)"); continue; }
+                if (model.Count == 0) { ByWalls(plan, fa, revit.Columns.Count == 0 ? "the model has no columns (load the structural link)" : $"no model columns at level {fa.Level}"); continue; }
 
                 var (best, runner) = Search(plan.Columns, model, rules);
-                if (best == null) { fa.Notes.Add($"no placement puts {rules.MinColumns} of its {plan.Columns.Count} columns on model columns"); continue; }
+                if (best == null) { ByWalls(plan, fa, $"no placement puts {rules.MinColumns} of its {plan.Columns.Count} columns on model columns"); continue; }
                 Refine(best, plan.Columns, model, rules);
 
                 var close = best.Pairs.Where(p => p.D <= rules.ColumnTolerance).ToList();
@@ -108,6 +164,11 @@ namespace SleevesOpenings.Automation.Alignment
                     fa.Status = FloorAlignment.NotConfirmed;
                     fa.Notes.Add(how);
                     fa.Notes.AddRange(problems);
+                    if (modelWalls != null && fa.Level != null && modelWalls.ContainsKey(fa.Level))
+                    {
+                        fits.Remove(fa);
+                        if (!ByWalls(plan, fa, "its columns are not enough")) fits[fa] = best;
+                    }
                 }
             }
 
@@ -118,6 +179,8 @@ namespace SleevesOpenings.Automation.Alignment
             {
                 f.Status = FloorAlignment.NotConfirmed; f.RevitProven = false; f.Notes.Add(why);
             }
+            string PageOf(FloorAlignment f) => f.Reference?.Name ?? f.Floor;
+            int Votes(IEnumerable<FloorAlignment> g) => g.Select(PageOf).Distinct().Count();      // a typical plan's floors are one page, one vote
             var turns = new List<List<FloorAlignment>>();
             foreach (var f in result.Floors.Where(fits.ContainsKey))          // every floor's own best fit votes, confirmed or not
             {
@@ -125,10 +188,10 @@ namespace SleevesOpenings.Automation.Alignment
                 if (g == null) turns.Add(g = new List<FloorAlignment>());
                 g.Add(f);
             }
-            turns = turns.OrderByDescending(g => g.Count).ToList();
+            turns = turns.OrderByDescending(Votes).ToList();
             if (turns.Count > 1)
             {
-                bool clear = turns[0].Count >= 2 * turns[1].Count;
+                bool clear = Votes(turns[0]) >= 2 * Votes(turns[1]);
                 double main = fits[turns[0][0]].Angle * 180 / Math.PI;
                 foreach (var g in turns.Skip(clear ? 1 : 0))
                     foreach (var f in g)
@@ -150,6 +213,62 @@ namespace SleevesOpenings.Automation.Alignment
                     Reject(f, $"its pipes that stack on the {FloorKey.Describe(n.Floor)} land {off:0.#}\" from them in Revit: the two floors' columns disagree");
                     Reject(n, $"its pipes that stack on the {FloorKey.Describe(f.Floor)} land {off:0.#}\" from them in Revit: the two floors' columns disagree");
                 }
+
+            // ---- pages lined up through the architectural background they share (the dashed property line is the same on
+            //      every sheet). One lined-up floor per page stands for the page, a column-confirmed one before a wall-placed one.
+            var byPage = new Dictionary<int, (FloorAlignment Fa, PdfPlan Plan)>();
+            void Represent(int page)
+            {
+                var keep = result.Floors.Where(f => f.Status == FloorAlignment.Confirmed && fits.ContainsKey(f) && plans.For(f.Floor)?.Page == page)
+                                        .OrderBy(f => f.Reference?.Method == WallMethod ? 1 : 0).FirstOrDefault();
+                if (keep == null) byPage.Remove(page); else byPage[page] = (keep, plans.For(keep.Floor));
+            }
+            foreach (var page in result.Floors.Where(f => f.Status == FloorAlignment.Confirmed && fits.ContainsKey(f))
+                                              .Select(f => plans.For(f.Floor)?.Page).Where(pg => pg != null).Select(pg => pg.Value).Distinct().ToList())
+                Represent(page);
+            var linkCache = new Dictionary<(int, int), PageLinker.Link>();
+            PageLinker.Link LinkOf(PdfPlan a, PdfPlan b)
+            {
+                if (!linkCache.TryGetValue((a.Page, b.Page), out var l)) linkCache[(a.Page, b.Page)] = l = PageLinker.Find(a, b);
+                return l;
+            }
+            // the position each other lined-up page gives this page, and the largest group of them that agree
+            List<(int Page, double Tx, double Ty, PageLinker.Link L)> Through(PdfPlan plan)
+            {
+                var all = new List<(int Page, double Tx, double Ty, PageLinker.Link L)>();
+                foreach (var kv in byPage.Where(kv => kv.Key != plan.Page))
+                {
+                    var link = LinkOf(plan, kv.Value.Plan);
+                    if (link == null) continue;
+                    var t = fits[kv.Value.Fa].Apply(link.Dx, link.Dy);       // this page's (0,0) in Revit inches
+                    all.Add((kv.Key, t.X, t.Y, link));
+                }
+                return all.Select(c => all.Where(o => Math.Abs(o.Tx - c.Tx) <= LinkAgree && Math.Abs(o.Ty - c.Ty) <= LinkAgree).ToList())
+                          .OrderByDescending(g => g.Count).FirstOrDefault() ?? new List<(int, double, double, PageLinker.Link)>();
+            }
+
+            // A wall placement two other pages contradict (a page of repeated corners can fit inches off) is not used.
+            // Checked before anything is lined up on it (stacked pipes, the sheet frame); only wall placements are rejected.
+            foreach (var page in result.Floors.Where(f => f.Status == FloorAlignment.Confirmed && f.Reference?.Method == WallMethod && fits.ContainsKey(f))
+                                              .Select(f => plans.For(f.Floor)?.Page).Where(pg => pg != null).Select(pg => pg.Value).Distinct().ToList())
+            {
+                var walled = result.Floors.Where(f => f.Status == FloorAlignment.Confirmed && f.Reference?.Method == WallMethod && fits.ContainsKey(f) &&
+                                                      plans.For(f.Floor)?.Page == page).ToList();
+                var group = Through(plans.For(walled[0].Floor));
+                if (group.Count < 2) continue;
+                double gx = group.Average(g => g.Tx), gy = group.Average(g => g.Ty);
+                bool changed = false;
+                foreach (var w in walled)
+                {
+                    double off = Math.Sqrt(Math.Pow(gx - fits[w].Tx, 2) + Math.Pow(gy - fits[w].Ty, 2));
+                    if (off <= LinkDisagree) continue;
+                    Reject(w, $"its walls put it {off:0.#}\" from where pages {string.Join(", ", group.Select(g => g.Page))} put it " +
+                              $"through the {Short(group[0].L.Layer)} they share: its wall match is not used");
+                    fits.Remove(w);
+                    changed = true;
+                }
+                if (changed) Represent(page);
+            }
 
             // ---- a floor that could not use its columns: lined up by its pipes that stack on a lined-up floor next to it
             for (bool grew = true; grew;)
@@ -186,8 +305,9 @@ namespace SleevesOpenings.Automation.Alignment
                 var confirmed = result.Floors.Where(f => f.Status == FloorAlignment.Confirmed && fits.ContainsKey(f)).ToList();
                 bool Same(Fit a, Fit b) => Math.Abs(Angle(a.Angle - b.Angle)) <= Math.PI / 1800 &&
                                            Math.Sqrt(Math.Pow(a.Tx - b.Tx, 2) + Math.Pow(a.Ty - b.Ty, 2)) <= rules.StackTolerance;
-                var frame = confirmed.Select(f => (F: f, N: confirmed.Count(o => Same(fits[o], fits[f])))).OrderByDescending(t => t.N).FirstOrDefault();
-                if (frame.F != null && frame.N >= AlignmentResult.AnchorCount && frame.N * 3 >= confirmed.Count * 2)
+                // counted in pages: a typical plan's floors are one page
+                var frame = confirmed.Select(f => (F: f, N: Votes(confirmed.Where(o => Same(fits[o], fits[f]))))).OrderByDescending(t => t.N).FirstOrDefault();
+                if (frame.F != null && frame.N >= AlignmentResult.AnchorCount && frame.N * 3 >= Votes(confirmed) * 2)
                     foreach (var fa in result.Floors.Where(f => !f.Usable && f.Reference != null && f.Status != FloorAlignment.NotConfirmed))
                     {
                         var nf = fits[frame.F];
@@ -197,10 +317,36 @@ namespace SleevesOpenings.Automation.Alignment
                         fa.Shift = new FloorShift { Support = frame.N, Names = frame.N };
                         fa.Status = FloorAlignment.AgreesWithOthers;
                         fa.RevitProven = frame.F.RevitProven;
-                        fa.Notes.Add($"lined up in the sheet frame {frame.N} of the {confirmed.Count} column-confirmed floors share " +
+                        fa.Notes.Add($"lined up in the sheet frame {frame.N} of the {Votes(confirmed)} column-confirmed pages share " +
                                      $"(their pages land within {rules.StackTolerance:0.#}\" of each other): the engineer plotted every floor the same way");
                     }
             }
+            // ---- pages with no position yet: through the architectural background they share with lined-up pages. Two must agree.
+            foreach (var fa in result.Floors.Where(f => !f.Usable && f.Reference != null))
+            {
+                var plan = plans.For(fa.Floor);
+                if (plan == null || plan.Problem != null) continue;
+                var group = Through(plan);
+                if (group.Count < 2)
+                {
+                    if (byPage.Count > 0) fa.Notes.Add(group.Count == 1 ? $"only page {group[0].Page} shares background lines with it (2 lined-up pages must agree)"
+                                                                       : "no lined-up page shares enough background lines with it");
+                    continue;
+                }
+                var basis = fits[byPage[group[0].Page].Fa];
+                var f = new Fit { Cos = basis.Cos, Sin = basis.Sin, Tx = group.Average(g => g.Tx), Ty = group.Average(g => g.Ty) };
+                fits[fa] = f;
+                double spread = Math.Max(group.Max(g => g.Tx) - group.Min(g => g.Tx), group.Max(g => g.Ty) - group.Min(g => g.Ty));
+                fa.Reference = new ReferenceDrawing { Name = $"PDF page {plan.Page}", Method = LinkMethod, Floor = fa.Floor, Level = fa.Level };
+                fa.Map = new PlanMap { Scale = 1.0 / 12, Cos = f.Cos, Sin = f.Sin, Ox = f.Tx / 12, Oy = f.Ty / 12 };
+                fa.Shift = new FloorShift { Support = group.Count, Names = group.Count, Comparable = byPage.Count };
+                fa.Status = FloorAlignment.AgreesWithOthers;
+                fa.RevitProven = group.All(g => byPage[g.Page].Fa.RevitProven);
+                fa.Notes.Add($"lined up through the {Short(group[0].L.Layer)} it shares with pages {string.Join(", ", group.Select(g => g.Page))}: " +
+                             string.Join("; ", group.Select(g => $"{g.L.Meet} of {g.L.Of} line ends meet page {g.Page}'s")) +
+                             $"; the pages agree within {spread:0.#}\"");
+            }
+
             foreach (var fa in result.Floors.Where(f => f.Map != null))
             {
                 var below = Neighbours(result, fa).FirstOrDefault(n => FloorKey.Order(n.Floor) < FloorKey.Order(fa.Floor) && n.Map != null);
@@ -209,37 +355,43 @@ namespace SleevesOpenings.Automation.Alignment
                 fa.StackedTags = Stacked(plans.Risers, fa, below, rules);
             }
 
-            // ---- check marks: one matched column per floor, the closest, on three different floors. The floors must
-            //      come from three different pages: the typical floors are drawn once, so six floors off one sheet are
-            //      one measurement counted six times, which is what the three-floor rule exists to prevent.
-            var anchorPages = new HashSet<int>();
+            // ---- check marks: one matched column per floor, the closest, on three different floors (pages: a typical
+            //      plan's floors are one drawing)
+            var marked = new HashSet<string>();
             foreach (var (fa, f) in fits.Where(kv => kv.Key.Status == FloorAlignment.Confirmed).Select(kv => (kv.Key, kv.Value))
                                         .OrderBy(kv => kv.Value.Pairs.Where(p => p.D <= rules.ColumnTolerance).Select(p => p.D).DefaultIfEmpty(99).Min()))
             {
                 if (result.Anchors.Count >= AlignmentResult.AnchorCount) break;
-                int page = plans.For(fa.Floor)?.Page ?? 0;
-                if (page != 0 && !anchorPages.Add(page)) continue;
+                if (!marked.Add(PageOf(fa))) continue;
                 var p = f.Pairs.OrderBy(x => x.D).First();
                 var at = f.Apply(p.P.X, p.P.Y);
                 result.Anchors.Add(new AnchorRiser
                 {
-                    Floor = fa.Floor, Level = fa.Level, Tag = "column", DwgX = p.P.X, DwgY = p.P.Y, X = at.X / 12, Y = at.Y / 12, Distance = p.D,
-                    Evidence = $"column in the model ({p.R.Source ?? revit.Source})"
+                    Floor = fa.Floor, Level = fa.Level, Tag = fa.Reference?.Method == WallMethod ? "wall corner" : "column", DwgX = p.P.X, DwgY = p.P.Y, X = at.X / 12, Y = at.Y / 12, Distance = p.D,
+                    Evidence = fa.Reference?.Method == WallMethod ? p.R.Source : $"column in the model ({p.R.Source ?? revit.Source})"
                 });
             }
 
             var usable = result.Floors.Where(f => f.Usable).ToList();
             result.RevitProven = usable.Count > 0 && usable.All(f => f.RevitProven);
-            result.RevitSummary = usable.Count == 0 ? "no floor lined up by its columns"
-                : $"{usable.Count(f => f.Status == FloorAlignment.Confirmed)} floor(s) lined up by their columns on the model's columns ({revit.Source ?? "model"})" +
-                  (usable.Any(f => f.Status == FloorAlignment.AgreesWithOthers) ? $", {usable.Count(f => f.Status == FloorAlignment.AgreesWithOthers)} by their stacked pipes or the shared sheet frame" : "");
+            int byWalls = usable.Count(f => f.Status == FloorAlignment.Confirmed && f.Reference?.Method == WallMethod);
+            int byLinks = usable.Count(f => f.Reference?.Method == LinkMethod);
+            int byColumns = usable.Count(f => f.Status == FloorAlignment.Confirmed) - byWalls;
+            var lined = new List<string>();
+            if (byColumns > 0) lined.Add($"{byColumns} floor(s) lined up by their columns on the model's columns ({revit.Source ?? "model"})");
+            if (byWalls > 0) lined.Add($"{byWalls} by their walls on the walls of the DWGs placed in the model");
+            if (byLinks > 0) lined.Add($"{byLinks} through the background lines they share with those pages");
+            result.RevitSummary = usable.Count == 0 ? "no floor lined up by its columns or walls"
+                : string.Join(", ", lined) +
+                  (usable.Any(f => f.Status == FloorAlignment.AgreesWithOthers && f.Reference?.Method != LinkMethod)
+                      ? $", {usable.Count(f => f.Status == FloorAlignment.AgreesWithOthers && f.Reference?.Method != LinkMethod)} by their stacked pipes or the shared sheet frame" : "");
 
-            result.Messages.Add($"PDF only: {usable.Count} of {result.Floors.Count} floor(s) lined up with Revit by their columns.");
+            result.Messages.Add($"PDF only: {usable.Count} of {result.Floors.Count} floor(s) lined up with Revit (by their columns, or their walls where the page has no columns).");
             foreach (var f in result.Floors.Where(f => !f.Usable))
                 result.Messages.Add($"{FloorKey.Describe(f.Floor)}: {f.Status} — {string.Join("; ", f.Notes)}. Its pipes will not be placed.");
             result.Messages.Add(result.DrawingsMatch
-                ? $"Check columns: {result.Anchors.Count} land within {rules.ColumnTolerance:0.#}\" of a model column."
-                : $"Check columns: only {result.Anchors.Count} floor(s) confirmed by columns (3 needed).");
+                ? $"Check marks: {result.Anchors.Count} ({string.Join(", ", result.Anchors.Select(x => x.Tag).Distinct())}) land within {rules.ColumnTolerance:0.#}\" of the model's."
+                : $"Check marks: only {result.Anchors.Count} floor(s) confirmed by columns or walls (3 pages needed).");
             result.Messages.Add(result.RevitProven ? $"Revit position PROVEN: {result.RevitSummary}." : $"Revit position NOT proven: {result.RevitSummary}.");
             result.Messages.Add(result.Passed ? "Result: PASSED." : "Result: NOT PASSED — nothing will be placed.");
             if (!result.Passed) result.Diagnosis = Diagnose(result, revit, rules, plans);
@@ -291,7 +443,58 @@ namespace SleevesOpenings.Automation.Alignment
                    "are the wrong structural model linked, or drawings from a different revision.";
         }
 
+        /// <summary>Height above a level where its floor plan cuts the columns (feet).</summary>
+        private const double CutHeight = 4;
+
+        /// <summary>
+        /// For floor matching (FloorSequence): each plan's columns are placed once on all the model's columns (stacked
+        /// columns count once, any size), then scored per level on the columns that level's plan cut passes through:
+        /// 2 × matched / (page columns + level columns). Floors with the same columns fit alike; a cellar, a setback or a
+        /// transfer floor fits its own level clearly better. Floor -> level name -> 0..1; a floor whose columns could not be
+        /// placed is left out.
+        /// </summary>
+        public static Dictionary<string, Dictionary<string, double>> LevelFits(PdfPlanResult plans, RevitColumns revit, PdfOnlyRules rules)
+        {
+            var result = new Dictionary<string, Dictionary<string, double>>();
+            if (plans == null || revit == null || revit.Columns.Count == 0) return result;
+            var all = revit.At(null).Select(c => new ColumnPoint { X = c.X, Y = c.Y, MinZ = c.MinZ, MaxZ = c.MaxZ, Source = c.Source }).ToList();
+            var cuts = revit.Levels.ToDictionary(kv => kv.Key, kv => Standing(revit, kv.Value + CutHeight), StringComparer.OrdinalIgnoreCase);
+
+            var byPage = new Dictionary<int, Dictionary<string, double>>();         // a typical plan's floors share one page: placed once
+            foreach (var plan in plans.Plans)
+            {
+                if (plan.Problem != null || plan.Columns.Count < rules.MinColumns || result.ContainsKey(plan.Floor)) continue;
+                if (byPage.TryGetValue(plan.Page, out var same)) { result[plan.Floor] = same; continue; }
+                var (best, _) = Search(plan.Columns, all, rules);
+                if (best == null) continue;
+                var fits = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in cuts)
+                {
+                    int matched = plan.Columns.Count(p =>
+                    {
+                        var q = best.Apply(p.X, p.Y);
+                        return kv.Value.Any(c => SameShape(p, c, best) && Math.Sqrt(Math.Pow(c.X * 12 - q.X, 2) + Math.Pow(c.Y * 12 - q.Y, 2)) <= rules.SearchTolerance);
+                    });
+                    fits[kv.Key] = kv.Value.Count == 0 ? 0 : Math.Min(1, 2.0 * matched / (plan.Columns.Count + kv.Value.Count));
+                }
+                result[plan.Floor] = byPage[plan.Page] = fits;
+            }
+            return result;
+        }
+
+        /// <summary>Columns a horizontal plane at <paramref name="z"/> passes through, one per spot.</summary>
+        private static List<ColumnPoint> Standing(RevitColumns revit, double z)
+        {
+            var one = new List<ColumnPoint>();
+            foreach (var c in revit.Columns.Where(c => c.MinZ <= z && c.MaxZ >= z))
+                if (!one.Any(o => Math.Abs(o.X - c.X) < 1.0 / 12 && Math.Abs(o.Y - c.Y) < 1.0 / 12)) one.Add(c);
+            return one;
+        }
+
         private static string Ratio(PdfPlan plan) => plan.ScaleText ?? PdfPlanReader.Ratio(plan.Scale);
+
+        /// <summary>"X-Clean - 1299 Findlay - R0|C-PROP-LINE" -> "C-PROP-LINE background layer".</summary>
+        private static string Short(string layer) => $"{layer.Split('|').Last()} background layer";
 
         /// <summary>
         /// The rotation + shift that puts the most PDF columns on model columns (search tolerance), from every pair of PDF

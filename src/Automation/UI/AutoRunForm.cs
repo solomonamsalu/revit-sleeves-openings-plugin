@@ -57,6 +57,10 @@ namespace SleevesOpenings.Automation.UI
         /// <summary>Ticks settle before the openings are merged again (several ticks in a row: one rebuild).</summary>
         private readonly Timer _tickTimer = new Timer { Interval = 700 };
         private Label _floorsTicked;
+        private readonly LevelEvidence.Result _levelHints;             // what the model holds on each level (rooms, links, xrefs, views)
+        /// <summary>Level name -> the DWGs placed on it with their wall lines (model inches); Revit API, so called on the window's thread.</summary>
+        private readonly Func<string, List<(string Source, List<((double X, double Y) A, (double X, double Y) B)> Walls)>> _modelWalls;
+        private Dictionary<string, Dictionary<string, double>> _columnFits;   // PDF only: each plan's columns against each level's
 
         private bool Plumbing => _plumbing != null;
         /// <summary>Sprinkler / standpipe sleeves (rules.json "sprinkler"): the pipe path, read by <see cref="SprinklerReader"/>.</summary>
@@ -116,8 +120,11 @@ namespace SleevesOpenings.Automation.UI
                            Action<RiserAssembly> layout = null, string discipline = AutomationInputs.Mechanical, PlumbingRules plumbing = null,
                            RevitColumns columns = null, PdfOnlyRules pdfOnly = null, Func<RiserAssembly, ICollection<string>, List<string>> resolveFixtureSleeves = null,
                            IDictionary<string, PlumbingRules> pipeOptions = null, ModelKindResult model = null, IList<string> allowed = null,
-                           DwgProfile mechanicalProfile = null)
+                           DwgProfile mechanicalProfile = null, LevelEvidence.Result levelHints = null,
+                           Func<string, List<(string Source, List<((double X, double Y) A, (double X, double Y) B)> Walls)>> modelWalls = null)
         {
+            _modelWalls = modelWalls;
+            _levelHints = levelHints ?? new LevelEvidence.Result();
             _pipeOptions = pipeOptions ?? new Dictionary<string, PlumbingRules>();
             _model = model ?? new ModelKindResult { Kind = plumbing == null ? ModelDiscipline.HV : ModelDiscipline.PL, Source = "caller", Reason = "-" };
             _allowed = allowed?.ToList() ?? (plumbing == null ? new List<string> { AutomationInputs.Mechanical } : _pipeOptions.Keys.ToList());
@@ -235,6 +242,7 @@ namespace SleevesOpenings.Automation.UI
             _floors.Columns.Add(lv);
             _floors.Columns.Add(new DataGridViewTextBoxColumn { Name = "How", HeaderText = "Matched by", ReadOnly = true, FillWeight = 50 });
             _floors.Columns.Add(new DataGridViewTextBoxColumn { Name = "Key", Visible = false });
+            _floors.Columns.Add(new DataGridViewTextBoxColumn { Name = "Shown", Visible = false });     // the level as matched, to tell the user's changes
             _floors.CurrentCellDirtyStateChanged += (s, e) =>
             {
                 if (_floors.IsCurrentCellDirty && _floors.CurrentCell is DataGridViewCheckBoxCell) _floors.CommitEdit(DataGridViewDataErrorContexts.Commit);
@@ -390,6 +398,10 @@ namespace SleevesOpenings.Automation.UI
             var unmatched = _floors.Rows.Cast<DataGridViewRow>().Where(r => (string)r.Cells["Level"].Value == AutomationInputs.NotUsed)
                                    .Select(r => FloorKey.Describe((string)r.Cells["Key"].Value)).ToList();
             if (unmatched.Count > 0) return $"{string.Join(", ", unmatched)} {(unmatched.Count == 1 ? "is" : "are")} not matched to a Revit level";
+            // a floor matched with a close alternative (yellow): its sleeves would go on a guessed level
+            var unsure = _floors.Rows.Cast<DataGridViewRow>().Where(r => r.DefaultCellStyle.BackColor == Color.LightYellow && (string)r.Cells["Level"].Value != AutomationInputs.NotUsed)
+                                .Select(r => FloorKey.Describe((string)r.Cells["Key"].Value)).ToList();
+            if (unsure.Count > 0) return $"{string.Join(", ", unsure)} {(unsure.Count == 1 ? "is" : "are")} matched to a level with low confidence (check the Floors tab)";
             var ticked = TickedFloors();
             if (ticked.Count == 0) return "no floor is ticked to place (Floors tab)";
             if (!Assembly.Crossings.Any(c => c.Status == Crossing.Place && ticked.Contains(c.Floor)))
@@ -755,6 +767,16 @@ namespace SleevesOpenings.Automation.UI
                     catch (Exception ex) { msg.AppendLine($"The PDF plans could not be read: {ex.Message}"); App.Log("AutoRun PDF-only read failed: " + ex); }
                 }
 
+                // each plan's columns against the columns standing on each level: evidence for which level a floor is
+                _columnFits = null;
+                if (plans != null && _columns.Columns.Count > 0)
+                {
+                    _status.Text = "Comparing each plan's columns with each level's…";
+                    var p0 = plans; var columns = _columns; var pdfOnly = _pdfOnly;
+                    try { _columnFits = await Task.Run(() => ColumnAligner.LevelFits(p0, columns, pdfOnly)); }
+                    catch (Exception ex) { App.Log("AutoRun column fits failed: " + ex); }
+                }
+
                 msg.Insert(0, $"Model: {_model.Describe()}{Environment.NewLine}");
                 Pdf = pdf; Dwg = dwg; Risers = risers; PdfPlans = plans; Alignment = null; Assembly = null; Diagram = null; SoSet = null; SoCompare = null;
                 Describe(pdf, plans == null ? dwg : null, pdfPath, plans == null ? dwgPath : "-", msg, DisciplineOfSheets(pdf?.Discipline) == _discipline ? pdf.Discipline : Sprinkler ? "SP" : Plumbing ? "P" : "M", DisciplineWord);
@@ -782,10 +804,33 @@ namespace SleevesOpenings.Automation.UI
                 {
                     _status.Text = "Lining the PDF plans up with Revit by their columns…";
                     var floorLevels = FloorLevels(); var columns = _columns; var pdfOnly = _pdfOnly;
-                    try { Alignment = await Task.Run(() => ColumnAligner.Run(plans, columns, floorLevels, pdfOnly)); }
+                    // pages without enough columns are lined up by their walls on the DWGs placed on their level: read here (Revit API)
+                    var walls = new Dictionary<string, List<(string Source, List<((double X, double Y) A, (double X, double Y) B)> Walls)>>();
+                    if (_modelWalls != null)
+                        foreach (var level in plans.Plans.Where(p => p.Walls.Count > 0 && p.Columns.Count < pdfOnly.MinColumns)
+                                                         .Select(p => floorLevels.TryGetValue(p.Floor, out var l) ? l : null).Where(l => l != null).Distinct())
+                        {
+                            _status.Text = $"Reading the walls of the drawings on {level}…";
+                            try { walls[level] = _modelWalls(level); }
+                            catch (Exception ex) { App.Log($"AutoRun walls on {level} not read: {ex}"); }
+                        }
+                    foreach (var kv in walls)
+                        App.Log($"AutoRun: walls on {kv.Key}: " + (kv.Value.Count == 0 ? "no DWG with walls" : string.Join(", ", kv.Value.Select(w => $"{w.Source} ({w.Walls.Count} wall lines)"))));
+                    try { Alignment = await Task.Run(() => ColumnAligner.Run(plans, columns, floorLevels, pdfOnly, walls)); }
                     catch (Exception ex) { msg.AppendLine($"Lining up with Revit failed: {ex.Message}"); App.Log("AutoRun PDF-only alignment failed: " + ex); }
                 }
                 FillAlignment(msg);
+                if (Alignment != null)
+                {
+                    // logged on Check (not only on Save): how each page landed in Revit and why
+                    foreach (var f in Alignment.Floors.OrderBy(f => FloorKey.Order(f.Floor)))
+                        App.Log($"AutoRun: position {f.Floor} -> {f.Level ?? "-"}: {f.Status}, {f.Reference?.Method ?? "-"}" +
+                                (f.Map != null ? $", origin ({f.Map.Ox:0.###}, {f.Map.Oy:0.###}) ft, turned {Math.Atan2(f.Map.Sin, f.Map.Cos) * 180 / Math.PI:0.##}°" : "") +
+                                $"; {string.Join("; ", f.Notes)}");
+                    foreach (var x in Alignment.Anchors)
+                        App.Log($"AutoRun: position check {x.Tag} {x.Floor} at ({x.X:0.###}, {x.Y:0.###}) ft, {x.Distance:0.##}\" from {x.Evidence}");
+                    foreach (var m in Alignment.Messages.Where(m => !m.Contains(" — "))) App.Log("AutoRun: position: " + m);
+                }
 
                 if (dwg != null && risers != null && Alignment != null && Plumbing)
                 {
@@ -1042,18 +1087,38 @@ namespace SleevesOpenings.Automation.UI
             var keys = (pdf?.FloorPlans.Select(s => s.Floor) ?? Enumerable.Empty<string>())
                 .Concat(dwg?.Floors.Select(f => f.Floor) ?? Enumerable.Empty<string>()).Distinct();
             var skip = new HashSet<string>(_inputs.SkipFloors ?? new List<string>());
-            foreach (var m in FloorMatcher.Run(keys, _levels, _inputs))
+            var evidence = new FloorMatcher.Evidence
             {
+                Printed = pdf?.FloorPlans.Where(s => s.Elevations.Count > 0).GroupBy(s => s.Floor).ToDictionary(g => g.Key, g => g.First().Elevations),
+                ColumnFits = _columnFits,
+                LevelHints = _levelHints.Hints,
+                Titles = (pdf?.FloorPlans.Select(s => (s.Floor, s.Title)) ?? Enumerable.Empty<(string, string)>())
+                         .Concat(dwg?.Floors.Select(f => (f.Floor, f.Title)) ?? Enumerable.Empty<(string, string)>())
+                         .Where(t => t.Item2 != null).GroupBy(t => t.Item1).ToDictionary(g => g.Key, g => string.Join(" ", g.Select(t => t.Item2).Distinct()))
+            };
+            foreach (var kv in evidence.Printed ?? new Dictionary<string, List<double>>())
+                App.Log($"AutoRun: floor match: {kv.Key} plan prints {string.Join(", ", kv.Value.Select(v => v.ToString("0.##") + "'"))}");
+            foreach (var kv in _columnFits ?? new Dictionary<string, Dictionary<string, double>>())
+                App.Log($"AutoRun: floor match: {kv.Key} column fit " + string.Join(", ", kv.Value.Where(v => v.Value > 0).OrderByDescending(v => v.Value).Select(v => $"{v.Key} {v.Value:0.00}")));
+            foreach (var m in FloorMatcher.Run(keys, _levels, _inputs, evidence))
+            {
+                App.Log($"AutoRun: floor match: {m.Floor} -> {m.Level?.Name ?? "-"} by {m.How ?? "nothing"}, {m.Confidence}: {m.Why.Replace("\n", "; ")}");
                 var page = pdf?.FloorPlans.FirstOrDefault(s => s.Floor == m.Floor);
                 var sheet = dwg?.Floors.FirstOrDefault(f => f.Floor == m.Floor);
+                string level = m.Level?.Name ?? AutomationInputs.NotUsed;
+                string how = m.How == null ? "not matched"
+                           : m.Level != null && m.Confidence != FloorSequence.Confidence.High ? $"{m.How} — {m.Confidence.ToString().ToLowerInvariant()} confidence"
+                           : m.How;
                 int i = _floors.Rows.Add(
                     !skip.Contains(m.Floor),
                     FloorKey.Describe(m.Floor),
-                    page == null ? "—" : $"p{page.Page} {page.SheetNumber}",
-                    sheet == null ? "—" : sheet.Layout ?? "model space",
-                    m.Level?.Name ?? AutomationInputs.NotUsed,
-                    m.How ?? "not matched",
-                    m.Floor);
+                    page == null ? "—" : $"p{page.Page} {page.SheetNumber}" + (page.Typical != null ? $" (typical {FloorKey.DescribeRange(page.Typical)})" : ""),
+                    sheet == null ? "—" : (sheet.Layout ?? "model space") + (sheet.Typical != null && page?.Typical == null ? $" (typical {FloorKey.DescribeRange(sheet.Typical)})" : ""),
+                    level,
+                    how,
+                    m.Floor,
+                    level);
+                _floors.Rows[i].Cells["How"].ToolTipText = m.Why;
                 if (m.Level == null && m.How != "not used") _floors.Rows[i].DefaultCellStyle.BackColor = Color.MistyRose;
                 else if (m.NeedsCheck) _floors.Rows[i].DefaultCellStyle.BackColor = Color.LightYellow;
             }
@@ -1444,13 +1509,11 @@ namespace SleevesOpenings.Automation.UI
             if (_soSet != null) files.Reference = _soSet.Text.Trim();     // "" = no set wanted: not searched for again
             _inputs.Existing = _update.Checked ? ExistingPolicy.Update : ExistingPolicy.KeepAndAddMissing;
 
-            // Remember every floor whose level the user set or changed; automatic matches are recomputed next time.
+            // Remember every floor whose level the user changed (earlier choices stay); automatic matches are recomputed next time.
             foreach (DataGridViewRow row in _floors.Rows)
             {
-                string key = (string)row.Cells["Key"].Value, level = (string)row.Cells["Level"].Value;
-                var auto = FloorMatcher.Run(new[] { key }, _levels, new AutomationInputs()).First().Level?.Name ?? AutomationInputs.NotUsed;
-                if (level == auto) _inputs.FloorLevels.Remove(key);
-                else _inputs.FloorLevels[key] = level;          // AutomationInputs.NotUsed is stored too: the user said skip this floor
+                string key = (string)row.Cells["Key"].Value, level = (string)row.Cells["Level"].Value, shown = (string)row.Cells["Shown"].Value;
+                if (level != shown) _inputs.FloorLevels[key] = level;      // AutomationInputs.NotUsed is stored too: the user said skip this floor
             }
 
             if (_floors.Rows.Cast<DataGridViewRow>().All(r => (string)r.Cells["Level"].Value == AutomationInputs.NotUsed))
