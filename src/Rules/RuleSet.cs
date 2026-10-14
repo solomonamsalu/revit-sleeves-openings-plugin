@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Newtonsoft.Json;
 
@@ -160,6 +160,30 @@ namespace SleevesOpenings.Rules
         [JsonProperty("openingClearance")] public double OpeningClearance { get; set; } = 2;
         /// <summary>Keep the riser out of doorways and door swings.</summary>
         [JsonProperty("avoidDoorways")] public bool AvoidDoorways { get; set; } = true;
+        /// <summary>
+        /// Rule 17: the roof sleeve goes inside a room on the roof (bulkhead, mechanical room, stair enclosure) when one is
+        /// within searchRadius. A room is walls on all four sides no further apart than this (inches); the open roof is
+        /// walled by its parapets but far wider. 0 = do not prefer indoors.
+        /// </summary>
+        [JsonProperty("roofIndoorMaxSpan")] public double RoofIndoorMaxSpan { get; set; } = 300;
+        /// <summary>
+        /// Rule 21 (shafts): a spot wholly inside a bigger existing opening (a shaft drawn as one opening, at least four
+        /// times the riser's area) is allowed and counts as a riser space, instead of being blocked by openingClearance.
+        /// </summary>
+        [JsonProperty("riserInShaft")] public bool RiserInShaft { get; set; } = true;
+        /// <summary>
+        /// Regex on the system of an existing opening that counts as such a shaft: duct shafts only. A garbage chute, a
+        /// pipe sleeve or a refrigeration opening is the size of what goes through it, with no room for conduits.
+        /// </summary>
+        [JsonProperty("shaftSystems")] public string ShaftSystems { get; set; } = "^(Exhaust|ERV)$";
+        /// <summary>
+        /// Rule 21 (shafts, chases): a spot walled in on all four sides, the walls no further apart than this (inches),
+        /// that no room name reaches is an unlabelled shaft or chase and counts as a riser space. 0 = off.
+        /// </summary>
+        [JsonProperty("unnamedShaftMaxSpan")] public double UnnamedShaftMaxSpan { get; set; } = 96;
+        /// <summary>…and no narrower than this (inches) either way: a sliver between two wall lines is a wall cavity, not a shaft.</summary>
+        [JsonProperty("unnamedShaftMinSpan")] public double UnnamedShaftMinSpan { get; set; } = 18;
+
         /// <summary>Opening W x L (inches) for n circles in a grid with the given column count.</summary>
         public (double width, double length, int rows) OpeningFor(int circles, int columns)
         {

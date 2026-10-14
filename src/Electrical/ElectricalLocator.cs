@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Autodesk.Revit.DB;
 using SleevesOpenings.Placement;
 using SleevesOpenings.Risers;
@@ -17,6 +18,12 @@ namespace SleevesOpenings.Electrical
         public List<string> Rooms = new List<string>(); // the room the spot is in, per floor ("?" = no name in the drawing)
         public string Why;                              // why nothing was found, when Point is null
         public bool Unnamed;                            // no named closet or shaft would do: the spot is in rooms the drawing does not name
+
+        /// <summary>
+        /// Floors whose drawing carries no wall lines. There the room cannot be told and "inside a wall" cannot be tested,
+        /// so <see cref="Rooms"/> is a guess on these floors, not a check.
+        /// </summary>
+        public List<string> NoWalls = new List<string>();
     }
 
     /// <summary>
@@ -37,10 +44,12 @@ namespace SleevesOpenings.Electrical
         private readonly ElectricalRules _e;
         private readonly List<FloorData> _floors;
         private readonly Action<string> _log;
+        /// <summary>Systems whose openings are shafts the riser may share (rules.json electrical.shaftSystems); null = none.</summary>
+        private readonly Regex _shaftSystems;
 
         private class Seg { public double X0, Y0, X1, Y1; }
         private class WallData { public List<Seg> Segs = new List<Seg>(); public double Half; }
-        private class Box { public double X0, Y0, X1, Y1; public string Label; }
+        private class Box { public double X0, Y0, X1, Y1; public string Label; public string System; }
 
         /// <summary>Everything the search needs about one riser level, read once.</summary>
         private class FloorData
@@ -54,6 +63,11 @@ namespace SleevesOpenings.Electrical
             public List<Seg> DoorLines = new List<Seg>();
             /// <summary>Window lines: a room does not end at the gap its window leaves in the wall.</summary>
             public List<Seg> Windows = new List<Seg>();
+            /// <summary>The architect's shaft and chase outlines (dwgProfile.architecturalShaftLayers), and the areas they close (made when first asked for).</summary>
+            public List<Seg> ShaftLines = new List<Seg>();
+            public RoomGrid ShaftAreas;
+            /// <summary>Revit shaft openings in the model and its links: a riser may go through one.</summary>
+            public List<Box> ShaftBoxes = new List<Box>();
             public PlacementGuard Guard;
             /// <summary>The floor cut into rooms by its walls, doors and windows (made when first asked for).</summary>
             public RoomGrid Rooms;
@@ -66,6 +80,8 @@ namespace SleevesOpenings.Electrical
         private readonly List<OpeningRecord> _openings;
         /// <summary>Openings the add-in's own list misses: in linked models (the HV model's duct openings), placed by hand, or Revit's floor / shaft openings.</summary>
         private readonly List<(BoundingBoxXYZ Box, string Label, bool Linked)> _others;
+        /// <summary>Revit shaft openings (category "Shaft Openings") in the model and its links: where a riser may go, not an obstacle.</summary>
+        private readonly List<(BoundingBoxXYZ Box, string Label)> _shaftOpenings = new List<(BoundingBoxXYZ Box, string Label)>();
         private readonly ElectricalSurvey _survey;
 
         private static readonly System.Text.RegularExpressions.Regex OpeningFamily =
@@ -76,6 +92,7 @@ namespace SleevesOpenings.Electrical
         public ElectricalLocator(Document doc, RuleSet rules, IList<Level> levels, ElectricalSurvey survey, ICollection<ElementId> replacing, Action<string> log)
         {
             _doc = doc; _rules = rules; _e = rules.Systems.Electrical; _log = log ?? (_ => { }); _survey = survey;
+            _shaftSystems = string.IsNullOrWhiteSpace(_e.ShaftSystems) ? null : new Regex(_e.ShaftSystems, RegexOptions.IgnoreCase);
             _links = new LinkedModels(doc, rules);
             _columns = _links.Collect(BuiltInCategory.OST_StructuralColumns).Concat(_links.Collect(BuiltInCategory.OST_Columns)).ToList();
             _beams = _links.Collect(BuiltInCategory.OST_StructuralFraming).ToList();
@@ -83,6 +100,16 @@ namespace SleevesOpenings.Electrical
             _others = OtherOpenings(replacing).ToList();
             _floors = levels.Select(Load).ToList();
         }
+
+        /// <summary>
+        /// False when no riser level had a column, beam, slab or Revit wall: the model has no structure loaded (the
+        /// structural model is not linked), so rules 26-28 and the slab edge pass on every spot without being checked.
+        /// </summary>
+        public bool StructureSeen =>
+            _floors.Any(f => f.Columns.Count > 0 || f.Beams.Count > 0 || f.Guard.HasSlab || f.WallGeometry.Walls.Count > 0);
+
+        /// <summary>Riser levels with no wall lines at all: the room there cannot be told, and "inside a wall" is not tested.</summary>
+        public List<string> LevelsWithoutWalls => _floors.Where(f => f.Walls.Count == 0).Select(f => f.Level.Name).ToList();
 
         /// <summary>
         /// Every opening the riser must keep clear of (electrical.openingClearance) that <see cref="RiserIndex.AllOpenings"/>
@@ -111,7 +138,14 @@ namespace SleevesOpenings.Electrical
                     if (op.Host is Wall) continue;
                     var bb = op.get_BoundingBox(null);
                     if (bb == null) continue;
-                    yield return (LinkedModels.TransformBox(bb, s.Transform), $"{s.Describe(op.Id)} '{op.Category?.Name ?? "Opening"}'", !s.IsHost);
+                    string cat = op.Category?.Name ?? "Opening";
+                    // a shaft opening is a hole for risers: the electrical riser may share it (rule 21), so not an obstacle
+                    if (cat.IndexOf("shaft", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        _shaftOpenings.Add((LinkedModels.TransformBox(bb, s.Transform), $"{s.Describe(op.Id)} '{cat}'"));
+                        continue;
+                    }
+                    yield return (LinkedModels.TransformBox(bb, s.Transform), $"{s.Describe(op.Id)} '{cat}'", !s.IsHost);
                 }
             }
         }
@@ -147,6 +181,7 @@ namespace SleevesOpenings.Electrical
                 foreach (var s in drawn.Walls) f.Walls.Add(new WallData { Segs = { ToSeg(s) } });
                 f.DoorLines = drawn.DoorLines.Select(ToSeg).ToList();
                 f.Windows = drawn.Windows.Select(ToSeg).ToList();
+                f.ShaftLines = drawn.Shafts.Select(ToSeg).ToList();
                 f.Doors = drawn.Swings.Select(sw => ToDoor(ElectricalReader.Doorway(sw.Hinge, sw.A, sw.B, drawn.DoorLines, 2.0 / 12))).ToList();
             }
             else if (read != null)
@@ -160,12 +195,15 @@ namespace SleevesOpenings.Electrical
             if (read != null) f.Spaces = read.Spaces;
             f.Columns = _columns.Where(c => c.Box.Min.Z - 1 <= z && c.Box.Max.Z + 1 >= z).Select(c => ToBox(c.Box, c.Source.Describe(c.Element.Id))).ToList();
             f.Beams = _beams.Where(c => c.Box.Min.Z - 1 <= z && c.Box.Max.Z + 1 >= z).Select(c => ToBox(c.Box, c.Source.Describe(c.Element.Id))).ToList();
-            f.Openings = _openings.Where(o => o.Level.Id == level.Id).Select(Footprint).ToList();
+            // by elevation, not level id: a floor often has two levels ("06.6-TH FLOOR" beside "06.6 TH FLOOR NEW") and
+            // the office's sleeves sit on whichever one they were placed from
+            f.Openings = _openings.Where(o => Math.Abs(o.Level.ProjectElevation - z) < 1.0).Select(Footprint).ToList();
+            f.ShaftBoxes = _shaftOpenings.Where(o => o.Box.Min.Z - 1 <= z && o.Box.Max.Z + 1 >= z).Select(o => ToBox(o.Box, o.Label)).ToList();
             var others = _others.Where(o => o.Box.Min.Z - 1 <= z && o.Box.Max.Z + 1 >= z).ToList();
             f.Openings.AddRange(others.Select(o => ToBox(o.Box, o.Label)));
             f.Guard = new PlacementGuard(_doc, _rules, level, f.WallGeometry);
             _log($"SEARCH level '{level.Name}': {revitWalls} Revit wall(s) + {f.Walls.Count - revitWalls} drawn wall line(s) from {from}, " +
-                 $"{f.DoorLines.Count} door line(s), {f.Doors.Count} door swing(s), {f.Windows.Count} window line(s), slab outline {(f.Guard.HasSlab ? "yes" : "NONE")}, {f.Columns.Count} column(s),{f.Beams.Count} beam(s), {f.Openings.Count} other opening(s) ({others.Count(o => o.Linked)} in linked models, {others.Count(o => !o.Linked)} not the add-in's), " +
+                 $"{f.DoorLines.Count} door line(s), {f.Doors.Count} door swing(s), {f.Windows.Count} window line(s), {f.ShaftLines.Count} shaft outline line(s), {f.ShaftBoxes.Count} Revit shaft opening(s), slab outline {(f.Guard.HasSlab ? "yes" : "NONE")}, {f.Columns.Count} column(s),{f.Beams.Count} beam(s), {f.Openings.Count} other opening(s) ({others.Count(o => o.Linked)} in linked models, {others.Count(o => !o.Linked)} not the add-in's), " +
                  $"{f.Spaces.Count(s => s.RiserSpace)} riser space name(s), {f.Spaces.Count(s => !s.RiserSpace)} living space name(s)");
             return f;
         }
@@ -194,7 +232,46 @@ namespace SleevesOpenings.Electrical
                 from = run.To + 1;
             }
             ExplainOffsets(runs, sizeAt);
+            ExplainReference(sizeAt);
             return runs;
+        }
+
+        /// <summary>
+        /// For the log, the office's own answer: where an electrical riser already placed by hand (adopted) sits on the
+        /// bottom riser level, and whether that spot would be allowed on every floor at the size the search wanted. When
+        /// the search chose somewhere else, this says on which floor and why the office's spot was refused.
+        /// </summary>
+        private void ExplainReference(Func<int, (double Width, double Length)> sizeAt)
+        {
+            if (_floors.Count == 0) return;
+            var bottom = _floors[0];
+            var hand = _openings.Where(o => o.Data.System == SystemKind.Electrical.ToString() && o.Data.Adopted &&
+                                            Math.Abs(o.Level.ProjectElevation - bottom.Level.ProjectElevation) < 1.0).ToList();
+            if (hand.Count == 0) return;
+            bool named = _named;
+            _named = true;
+            try
+            {
+                var (w, l) = sizeAt(0);
+                double hw = Units.InchesToFeet(w) / 2, hl = Units.InchesToFeet(l) / 2;
+                foreach (var o in hand)
+                {
+                    var c = o.Centre;
+                    _log($"SEARCH   REFERENCE hand-placed {o.Riser ?? "?"} {o.Instance.Id} on '{bottom.Level.Name}' at ({c.X:0.##}, {c.Y:0.##}): would a {Units.FormatInches(w)} x {Units.FormatInches(l)} box there be allowed?");
+                    for (int k = 0; k < _floors.Count; k++)
+                    {
+                        // the office's own sleeve is not in its own way
+                        var keep = _floors[k].Openings;
+                        _floors[k].Openings = keep.Where(b => !b.Label.StartsWith(o.Riser ?? "\0")).ToList();
+                        int g;
+                        string room, why;
+                        try { g = Grade(_floors[k], c.X, c.Y, hw, hl, Math.Max(hw, hl), out room, out why); }
+                        finally { _floors[k].Openings = keep; }
+                        _log($"SEARCH     {_floors[k].Level.Name}: " + (g > 0 ? $"allowed (in {room})" : "refused: " + why));
+                    }
+                }
+            }
+            finally { _named = named; }
         }
 
         /// <summary>Only spots in a room the drawing names count (set while searching; off for the fallback and for a clicked spot).</summary>
@@ -298,7 +375,10 @@ namespace SleevesOpenings.Electrical
                 }
                 if (rejected > 0) _log($"SEARCH   {rejected} better-ranked spot(s) were rejected by the placement check first");
                 _log($"SEARCH   CHOSEN ({s.P.X:0.##}, {s.P.Y:0.##}) for {bottom.Level.Name} – {_floors[from + s.Floors - 1].Level.Name}");
-                return new RiserRun { From = from, To = from + s.Floors - 1, Point = s.P, Distance = s.Dist, Rooms = s.Rooms };
+                var blind = Enumerable.Range(from, s.Floors).Where(k => _floors[k].Walls.Count == 0).Select(k => _floors[k].Level.Name).ToList();
+                if (blind.Count > 0)
+                    _log($"SEARCH   room and wall checks NOT done on {string.Join(", ", blind)}: those floors carry no wall lines");
+                return new RiserRun { From = from, To = from + s.Floors - 1, Point = s.P, Distance = s.Dist, Rooms = s.Rooms, NoWalls = blind };
             }
             return new RiserRun { From = from, To = from, Why = $"every allowed spot near {bottom.Level.Name} failed the placement check" };
         }
@@ -322,8 +402,17 @@ namespace SleevesOpenings.Electrical
                 if (Distance(c, x, y) - r < minCol) { why = $"{inches(Distance(c, x, y) - r)} from column {c.Label} (rule 26)"; return 0; }
             foreach (var b in f.Beams)                                                                         // rule 28
                 if (Overlaps(b, x, y, hw, hl, 0)) { why = $"in beam {b.Label} (rule 28)"; return 0; }
-            foreach (var o in f.Openings)                                                                      // other openings
+            // other openings: in the way, unless the spot lies wholly inside a bigger duct-shaft opening (rule 21: shafts) -
+            // only duct systems: a garbage chute, a pipe sleeve or a refrigeration opening is exactly the size of what goes
+            // through it, with no room beside it for conduits
+            string shaft = null;
+            foreach (var o in f.Openings)
+            {
+                if (_e.RiserInShaft && _shaftSystems != null && o.System != null && _shaftSystems.IsMatch(o.System) &&
+                    x - hw >= o.X0 && x + hw <= o.X1 && y - hl >= o.Y0 && y + hl <= o.Y1 &&
+                    (o.X1 - o.X0) * (o.Y1 - o.Y0) >= 4 * (2 * hw) * (2 * hl)) { shaft = o.Label; continue; }
                 if (Overlaps(o, x, y, hw, hl, clear)) { why = $"too close to opening {o.Label}"; return 0; }
+            }
             if (_e.AvoidDoorways)
                 foreach (var o in f.Doors)                                                                     // door swings, and just inside doorways
                     if (Overlaps(o, x, y, hw, hl, clear))
@@ -342,15 +431,56 @@ namespace SleevesOpenings.Electrical
             if (gap < Units.InchesToFeet(_e.WallGapMin) || gap > Units.InchesToFeet(_e.WallGapMax))         // rules 20-21
             { why = $"{inches(gap)} from the nearest wall face (allowed {Units.FormatInches(_e.WallGapMin)}-{Units.FormatInches(_e.WallGapMax)}, rules 20-21)"; return 0; }
             if (InsideDrawnWall(f, x, y)) { why = "between a drawn wall's two faces"; return 0; }
+            if (shaft != null) { room = "shaft (opening " + shaft + ")"; return 2; }
+            // the architect's shaft: inside a Revit shaft opening, or inside a closed outline on the shaft layers (rule 21)
+            foreach (var b in f.ShaftBoxes)
+                if (x - hw >= b.X0 && x + hw <= b.X1 && y - hl >= b.Y0 && y + hl <= b.Y1) { room = "shaft (" + b.Label + ")"; return 2; }
+            if (f.ShaftLines.Count > 0)
+            {
+                f.ShaftAreas ??= RoomGrid.Build(f.ShaftLines, null);
+                var sa = f.ShaftAreas?.At(x, y);
+                double minSpan = Units.InchesToFeet(_e.UnnamedShaftMinSpan);
+                // a closed scrap of the chute's or a duct's own drawing on the shaft layer is not a shaft: a shaft is at least minSpan across
+                if (sa != null && !sa.Open && sa.Area <= MaxShaftArea && sa.X1 - sa.X0 >= minSpan && sa.Y1 - sa.Y0 >= minSpan)
+                {
+                    room = $"shaft (drawn outline {sa.X1 - sa.X0:0.#} x {sa.Y1 - sa.Y0:0.#} ft)";
+                    return 2;
+                }
+            }
 
             var label = RoomOf(f, x, y, out var area);
             // a typical floor's sheet often leaves the names off: the same room on another floor carries it
             if (label == null && area != null && !area.Open && area.Area <= MaxRoom) label = Borrowed(f, area, x, y);
+            // a small closed area no floor names is a shaft or chase the architect did not label (rule 21): the office
+            // runs its electrical riser in exactly such a space, beside the duct and chute openings
+            double shaftSpan = Units.InchesToFeet(_e.UnnamedShaftMaxSpan), shaftMin = Units.InchesToFeet(_e.UnnamedShaftMinSpan);
+            if (label == null && area != null && !area.Open && shaftSpan > 0 &&
+                area.X1 - area.X0 <= shaftSpan && area.Y1 - area.Y0 <= shaftSpan &&
+                area.X1 - area.X0 >= shaftMin && area.Y1 - area.Y0 >= shaftMin)
+            {
+                room = $"unnamed shaft/chase {area.X1 - area.X0:0.#} x {area.Y1 - area.Y0:0.#} ft";
+                return 2;
+            }
+            // a shaft is vertical: where another floor closes a shaft around this spot and this floor's drawing leaves it
+            // open (an access door drawn open, a hatch), the spot is still in the shaft
+            if (label == null && shaftSpan > 0)
+                foreach (var g in _floors)
+                {
+                    if (g == f) continue;
+                    RoomOf(g, x, y, out var other);
+                    if (other == null || other.Open || other.Labels.Count > 0) continue;
+                    if (other.X1 - other.X0 <= shaftSpan && other.Y1 - other.Y0 <= shaftSpan && other.X1 - other.X0 >= shaftMin && other.Y1 - other.Y0 >= shaftMin)
+                    {
+                        room = $"unnamed shaft/chase (closed on {g.Level.Name}: {other.X1 - other.X0:0.#} x {other.Y1 - other.Y0:0.#} ft)";
+                        return 2;
+                    }
+                }
+            string areaText = area == null ? "no closed area" : area.Open ? "an area open to the drawing's edge" : $"a closed area {area.X1 - area.X0:0.#} x {area.Y1 - area.Y0:0.#} ft";
             // with no slab to say where the building ends, an unnamed spot may be outside it
-            if (label == null && !f.Guard.HasSlab) { why = "no room name and no slab outline"; return 0; }
+            if (label == null && !f.Guard.HasSlab) { why = $"no room name ({areaText}) and no slab outline"; return 0; }
             // where the drawing names its rooms, a spot no name reaches is a corridor, a terrace or past the building:
             // closets and shafts first (rules 20-21: "whenever possible"), unnamed spots only when none will do
-            if (label == null && _named && f.Spaces.Count > 0) { why = "in a room the drawing names nothing (or open to outside)"; return 0; }
+            if (label == null && _named && f.Spaces.Count > 0) { why = $"in a room the drawing names nothing ({areaText})"; return 0; }
             if (label == null) { room = "?"; return 1; }
             room = label.Text;
             if (!label.RiserSpace) why = $"in '{label.Text}' (rules 17, 20-21)";
@@ -428,6 +558,9 @@ namespace SleevesOpenings.Electrical
 
         /// <summary>A closed area bigger than this (square feet) is no room: the walls leak (a doorway with no door drawn).</summary>
         private const double MaxRoom = 2500;
+
+        /// <summary>A closed area on the shaft layers bigger than this (square feet) is not a shaft but the space around several.</summary>
+        private const double MaxShaftArea = 150;
 
         /// <summary>Two rooms on different floors are the same room when their outlines are this close on every side (feet)…</summary>
         private const double SameEdge = 4.0 / 12;
@@ -582,12 +715,13 @@ namespace SleevesOpenings.Electrical
         private static Box Footprint(OpeningRecord o)
         {
             double hw = Units.InchesToFeet((o.Data.Diameter ?? o.Data.Width ?? 0) / 2), hl = Units.InchesToFeet((o.Data.Diameter ?? o.Data.Length ?? 0) / 2);
+            string label = (string.IsNullOrEmpty(o.Riser) ? "" : o.Riser + " ") + o.Instance.Id;
             if (hw <= 0 || hl <= 0)
             {
                 var bb = o.Instance.get_BoundingBox(null);
-                if (bb != null) return ToBox(bb, o.Instance.Id.ToString());
+                if (bb != null) { var b = ToBox(bb, label); b.System = o.Data.System; return b; }
             }
-            return new Box { X0 = o.Point.X - hw, Y0 = o.Point.Y - hl, X1 = o.Point.X + hw, Y1 = o.Point.Y + hl, Label = o.Instance.Id.ToString() };
+            return new Box { X0 = o.Point.X - hw, Y0 = o.Point.Y - hl, X1 = o.Point.X + hw, Y1 = o.Point.Y + hl, Label = label, System = o.Data.System };
         }
 
         private static double Distance(Box b, double x, double y)
@@ -609,18 +743,49 @@ namespace SleevesOpenings.Electrical
 
 
         /// <summary>
-        /// The roof sleeve (rules 16-17): the nearest spot to the riser below that is on the roof slab, clear of structure, and
-        /// at least clearances.roofMinFromWallOrCurb from walls and curbs (rule 58). Null when there is none within reach.
+        /// The point is inside a room: walls on all four sides along the axes, and the room no wider than
+        /// <paramref name="maxSpan"/> either way. The open roof is walled too (parapets), but tens of feet across; a
+        /// bulkhead, a water-heater room or a stair enclosure is a few feet. Revit walls and the drawing's lines both count.
+        /// </summary>
+        private static bool Enclosed(FloorData f, double x, double y, double maxSpan, out double spanX, out double spanY)
+        {
+            double px = double.MaxValue, mx = double.MaxValue, py = double.MaxValue, my = double.MaxValue;
+            foreach (var w in f.Walls)
+                foreach (var s in w.Segs)
+                {
+                    // where the segment crosses the horizontal line through the point, and the vertical one
+                    if ((s.Y0 - y) * (s.Y1 - y) <= 0 && Math.Abs(s.Y1 - s.Y0) > 1e-9)
+                    {
+                        double cx = s.X0 + (y - s.Y0) * (s.X1 - s.X0) / (s.Y1 - s.Y0) - x;
+                        if (cx >= 0) px = Math.Min(px, cx); else mx = Math.Min(mx, -cx);
+                    }
+                    if ((s.X0 - x) * (s.X1 - x) <= 0 && Math.Abs(s.X1 - s.X0) > 1e-9)
+                    {
+                        double cy = s.Y0 + (x - s.X0) * (s.Y1 - s.Y0) / (s.X1 - s.X0) - y;
+                        if (cy >= 0) py = Math.Min(py, cy); else my = Math.Min(my, -cy);
+                    }
+                }
+            spanX = px + mx; spanY = py + my;
+            return spanX <= maxSpan && spanY <= maxSpan;
+        }
+
+        /// <summary>
+        /// The roof sleeve (rules 16-17): on the roof slab, clear of structure and at least clearances.roofMinFromWallOrCurb
+        /// from walls and curbs (rule 58). Indoors whenever possible (rule 17): the nearest allowed spot inside a room on the
+        /// roof (bulkhead, mechanical room, stair enclosure, electrical.roofIndoorMaxSpan across at most) wins over a nearer
+        /// one on the open roof; the open roof only when no room is in reach. The rules' radius first, then twice it and
+        /// twice that, as the floors' search does, until past the roof's drawing. Null when there is none at all.
         /// </summary>
         public XYZ Roof(Level roof, XYZ below, double diameterIn, List<string> notes)
         {
             var f = Load(roof);
             double r = Units.InchesToFeet(diameterIn) / 2, radius = Units.InchesToFeet(_e.SearchRadius), step = Math.Max(Units.InchesToFeet(_e.SearchStep), 1.0 / 12);
             double minWall = Units.InchesToFeet(_rules.Clearances.RoofMinFromWallOrCurb), minCol = Units.InchesToFeet(_rules.Clearances.MinFromColumn);
+            double maxSpan = Units.InchesToFeet(_e.RoofIndoorMaxSpan);
             double reach = Reach(f, below), inner = -1;
             var why = new Dictionary<string, int>();
             void Count(string reason) => why[reason] = why.TryGetValue(reason, out int c) ? c + 1 : 1;
-            // the rules' radius first, then twice it and twice that, as the floors' search does, until past the roof's drawing
+            (double X, double Y, double D)? outdoor = null;
             while (true)
             {
                 int n = (int)Math.Ceiling(radius / step);
@@ -638,17 +803,32 @@ namespace SleevesOpenings.Electrical
                     if (f.Openings.Any(o => Overlaps(o, s.X, s.Y, r, r, Units.InchesToFeet(_e.OpeningClearance)))) { Count("near another opening"); continue; }
                     if (_e.AvoidDoorways && f.Doors.Any(o => Overlaps(o, s.X, s.Y, r, r, 0))) { Count("in a doorway"); continue; }
                     if (f.Walls.Any(w => w.Segs.Any(seg => SegDistance(seg, s.X, s.Y) - r - w.Half < minWall))) { Count("too close to a wall or curb (rule 58)"); continue; }
+                    double spanX = 0, spanY = 0;
+                    bool indoors = maxSpan > 0 && Enclosed(f, s.X, s.Y, maxSpan, out spanX, out spanY);
+                    if (!indoors && outdoor != null) continue;          // an open-roof fallback is already in hand: only a room can beat it
                     var p = new XYZ(s.X, s.Y, 0);
                     var problems = f.Guard.Check(p, diameterIn / 2, diameterIn / 2, SystemKind.Electrical).Where(w => !w.Contains("rules 20-21")).ToList();
                     if (problems.Count > 0) { Count("placement check: " + PlacementGuard.Clean(problems[0]).Split('(')[0].Trim()); continue; }
-                    _log($"SEARCH ROOF '{roof.Name}': sleeve at ({s.X:0.##}, {s.Y:0.##}), {s.D:0.#} ft from the riser below");
-                    if (s.D > 0.01) notes.Add($"moved {s.D:0.#} ft from the riser below to sit on the roof slab, clear of walls and curbs (rules 17, 58)");
+                    if (!indoors) { outdoor = s; continue; }
+                    _log($"SEARCH ROOF '{roof.Name}': sleeve at ({s.X:0.##}, {s.Y:0.##}), {s.D:0.#} ft from the riser below, inside a room {spanX:0.#} x {spanY:0.#} ft (rule 17)" +
+                         (outdoor != null ? $"; the nearest open-roof spot was ({outdoor.Value.X:0.##}, {outdoor.Value.Y:0.##}), {outdoor.Value.D:0.#} ft away" : ""));
+                    if (s.D > 0.01) notes.Add($"moved {s.D:0.#} ft from the riser below into a room on the roof ({spanX:0.#} x {spanY:0.#} ft), clear of walls and curbs (rules 17, 58)");
                     return p;
                 }
-                if (radius >= reach) break;
+                // widen only when nothing at all was in reach: a room 50 ft away does not beat the open roof over the riser (rule 17 asks
+                // for indoors whenever possible, and the rules' radius is what counts as possible)
+                if (radius >= reach || outdoor != null) break;
                 inner = radius;
                 radius = Math.Min(radius * 2, reach);
-                _log($"SEARCH ROOF '{roof.Name}': nothing within {Units.FormatInches(inner * 12)}: widening to {Units.FormatInches(radius * 12)}");
+                _log($"SEARCH ROOF '{roof.Name}': nothing indoors within {Units.FormatInches(inner * 12)}: widening to {Units.FormatInches(radius * 12)}");
+            }
+            if (outdoor != null)
+            {
+                var s = outdoor.Value;
+                _log($"SEARCH ROOF '{roof.Name}': sleeve at ({s.X:0.##}, {s.Y:0.##}), {s.D:0.#} ft from the riser below, on the OPEN ROOF: no room within {Units.FormatInches(radius * 12)} (rule 17 not met)");
+                notes.Add($"on the open roof{(s.D > 0.01 ? $", {s.D:0.#} ft from the riser below" : "")}: no bulkhead, mechanical room or stair enclosure within " +
+                          $"{Units.FormatInches(radius * 12)} could take it (rule 17 asks for indoors whenever possible)");
+                return new XYZ(s.X, s.Y, 0);
             }
             _log($"SEARCH ROOF '{roof.Name}': no allowed spot within {Units.FormatInches(radius * 12)} of ({below.X:0.##}, {below.Y:0.##}); spots refused for: " +
                  string.Join("; ", why.OrderByDescending(kv => kv.Value).Take(6).Select(kv => $"{kv.Key} x{kv.Value}")));

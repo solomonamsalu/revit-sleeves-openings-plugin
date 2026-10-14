@@ -120,6 +120,8 @@ namespace SleevesOpenings
                 "Conduit calculator: reads the apartments per floor and the electrical room from the architect's drawings; " +
                 "one circle per apartment + 1 for the roof at 0.75\" c-c, recalculated at offsets. Places the ELECTRIC opening " +
                 "on every floor, draws the circles, and puts a 2\" sleeve at the roof."));
+            electrical.AddItem(Button("ShowElectrical", "Show\nElectrical", asm, typeof(Commands.ShowElectricalCommand),
+                "Select every ELECTRIC opening and sleeve in the model and zoom to them, with a floor-by-floor list of where they sit."));
 
             var extract = app.CreateRibbonPanel(TabName, "Extract");
             extract.AddItem(Button("ExtractFixtures", "Extract\nFixtures", asm, typeof(Commands.ExtractFixturesCommand),

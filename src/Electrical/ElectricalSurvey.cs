@@ -38,6 +38,8 @@ namespace SleevesOpenings.Electrical
             string folder = folderOverride ?? state.ElectricalXrefFolder;
             if (string.IsNullOrEmpty(folder) || !System.IO.Directory.Exists(folder))
                 folder = ElectricalReader.FindFolder(ModelFiles.HomePath(doc), profile);
+            if (string.IsNullOrEmpty(folder) || !System.IO.Directory.Exists(folder))
+                folder = LinkedDrawingsFolder(doc, profile);
             survey.Read = ElectricalReader.Read(folder, profile);
             if (survey.Read.Floors.Count == 0) return survey;
 
@@ -73,5 +75,43 @@ namespace SleevesOpenings.Electrical
             string.Join("\n", Read.Floors.Where(f => f.Apartments > 0).OrderBy(f => FloorKey.Order(f.Floor))
                 .Select(f => FloorKey.Describe(f.Floor) + ": " + f.Apartments + " apartments" +
                              (f.NumbersText.Length > 0 ? " (" + f.NumbersText + ")" : "")));
-    }
+            /// <summary>
+        /// A detached or never-saved model has no path to look next to. The architect's folder is then where the model's
+        /// own DWG links come from (a folder of per-floor drawings), or next to its Revit links (Xref\RVT Xref\STR.rvt
+        /// sits beside Xref\Xref AR). Cloud link paths are skipped. Null when nothing on disk fits.
+        /// </summary>
+        private static string LinkedDrawingsFolder(Document doc, DwgProfile profile)
+        {
+            var paths = new List<string>();
+            foreach (var t in new FilteredElementCollector(doc).OfClass(typeof(CADLinkType)).Cast<CADLinkType>()) paths.Add(LinkPath(t));
+            foreach (var t in new FilteredElementCollector(doc).OfClass(typeof(RevitLinkType)).Cast<RevitLinkType>()) paths.Add(LinkPath(t));
+            foreach (var p in paths.Where(x => x != null).Distinct())
+            {
+                string dir = System.IO.Path.GetDirectoryName(p);
+                if (dir == null || !System.IO.Directory.Exists(dir)) continue;
+                if (p.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase) &&
+                    System.IO.Directory.EnumerateFiles(dir, "*.dwg").Any(f => FloorKey.FileFloors(System.IO.Path.GetFileName(f)).Count > 0))
+                {
+                    App.Log("ELEC| xref folder taken from the model's DWG links: " + dir);
+                    return dir;
+                }
+                string near = ElectricalReader.FindFolder(p, profile);
+                if (near != null) { App.Log("ELEC| xref folder found next to the link " + System.IO.Path.GetFileName(p) + ": " + near); return near; }
+            }
+            return null;
+        }
+
+        private static string LinkPath(ElementType link)
+        {
+            try
+            {
+                var r = link is CADLinkType c ? c.GetExternalFileReference() : (link as RevitLinkType)?.GetExternalFileReference();
+                var mp = r?.GetAbsolutePath();
+                if (mp == null || mp.Empty) return null;
+                string s = ModelPathUtils.ConvertModelPathToUserVisiblePath(mp);
+                return string.IsNullOrEmpty(s) || s.IndexOf("://", StringComparison.Ordinal) >= 0 ? null : s;
+            }
+            catch (Exception) { return null; }
+        }
+}
 }

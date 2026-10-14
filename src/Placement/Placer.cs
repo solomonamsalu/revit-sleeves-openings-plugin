@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -225,11 +225,17 @@ namespace SleevesOpenings.Placement
             bool halfOf = paramName.IndexOf("radius", StringComparison.OrdinalIgnoreCase) >= 0 || HalfName.IsMatch(paramName);
             double value = halfOf ? inches / 2 : inches;
             double before = p.AsDouble();
-            bool ok = p.Set(Units.InchesToFeet(value));
+            double wanted = Units.InchesToFeet(value);
+            bool ok = p.Set(wanted);
             // a size that does not stick is otherwise invisible until someone measures the opening on the sheet
-            if (ok && Math.Abs(p.AsDouble() - Units.InchesToFeet(value)) <= 1e-6) return true;
+            if (ok && Math.Abs(p.AsDouble() - wanted) <= 1e-6) return true;
+            // some families report the old value until they regenerate, so only a disagreement that survives one is real
+            try { e.Document.Regenerate(); } catch (Exception) { }
+            p = e.LookupParameter(paramName) ?? p;
+            double now = p.AsDouble();
+            if (ok && Math.Abs(now - wanted) <= 1e-6) return true;
             App.Log($"Size NOT applied: '{paramName}' on {e.Id} ({(e is FamilySymbol ? "type" : "instance")}) wanted {Units.FormatInches(value)}, " +
-                    $"Set returned {ok}, was {Units.FormatInches(before * 12)}, now {Units.FormatInches(p.AsDouble() * 12)}");
+                    $"Set returned {ok}, was {Units.FormatInches(before * 12)}, now {Units.FormatInches(now * 12)}");
             return false;
         }
 

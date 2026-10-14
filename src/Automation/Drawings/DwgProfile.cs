@@ -107,6 +107,9 @@ namespace SleevesOpenings.Automation.Drawings
         /// <summary>Layers of the architect's doors: the riser keeps out of doorways and door swings.</summary>
         [JsonProperty("architecturalDoorLayers")] public string ArchitecturalDoorLayers { get; set; } = @"DOOR";
 
+        /// <summary>Layers of the architect's shaft and chase outlines: inside one is where the riser goes (rule 21).</summary>
+        [JsonProperty("architecturalShaftLayers")] public string ArchitecturalShaftLayers { get; set; } = @"SHAFT|CHASE";
+
         /// <summary>Regex on text naming the electrical/meter room, which is where the riser starts (electrical rule 3). Null = off.</summary>
         [JsonProperty("electricalRoomText")] public string ElectricalRoomText { get; set; } = @"^ELEC(TRIC|TRICAL)?\.?\s*(ROOM|RM\.?|CLOSET|CL\.?)?$|^METER\s*(ROOM|RM\.?|BANK)?$";
 

@@ -24,9 +24,11 @@ namespace SleevesOpenings.Electrical
             public List<(double X0, double Y0, double X1, double Y1)> DoorLines = new List<(double X0, double Y0, double X1, double Y1)>();
             /// <summary>Window lines: no riser goes there, and a room does not end at a window's gap in its wall.</summary>
             public List<(double X0, double Y0, double X1, double Y1)> Windows = new List<(double X0, double Y0, double X1, double Y1)>();
+            /// <summary>Shaft and chase outlines (dwgProfile.architecturalShaftLayers): inside a closed one is where a riser goes.</summary>
+            public List<(double X0, double Y0, double X1, double Y1)> Shafts = new List<(double X0, double Y0, double X1, double Y1)>();
             /// <summary>Door swings: hinge (arc centre) and the arc's two ends.</summary>
             public List<((double X, double Y) Hinge, (double X, double Y) A, (double X, double Y) B)> Swings = new List<((double X, double Y) Hinge, (double X, double Y) A, (double X, double Y) B)>();
-            public int Count => Walls.Count + DoorLines.Count + Windows.Count;
+            public int Count => Walls.Count + DoorLines.Count + Windows.Count + Shafts.Count;
         }
 
         /// <summary>Window layers (A-GLAZ, A-WINDOW): part of the wall a room is closed by.</summary>
@@ -42,8 +44,9 @@ namespace SleevesOpenings.Electrical
         {
             var wall = Rx(profile?.ArchitecturalWallLayers);
             var door = Rx(profile?.ArchitecturalDoorLayers);
+            var shaft = Rx(profile?.ArchitecturalShaftLayers);
             var plan = new Plan();
-            if (wall == null && door == null) return plan;
+            if (wall == null && door == null && shaft == null) return plan;
 
             var best = new Dictionary<string, Plan>(StringComparer.OrdinalIgnoreCase);
             foreach (var ii in new FilteredElementCollector(doc).OfClass(typeof(ImportInstance)).Cast<ImportInstance>())
@@ -66,7 +69,7 @@ namespace SleevesOpenings.Electrical
                     var options = new Options { IncludeNonVisibleObjects = true };
                     if (owner != null) options.View = owner;
                     var geometry = ii.get_Geometry(options);
-                    if (geometry != null) Walk(geometry, doc, one, wall, door);
+                    if (geometry != null) Walk(geometry, doc, one, wall, door, shaft);
                 }
                 catch (Exception ex) { App.Log($"ELEC| {name} on {level.Name} not read: {ex.Message}"); continue; }
                 if (one.Count == 0) continue;
@@ -78,12 +81,13 @@ namespace SleevesOpenings.Electrical
                 plan.Walls.AddRange(kv.Value.Walls);
                 plan.DoorLines.AddRange(kv.Value.DoorLines);
                 plan.Windows.AddRange(kv.Value.Windows);
+                plan.Shafts.AddRange(kv.Value.Shafts);
                 plan.Swings.AddRange(kv.Value.Swings);
             }
             return plan;
         }
 
-        private static void Walk(GeometryElement geometry, Document doc, Plan plan, Regex wall, Regex door, string blockLayer = null)
+        private static void Walk(GeometryElement geometry, Document doc, Plan plan, Regex wall, Regex door, Regex shaft, string blockLayer = null)
         {
             // AutoCAD: what a block draws on layer 0 takes the layer the block is inserted on (a door block on A-DOOR)
             string LayerOf(GeometryObject o)
@@ -97,13 +101,14 @@ namespace SleevesOpenings.Electrical
                 {
                     string insert = LayerOf(gi);
                     var inner = gi.GetInstanceGeometry();
-                    if (inner != null) Walk(inner, doc, plan, wall, door, insert != "" && insert != "0" ? insert : blockLayer);
+                    if (inner != null) Walk(inner, doc, plan, wall, door, shaft, insert != "" && insert != "0" ? insert : blockLayer);
                     continue;
                 }
                 string layer = LayerOf(obj);
                 bool isWall = wall != null && wall.IsMatch(layer), isDoor = !isWall && door != null && door.IsMatch(layer);
-                bool isWindow = !isWall && !isDoor && WindowLayers.IsMatch(layer);
-                if (!isWall && !isDoor && !isWindow) continue;
+                bool isShaft = !isWall && !isDoor && shaft != null && shaft.IsMatch(layer);
+                bool isWindow = !isWall && !isDoor && !isShaft && WindowLayers.IsMatch(layer);
+                if (!isWall && !isDoor && !isWindow && !isShaft) continue;
 
                 IList<XYZ> pts;
                 if (obj is Curve curve)
@@ -114,7 +119,7 @@ namespace SleevesOpenings.Electrical
                 }
                 else if (obj is PolyLine poly) pts = poly.GetCoordinates();
                 else continue;
-                var into = isWall ? plan.Walls : isDoor ? plan.DoorLines : plan.Windows;
+                var into = isWall ? plan.Walls : isDoor ? plan.DoorLines : isShaft ? plan.Shafts : plan.Windows;
                 for (int i = 1; i < pts.Count; i++)
                     if (pts[i - 1].DistanceTo(pts[i]) > 1e-6) into.Add((pts[i - 1].X, pts[i - 1].Y, pts[i].X, pts[i].Y));
             }

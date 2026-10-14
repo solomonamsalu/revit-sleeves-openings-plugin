@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Forms;
@@ -106,7 +106,8 @@ namespace SleevesOpenings.Commands
                 }
 
                 // One riser (the manual describes one): a riser already in the model is replaced, not stacked on.
-                var existing = RiserIndex.AllOpenings(doc).Where(o => o.Data.System == SystemKind.Electrical.ToString()).ToList();
+                // the add-in's own riser only: an adopted one is the office's hand-placed sleeve, never offered for deletion
+                var existing = RiserIndex.AllOpenings(doc).Where(o => o.Data.System == SystemKind.Electrical.ToString() && !o.Data.Adopted).ToList();
                 bool replace = false;
                 if (existing.Count > 0)
                 {
@@ -128,11 +129,67 @@ namespace SleevesOpenings.Commands
                 }
                 var replacing = replace ? new HashSet<ElementId>(existing.Select(o => o.Instance.Id)) : new HashSet<ElementId>();
 
+                // Sleeves placed by hand carry none of the add-in's data, so the search cannot keep clear of them until they
+                // are adopted. On an office model that is most of the sleeves: offer the adoption here instead of leaving
+                // the riser to land on one of them.
+                var adopt = new Adopter(doc, rules, state).Scan();
+                if (adopt.Candidates.Count > 0)
+                {
+                    App.Log("ELEC| ADOPT " + adopt.Candidates.Count + " hand-placed sleeve(s)/opening(s) not yet adopted, " + adopt.AlreadyStamped + " already adopted");
+                    var td = new TaskDialog("Electrical riser")
+                    {
+                        MainInstruction = $"{adopt.Candidates.Count} existing sleeve(s) and opening(s) are not adopted",
+                        MainContent = "They were placed by hand, so the riser search does not see them and may land on one. Adopting stamps them " +
+                                      "with the add-in's data (nothing is moved or resized), the same as Tools > Adopt Existing.",
+                        AllowCancellation = true
+                    };
+                    td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Adopt them now, then find the riser");
+                    td.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, "Continue without them (the search ignores them)");
+                    var pick = td.Show();
+                    if (pick == TaskDialogResult.CommandLink1)
+                    {
+                        // binds the shared parameters in a transaction of its own, so before the adopting one opens
+                        try { PlaceCommandBase.EnsureSharedParams(doc, rules, state); } catch (Exception ex) { App.Log("ELEC| ADOPT shared params not bound: " + ex.Message); }
+                        using (var t = new Transaction(doc, "Sleeves & Openings: Adopt existing"))
+                        {
+                            t.Start();
+                            int written = new Adopter(doc, rules, state).Apply(adopt.Candidates);
+                            t.Commit();
+                            App.Log("ELEC| ADOPT stamped " + written);
+                        }
+                    }
+                    else if (pick == TaskDialogResult.CommandLink2) App.Log("ELEC| ADOPT skipped by the user");
+                    else return Result.Cancelled;
+                }
+
                 // Where it goes: found from the drawings (rules 3, 10-15, 20-21, 26-28), or clicked and then checked the same way.
                 Cursor.Current = Cursors.WaitCursor;
                 ElectricalLocator locator;
                 try { locator = new ElectricalLocator(doc, rules, floors.Select(f => f.Level).ToList(), survey, replacing, m => App.Log("ELEC| " + m)); }
                 finally { Cursor.Current = Cursors.Default; }
+
+                // The structural checks (rules 26-28, slab edge) only see what is in this model and its loaded links. With
+                // nothing there every spot passes them, which reads as a clean result when nothing was checked at all.
+                if (!locator.StructureSeen)
+                {
+                    App.Log("ELEC| WARNING no columns, beams, slabs or walls on any riser level: the structural model is not loaded, rules 26-28 NOT checked");
+                    var td = new TaskDialog("Electrical riser")
+                    {
+                        MainInstruction = "No structure found in this model or its loaded links",
+                        MainContent = "No columns, beams, slabs or walls were found on any riser level, so the spot cannot be checked against columns " +
+                                      "(rule 26), shear walls (27), beams (28) or the slab edge. The engineer rejects openings within 1'-0\" of a column.\n\n" +
+                                      "Load the structural model as a link (Insert > Link Revit) and run again, or continue and check the spot on the structural plans yourself.",
+                        AllowCancellation = true
+                    };
+                    td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Cancel and load the structural link");
+                    td.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, "Continue without the structural checks");
+                    if (td.Show() != TaskDialogResult.CommandLink2) { App.Log("ELEC| stopped: no structure loaded"); return Result.Cancelled; }
+                    App.Log("ELEC| user continued without structure");
+                }
+                var noWalls = locator.LevelsWithoutWalls;
+                if (noWalls.Count > 0)
+                    App.Log("ELEC| WARNING no wall lines on " + string.Join(", ", noWalls) + ": the room there is the nearest label, not a check " +
+                            "(dwgProfile.architecturalWallLayers = '" + (rules.DwgProfile?.ArchitecturalWallLayers ?? "") + "')");
 
                 List<ElectricalSegment> segments;
                 var found = new List<RiserRun>();
@@ -151,7 +208,7 @@ namespace SleevesOpenings.Commands
                     segments = ElectricalPlanner.Segments(floors, e, columns);
                     for (int i = 0; i < segments.Count && i < found.Count; i++) segments[i].Point = found[i].Point;
 
-                    switch (Propose(segments, found, survey))
+                    switch (Propose(segments, found, survey, locator))
                     {
                         case TaskDialogResult.CommandLink1: break;
                         case TaskDialogResult.CommandLink2:
@@ -265,7 +322,7 @@ namespace SleevesOpenings.Commands
                                 $"{rules.Naming.Electrical} - {seg.Circles} CONDUITS");
                             spec.Riser = riser;
                             var inst = placer.Place(spec, boxSym, boxMap, level, seg.Point);
-                            CentreOn(doc, inst, seg.Point, level);
+                            CentreOn(doc, inst, seg.Point, level, "box");
                             openings++;
                             LogPlaced("BOX", inst, level, boxMap, $"wanted {seg.Width}\" x {seg.Length}\"", !dumped);
                             dumped = true;
@@ -278,6 +335,9 @@ namespace SleevesOpenings.Commands
                         var spec = OpeningSpec.Round(SystemKind.Electrical, e.RoofSleeveDiameter, rules.Naming.Electrical);
                         spec.Riser = riser;
                         var inst = placer.Place(spec, rndSym, rndMap, roof, roofAt);
+                        // the same centring the boxes get: without it a family whose insertion point is off its middle
+                        // leaves the sleeve beside the riser, and Final Check reads that as an offset (rule 22-23)
+                        CentreOn(doc, inst, roofAt, roof, "sleeve");
                         openings++;
                         LogPlaced("ROOF SLEEVE", inst, roof, rndMap, $"wanted {e.RoofSleeveDiameter}\" dia", false);
                         foreach (var n in roofNotes) App.Log("ELEC| ROOF check: " + n);
@@ -358,9 +418,11 @@ namespace SleevesOpenings.Commands
         }
 
         /// <summary>Shows what the search found. CommandLink1 = place it, CommandLink2 = click instead.</summary>
-        private static TaskDialogResult Propose(List<ElectricalSegment> segments, List<RiserRun> runs, ElectricalSurvey survey)
+        private static TaskDialogResult Propose(List<ElectricalSegment> segments, List<RiserRun> runs, ElectricalSurvey survey, ElectricalLocator locator)
         {
             var lines = new List<string>();
+            if (!locator.StructureSeen)
+                lines.Add("NO STRUCTURE LOADED: columns, shear walls, beams and the slab edge were not checked (rules 26-28). Check the spot on the structural plans.");
             for (int i = 0; i < segments.Count && i < runs.Count; i++)
             {
                 var s = segments[i]; var r = runs[i];
@@ -370,13 +432,19 @@ namespace SleevesOpenings.Commands
                       $"{r.Distance:0.#} ft from {(i == 0 ? "the " + survey.Read.Start.RoomText.ToLowerInvariant() : "the run below")}, in {string.Join(" / ", r.Rooms.Distinct())}" +
                       (r.Unnamed ? " — NO named closet or shaft would do here, check this spot" : ""));
             }
+            // the room name is only as good as the walls the drawing carries: say so rather than let it read as a check
+            var blind = runs.Where(r => r.Point != null).SelectMany(r => r.NoWalls).Distinct().ToList();
+            if (blind.Count > 0)
+                lines.Add($"The drawing for {string.Join(", ", blind)} carries no walls, so on {(blind.Count == 1 ? "that floor" : "those floors")} " +
+                          "the room name is the nearest label, not a check, and whether the spot sits inside a wall was not tested.");
             foreach (var l in lines) App.Log("ELEC| PROPOSAL " + l);
             var td = new TaskDialog("Electrical riser")
             {
                 MainInstruction = runs.Any(r => r.Point == null) ? "No allowed spot for some floors — you will click those"
                                 : segments.Count == 1 ? "Found a spot that runs straight up" : $"Found the riser in {segments.Count} runs ({segments.Count - 1} offset(s))",
-                MainContent = string.Join("\n", lines) + "\n\n(\"?\" = the drawing names no room there.) Against a wall, clear of columns, beams, shear walls " +
-                              "and other openings, in a closet or shaft where the drawings name one. Check it on the plans after placing.",
+                MainContent = string.Join("\n", lines) + "\n\n(\"?\" = the drawing names no room there.) Clear of columns, beams, shear walls and other " +
+                              "openings, in a closet or shaft where the drawings name one, as close to the electrical room as a clear path allows " +
+                              "(rule 3). Check it on the plans after placing.",
                 AllowCancellation = true
             };
             td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Place it there");
@@ -385,43 +453,27 @@ namespace SleevesOpenings.Commands
         }
 
         /// <summary>
-        /// Moves the box so its middle sits on the riser point, where the circles are drawn. The office Openings family is not
-        /// drawn around its insertion point (it keeps the box's top edge 6" above it and sizes downward), so placed at the
-        /// point the box sat above its circles. Measured on the box's solid, else on the lines it draws in the level's floor
-        /// plan (this family's box is plan lines only). Inside a transaction.
+        /// Moves the opening so the middle of what it draws sits on the riser point, where the circles are drawn. The office
+        /// Openings family is not drawn around its insertion point (it keeps the box's top edge 6" above it and sizes
+        /// downward), so placed at the point the box sat above its circles. Inside a transaction.
         /// </summary>
-        private static void CentreOn(Document doc, FamilyInstance inst, XYZ point, Level level)
+        private static void CentreOn(Document doc, FamilyInstance inst, XYZ point, Level level, string what)
         {
             doc.Regenerate();                                   // the size just set, so the box is the new one
-            double x0 = double.MaxValue, y0 = double.MaxValue, x1 = double.MinValue, y1 = double.MinValue;
-            void Add(IEnumerable<XYZ> pts)
+            var shape = new ShapeReader(doc).Of(inst, level);
+            if (!shape.Found)
             {
-                foreach (var p in pts) { x0 = Math.Min(x0, p.X); y0 = Math.Min(y0, p.Y); x1 = Math.Max(x1, p.X); y1 = Math.Max(y1, p.Y); }
+                App.Log($"ELEC| CENTRE {what} {inst.Id} on '{level.Name}': nothing to measure, left at its insertion point");
+                return;
             }
-            void Take(GeometryElement geo, bool lines)
-            {
-                if (geo == null) return;
-                foreach (var g in geo)
-                {
-                    if (g is GeometryInstance gi) Take(gi.GetInstanceGeometry(), lines);
-                    else if (!lines && g is Solid s && s.Volume > 0) foreach (Edge edge in s.Edges) Add(edge.Tessellate());
-                    else if (lines && g is Curve c) Add(c.Tessellate());
-                }
-            }
-            string measured = "solid";
-            Take(inst.get_Geometry(new Options { DetailLevel = ViewDetailLevel.Fine }), false);
-            if (x0 > x1)
-            {
-                var view = ElectricalPlanner.PlanOf(doc, level);
-                if (view != null) { Take(inst.get_Geometry(new Options { View = view }), true); measured = "plan lines in '" + view.Name + "'"; }
-            }
-            if (x0 > x1) { App.Log($"ELEC| CENTRE box {inst.Id} on '{level.Name}': nothing to measure, left at its insertion point"); return; }
 
-            double dx = point.X - (x0 + x1) / 2, dy = point.Y - (y0 + y1) / 2;
-            App.Log($"ELEC| CENTRE box {inst.Id} on '{level.Name}': {measured} {Units.FormatInches((x1 - x0) * 12)} x {Units.FormatInches((y1 - y0) * 12)}, " +
+            var mid = shape.Middle(point.Z);
+            double dx = point.X - mid.X, dy = point.Y - mid.Y;
+            bool centred = Math.Abs(dx) < 1.0 / 192 && Math.Abs(dy) < 1.0 / 192;    // within 1/16"
+            App.Log($"ELEC| CENTRE {what} {inst.Id} on '{level.Name}': {shape.Source} {Units.FormatInches(shape.Width * 12)} x {Units.FormatInches(shape.Length * 12)}, " +
                     $"its middle was {Units.FormatInches(Math.Abs(dx) * 12)} {(dx > 0 ? "left" : "right")} and {Units.FormatInches(Math.Abs(dy) * 12)} {(dy > 0 ? "below" : "above")} the riser point" +
-                    (Math.Abs(dx) < 1.0 / 192 && Math.Abs(dy) < 1.0 / 192 ? "; already centred" : "; moved onto it"));
-            if (Math.Abs(dx) < 1.0 / 192 && Math.Abs(dy) < 1.0 / 192) return;   // within 1/16"
+                    (centred ? "; already centred" : "; moved onto it"));
+            if (centred) return;
             ElementTransformUtils.MoveElement(doc, inst.Id, new XYZ(dx, dy, 0));
         }
 
