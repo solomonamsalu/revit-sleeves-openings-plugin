@@ -94,6 +94,22 @@ namespace SleevesOpenings.Automation.Drawings
         [JsonProperty("apartmentNumberAttributes", ObjectCreationHandling = ObjectCreationHandling.Replace)]
         public List<string> ApartmentNumberAttributes { get; set; } = new List<string> { "#", "APT#", "APTNO", "NUMBER", "NO", "UNIT" };
 
+        /// <summary>
+        /// Apartment names written as text when the drawing has no tag blocks ("L2 BEDROOM APART. 1C", "APT 4B", "UNIT 12"):
+        /// the group named n is the unit. Each unit counted once per floor.
+        /// </summary>
+        [JsonProperty("apartmentLabelText")] public string ApartmentLabelText { get; set; } =
+            @"(?:APT|APART(?:MENT)?|UNIT)\.?\s*(?:NO\.?|#)?\s*(?<n>\d{1,2}[A-Z]|\d{3,4}[A-Z]?)\b";
+
+        /// <summary>Layers of the architect's walls (electrical riser: what it goes against, rules 20-21).</summary>
+        [JsonProperty("architecturalWallLayers")] public string ArchitecturalWallLayers { get; set; } = @"WALL";
+
+        /// <summary>Layers of the architect's doors: the riser keeps out of doorways and door swings.</summary>
+        [JsonProperty("architecturalDoorLayers")] public string ArchitecturalDoorLayers { get; set; } = @"DOOR";
+
+        /// <summary>Layers of the architect's shaft and chase outlines: inside one is where the riser goes (rule 21).</summary>
+        [JsonProperty("architecturalShaftLayers")] public string ArchitecturalShaftLayers { get; set; } = @"SHAFT|CHASE";
+
         /// <summary>Regex on text naming the electrical/meter room, which is where the riser starts (electrical rule 3). Null = off.</summary>
         [JsonProperty("electricalRoomText")] public string ElectricalRoomText { get; set; } = @"^ELEC(TRIC|TRICAL)?\.?\s*(ROOM|RM\.?|CLOSET|CL\.?)?$|^METER\s*(ROOM|RM\.?|BANK)?$";
 
@@ -102,5 +118,19 @@ namespace SleevesOpenings.Automation.Drawings
         /// room, the electrical services come from the mechanical room and the openings go as close to it as possible.
         /// </summary>
         [JsonProperty("mechanicalRoomText")] public string MechanicalRoomText { get; set; } = @"^MECH(ANICAL)?\.?\s*(ROOM|RM\.?|EQUIP(MENT)?)?$|^BOILER\s*(ROOM|RM\.?)?$";
+
+        /// <summary>
+        /// Regex on room names where a riser belongs (rules 20-21: closets, shafts, chases, other dead spaces). The electrical
+        /// riser search prefers a spot whose room carries one of these names on every floor.
+        /// </summary>
+        [JsonProperty("riserSpaceText")] public string RiserSpaceText { get; set; } =
+            @"^(CL|CLO|CLOS|CLST)\.?$|CLOSET|^W\.?\s*I\.?\s*C\.?$|LINEN|COAT|PANTRY|SHAFT|CHASE|^MECH|^ELEC|METER|UTIL|STOR|JANITOR|^J\.?C\.?$|TRASH|REFUSE|COMPACTOR|BOILER|PLUMB|DEAD\s*SPACE";
+
+        /// <summary>
+        /// Regex on room names a riser must not go through: the living spaces of an apartment (rules 17, 20-21), corridors, and
+        /// the elevator and stairs, which take no other services.
+        /// </summary>
+        [JsonProperty("livingSpaceText")] public string LivingSpaceText { get; set; } =
+            @"BED\s*R(OO)?M|^BR\.?\s*\d*$|LIVING|DINING|KITCHEN|^KIT\.?$|BATH|TOILET|POWDER|FOYER|^HALL|CORRIDOR|LOBBY|OFFICE|^DEN$|STUDY|FAMILY|LAUNDRY|PLAY|GYM|MEDIA|LOUNGE|BALCONY|TERRACE|BABY|NURSERY|DINETTE|K'?NETTE|KITCHENETTE|PARKING|GARAGE|ELEVATOR|^ELEV\.?$|STAIR";
     }
 }

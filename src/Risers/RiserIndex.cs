@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -13,7 +13,28 @@ namespace SleevesOpenings.Risers
         public FamilyInstance Instance;
         public OpeningData Data;
         public Level Level;
+        /// <summary>The instance's location, which for some families is not where the hole is: see <see cref="Centre"/>.</summary>
         public XYZ Point;
+
+        /// <summary>
+        /// Where the hole actually is: the middle of what the family draws. The office Openings family keeps its box
+        /// below its insertion point, so a box and a round sleeve drawn in line sit 4.5" apart by their locations -
+        /// comparing Point across floors reads that as a riser offset. Measured once; Point when nothing can be measured.
+        /// </summary>
+        public XYZ Centre
+        {
+            get
+            {
+                if (_centre != null) return _centre;
+                if (Instance == null || Point == null) return _centre = Point;
+                var shape = (Shapes ?? (Shapes = new ShapeReader(Instance.Document))).Of(Instance, Level);
+                return _centre = shape.Found ? shape.Middle(Point.Z) : Point;
+            }
+        }
+        private XYZ _centre;
+
+        /// <summary>Shared by the records of one scan so each level's plan view is looked up once.</summary>
+        internal ShapeReader Shapes;
         /// <summary>The riser this opening serves for one check only (a hand-placed sleeve an Auto Run used), not written to it.</summary>
         public string RiserOverride;
         public string Riser => RiserOverride ?? Data.Riser;
@@ -46,10 +67,10 @@ namespace SleevesOpenings.Risers
             }
         }
 
-        /// <summary>Openings whose XY differs from the one above by more than 1" (manual: avoid offsets).</summary>
+        /// <summary>Openings whose middle differs from the one above by more than 1" (manual: avoid offsets).</summary>
         public int OffsetCount => OffsetSteps.Count;
 
-        /// <summary>Each step where an opening's XY differs from the one below it by more than 1": (below, here).</summary>
+        /// <summary>Each step where an opening's middle differs from the one below it by more than 1": (below, here).</summary>
         public List<(OpeningRecord Below, OpeningRecord Here)> OffsetSteps
         {
             get
@@ -57,7 +78,7 @@ namespace SleevesOpenings.Risers
                 var ordered = Openings.OrderBy(o => o.Level.Elevation).ToList();
                 var steps = new List<(OpeningRecord, OpeningRecord)>();
                 for (int i = 1; i < ordered.Count; i++)
-                    if (Dist(ordered[i].Point, ordered[i - 1].Point) > Units.InchesToFeet(1)) steps.Add((ordered[i - 1], ordered[i]));
+                    if (Dist(ordered[i].Centre, ordered[i - 1].Centre) > Units.InchesToFeet(1)) steps.Add((ordered[i - 1], ordered[i]));
                 return steps;
             }
         }
@@ -89,6 +110,7 @@ namespace SleevesOpenings.Risers
         public static List<OpeningRecord> AllOpenings(Document doc)
         {
             var list = new List<OpeningRecord>();
+            var shapes = new ShapeReader(doc);
             foreach (var inst in new FilteredElementCollector(doc).OfClass(typeof(FamilyInstance)).Cast<FamilyInstance>())
             {
                 var data = OpeningData.Read(inst);
@@ -96,7 +118,7 @@ namespace SleevesOpenings.Risers
                 var level = LevelOf(doc, inst);
                 var pt = (inst.Location as LocationPoint)?.Point;
                 if (level == null || pt == null) continue;
-                list.Add(new OpeningRecord { Instance = inst, Data = data, Level = level, Point = pt });
+                list.Add(new OpeningRecord { Instance = inst, Data = data, Level = level, Point = pt, Shapes = shapes });
             }
             return list;
         }

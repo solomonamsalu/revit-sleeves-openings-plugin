@@ -1,4 +1,4 @@
-{
+﻿{
   "version": 1,
   "_comment": "All lengths are in INCHES. Source: Sleeves & Openings Standards Manual. Edit family names/params to match your library.",
 
@@ -101,8 +101,26 @@
       "conduitSpacingCenterToCenter": 0.75,
       "extraCirclesForRoof": 1,
       "roofSleeveDiameter": 2,
+      "_roofIndoorMaxSpan": "Rule 17: the roof sleeve goes inside a room on the roof (bulkhead, mechanical room, stair enclosure) when one is within searchRadius; a room is walls on all four sides no further apart than this. The open roof is walled by its parapets but far wider. 0 = no indoor preference.",
+      "roofIndoorMaxSpan": 300,
+      "_riserInShaft": "Rule 21 (shafts): a spot wholly inside a bigger existing opening (a shaft drawn as one opening, at least four times the riser's area) is allowed and counts as a riser space instead of being blocked by openingClearance. The office runs the electrical riser inside the exhaust shaft this way.",
+      "riserInShaft": true,
+      "_shaftSystems": "Regex on the system of an existing opening that counts as such a shaft: duct shafts only. A garbage chute, a pipe sleeve or a refrigeration opening is the size of what goes through it, with no room beside it for conduits.",
+      "shaftSystems": "^(Exhaust|ERV)$",
+      "_unnamedShaftMaxSpan": "Rule 21 (shafts, chases): a spot walled in on all four sides, the walls no further apart than this, that no room name reaches is an unlabelled shaft or chase and counts as a riser space. The office runs its electrical riser in such a space beside the duct and chute openings. 0 = off.",
+      "unnamedShaftMaxSpan": 96,
+      "_unnamedShaftMinSpan": "...and no narrower than this either way: a sliver between two wall lines is a wall cavity, not a shaft.",
+      "unnamedShaftMinSpan": 18,
       "circleDiameter": 0.75,
-      "openingMargin": 0
+      "openingMargin": 0,
+      "_search": "Finding the riser's spot (rules 3, 10, 20-21): searched within searchRadius of the electrical room in searchStep steps; the opening sits wallGapMin..wallGapMax from a wall face and openingClearance clear of other openings.",
+      "searchRadius": 360,
+      "searchStep": 6,
+      "wallGapMin": 1,
+      "wallGapMax": 12,
+      "openingClearance": 2,
+      "_avoidDoorways": "true = the riser keeps out of doorways and door swings (doorway width, a leaf deep, both sides of the wall).",
+      "avoidDoorways": true
     },
     "storm": {
       "sleeveOverPipe": 2,
@@ -220,9 +238,19 @@
     "apartmentTagBlocks": "^APT\\s*TAG$",
     "apartmentTagLayers": "APARTMENT",
     "apartmentNumberAttributes": [ "#", "APT#", "APTNO", "NUMBER", "NO", "UNIT" ],
+    "_apartmentLabelText": "When a drawing has no apartment tag blocks, apartments are counted from their names written as text ('L2 BEDROOM APART. 1C', 'APT 4B'); the group named n is the unit.",
+    "apartmentLabelText": "(?:APT|APART(?:MENT)?|UNIT)\\.?\\s*(?:NO\\.?|#)?\\s*(?<n>\\d{1,2}[A-Z]|\\d{3,4}[A-Z]?)\\b",
+    "_architecturalWallLayers": "Electrical riser search: the architect's wall layers (what the riser goes against) and door layers (it keeps out of doorways and swings).",
+    "architecturalWallLayers": "WALL",
+    "architecturalDoorLayers": "DOOR",
+    "_architecturalShaftLayers": "Layers of the architect's shaft and chase outlines (read from the DWGs linked in Revit): a spot inside a closed outline on these layers is a shaft, where the electrical riser goes (rule 21). Revit shaft openings in the model and its links count the same way.",
+    "architecturalShaftLayers": "SHAFT|CHASE",
     "_electricalRoomText": "Text naming the room the riser starts from (electrical rule 3). When no electrical room is named anywhere, the mechanical room is used instead, as the manual's note under the electrical rules says.",
     "electricalRoomText": "^ELEC(TRIC|TRICAL)?\\.?\\s*(ROOM|RM\\.?|CLOSET|CL\\.?)?$|^METER\\s*(ROOM|RM\\.?|BANK)?$",
-    "mechanicalRoomText": "^MECH(ANICAL)?\\.?\\s*(ROOM|RM\\.?|EQUIP(MENT)?)?$|^BOILER\\s*(ROOM|RM\\.?)?$"
+    "mechanicalRoomText": "^MECH(ANICAL)?S?\\.?\\s*(ROOM|RM\\.?|EQUIP(MENT)?)?$|^BOILER\\s*(ROOM|RM\\.?)?$",
+    "_riserSpaceText": "Electrical riser search: room names in the architect's drawings where a riser belongs (rules 20-21: closets, shafts, chases, dead spaces), and room names it must not go through (living spaces, corridors, elevator, stairs). A name matching both counts as a riser space.",
+    "riserSpaceText": "^(CL|CLO|CLOS|CLST)\\.?$|CLOSET|^W\\.?\\s*I\\.?\\s*C\\.?$|LINEN|COAT|PANTRY|SHAFT|CHASE|^MECH|^ELEC|METER|UTIL|STOR|JANITOR|^J\\.?C\\.?$|TRASH|REFUSE|COMPACTOR|BOILER|PLUMB|DEAD\\s*SPACE",
+    "livingSpaceText": "BED\\s*R(OO)?M|^BR\\.?\\s*\\d*$|LIVING|DINING|KITCHEN|^KIT\\.?$|BATH|TOILET|POWDER|FOYER|^HALL|CORRIDOR|LOBBY|OFFICE|^DEN$|STUDY|FAMILY|LAUNDRY|PLAY|GYM|MEDIA|LOUNGE|BALCONY|TERRACE|BABY|NURSERY|DINETTE|K'?NETTE|KITCHENETTE|PARKING|GARAGE|ELEVATOR|^ELEV\\.?$|STAIR"
   },
 
   "sleeveViews": {

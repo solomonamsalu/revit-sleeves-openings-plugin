@@ -24,15 +24,28 @@ namespace SleevesOpenings.UI
 
         public List<ElectricalSegment> Result { get; private set; }
 
+        /// <summary>Every level in the calculator with the apartments and offsets as the drafter left them (for the log).</summary>
+        public IReadOnlyList<ElectricalFloor> Floors => _model;
+
+        /// <summary>Find the riser's spot (and its offsets) from the drawings instead of clicking it.</summary>
+        public bool AutoLocate => _auto != null && _auto.Checked;
+
+        /// <summary>Circles per row (0 = square), for sizing the runs the search finds.</summary>
+        public int Columns => (int)_cols.Value;
+
+        private readonly CheckBox _auto;
+
         /// <summary>DialogResult.Retry means: the drafter asked to point at the architect's drawings instead.</summary>
         public const DialogResult FindDrawings = DialogResult.Retry;
 
-        public ElectricalForm(LevelMap levels, ElectricalRules rules, ElectricalSurvey survey = null)
+        /// <param name="riserLevels">The slabs the riser passes through, ascending (above the electrical room's floor).</param>
+        /// <param name="leftOut">Levels not in the riser and why, shown so the drafter can see them.</param>
+        /// <param name="canSearch">The drawings name the electrical room, so the spot can be searched for.</param>
+        public ElectricalForm(IList<ClassifiedLevel> riserLevels, LevelMap levels, ElectricalRules rules, ElectricalSurvey survey, string leftOut, bool canSearch)
         {
             _rules = rules;
             _survey = survey;
-            _model = levels.All
-                .Where(l => l.Role != LevelRole.Roof && l.Role != LevelRole.Bulkhead)
+            _model = riserLevels
                 .Select(l => new ElectricalFloor { Level = l.Level, Apartments = Apartments(l) })
                 .ToList();
 
@@ -44,13 +57,14 @@ namespace SleevesOpenings.UI
 
             var info = new Label
             {
-                Dock = DockStyle.Top, Height = 66, Padding = new Padding(12, 10, 12, 0), ForeColor = Color.DimGray,
+                Dock = DockStyle.Top, Height = string.IsNullOrEmpty(leftOut) ? 66 : 108, Padding = new Padding(12, 10, 12, 0), ForeColor = Color.DimGray,
                 Text = "One conduit circle per apartment above the floor + 1 for the roof, " + Units.FormatInches(rules.ConduitSpacingCenterToCenter) +
                        " c-c (electrical rules 5-9). The count stays the same all the way up unless the riser offsets; " +
                        "tick 'Offset above' on the floor where it moves and the floors above are recalculated (rules 11-14). " +
                        (survey != null && survey.Any
                            ? "Apartment counts were read from the architect's drawings — check them, they are editable."
-                           : "Start at the lowest level near the electrical room.")
+                           : "Start at the lowest level near the electrical room.") +
+                       (string.IsNullOrEmpty(leftOut) ? "" : "\nNot in the riser: " + leftOut)
             };
 
             var top = new Panel { Dock = DockStyle.Top, Height = 44, Padding = new Padding(12, 8, 12, 0) };
@@ -128,18 +142,41 @@ namespace SleevesOpenings.UI
             split.Panel1.Controls.Add(left);
             split.Panel2.Controls.Add(right);
 
-            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 56, Padding = new Padding(12) };
+            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 64, Padding = new Padding(12) };
             var ok = new Button { Text = "Place openings…", DialogResult = DialogResult.OK, Size = new Size(150, 32) };
             var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Size = new Size(100, 32) };
-            var hint = new Label { Text = "Next: click one location per segment on the plan (bottom segment first), then the roof gets one 2\" ELECTRIC sleeve.", AutoSize = true, ForeColor = Color.DimGray, Location = new Point(12, 20) };
+            const string clickHint = "Next: click one location per segment on the plan (bottom segment first), then the roof gets one 2\" ELECTRIC sleeve.";
+            const string autoHint = "Next: the riser's spot is found from the drawings (closet/shaft, against a wall, clear of structure) and shown for you to accept.";
+            var hint = new Label { Text = canSearch ? autoHint : clickHint, AutoSize = false, ForeColor = Color.DimGray, Location = new Point(12, 8), Height = 48 };
+            if (canSearch)
+            {
+                _auto = new CheckBox { Text = "Find the spot from the drawings", Checked = true, AutoSize = true, Location = new Point(12, 40) };
+                hint.Height = 32;
+                _auto.CheckedChanged += (o, e) =>
+                {
+                    hint.Text = _auto.Checked ? autoHint : clickHint;
+                    // the search decides the offsets itself; ticks are for the clicked riser
+                    _floors.Columns["Offset"].ReadOnly = _auto.Checked;
+                    if (_auto.Checked) foreach (DataGridViewRow r in _floors.Rows) r.Cells["Offset"].Value = false;
+                    Recalc();
+                };
+                bottom.Controls.Add(_auto);
+            }
             bottom.Controls.AddRange(new Control[] { hint, ok, cancel });
-            bottom.Resize += (o, e) => { cancel.Location = new Point(bottom.ClientSize.Width - 112, 12); ok.Location = new Point(cancel.Left - 160, 12); };
+            ok.BringToFront(); cancel.BringToFront();
+            bottom.Resize += (o, e) =>
+            {
+                cancel.Location = new Point(bottom.ClientSize.Width - 112, 16);
+                ok.Location = new Point(cancel.Left - 160, 16);
+                hint.Width = Math.Max(100, ok.Left - 24);          // the hint wraps instead of running under the buttons
+            };
 
             Controls.Add(split);
             Controls.Add(top);
             Controls.Add(info);
             Controls.Add(bottom);
             AcceptButton = ok; CancelButton = cancel;
+            if (AutoLocate) _floors.Columns["Offset"].ReadOnly = true;
             Recalc();
         }
 
@@ -152,8 +189,9 @@ namespace SleevesOpenings.UI
         /// <summary>Apartments the architect's drawings show on this level; the old 10-per-floor guess when they say nothing.</summary>
         private int Apartments(ClassifiedLevel level)
         {
+            // a drawing's count only means something when the drawings count apartments at all: none anywhere is "unknown", not 0
             var read = _survey?.For(level.Level);
-            if (read != null) return read.Apartments;
+            if (read != null && _survey.Any) return read.Apartments;
             return _survey != null && _survey.Any ? 0 : (level.Role == LevelRole.Apartment ? 10 : 0);
         }
 
@@ -161,8 +199,10 @@ namespace SleevesOpenings.UI
         {
             var read = _survey?.For(level);
             if (read == null) return _survey != null && _survey.Any ? "no drawing for this level" : "";
-            if (read.Apartments == 0) return "no apartment tags";
-            return read.Apartments + (read.NumbersText.Length > 0 ? " tags: " + read.NumbersText : " tags");
+            if (read.Apartments == 0) return "no apartments in " + read.File;
+            string how = read.CountedBy == "names" ? " named" : " tags";
+            return read.Apartments + (read.NumbersText.Length > 0 ? how + ": " + read.NumbersText : how) +
+                   (read.Notes.Any(n => n.StartsWith("typical")) ? " (typical " + read.File + ")" : "");
         }
 
         private void FillFromDrawings()

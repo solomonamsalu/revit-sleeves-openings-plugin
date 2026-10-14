@@ -43,10 +43,11 @@ namespace SleevesOpenings.Commands
                 if (td.Show() != TaskDialogResult.Yes || report.Candidates.Count == 0) return Result.Cancelled;
 
                 int written;
+                // binds the shared parameters in a transaction of its own, so before the adopting one opens
+                try { PlaceCommandBase.EnsureSharedParams(doc, rules, state); } catch (Exception ex) { App.Log("Adopt: shared params not bound: " + ex.Message); }
                 using (var t = new Transaction(doc, "Sleeves & Openings: Adopt existing"))
                 {
                     t.Start();
-                    try { PlaceCommandBase.EnsureSharedParams(doc, rules, state); } catch (Exception ex) { App.Log("Adopt: shared params not bound: " + ex.Message); }
                     written = new Adopter(doc, rules, state).Apply(report.Candidates);
                     t.Commit();
                 }
