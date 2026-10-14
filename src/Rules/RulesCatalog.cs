@@ -157,7 +157,7 @@ namespace SleevesOpenings.Rules
                 .F("systems.electrical.wallGapMin", "Riser: closest to a wall face", In)
                 .F("systems.electrical.wallGapMax", "Riser: farthest from a wall face", In, "Rules 20-21: against a wall, not mid-room.")
                 .F("systems.electrical.openingClearance", "Riser: clear of other openings", In)
-                .F("systems.electrical.avoidDoorways", "Riser: keep out of doorways and door swings", B, "Off for now, pending the office's review."));
+                .F("systems.electrical.avoidDoorways", "Riser: keep out of doorways and door swings", B));
 
             pages.Add(new RulePage { Title = "Pipe sleeves", Intro = "Sizes of the round sleeves the manual sets (storm, condensate, standpipe, bathtub). Inches." }
                 .H("Storm and area drains")

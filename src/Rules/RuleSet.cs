@@ -158,9 +158,8 @@ namespace SleevesOpenings.Rules
         [JsonProperty("wallGapMin")] public double WallGapMin { get; set; } = 1;
         [JsonProperty("wallGapMax")] public double WallGapMax { get; set; } = 12;
         [JsonProperty("openingClearance")] public double OpeningClearance { get; set; } = 2;
-        /// <summary>Keep the riser out of doorways and door swings. Off for now (office review pending).</summary>
-        [JsonProperty("avoidDoorways")] public bool AvoidDoorways { get; set; } = false;
-
+        /// <summary>Keep the riser out of doorways and door swings.</summary>
+        [JsonProperty("avoidDoorways")] public bool AvoidDoorways { get; set; } = true;
         /// <summary>Opening W x L (inches) for n circles in a grid with the given column count.</summary>
         public (double width, double length, int rows) OpeningFor(int circles, int columns)
         {

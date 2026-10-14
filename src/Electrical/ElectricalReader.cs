@@ -378,7 +378,7 @@ namespace SleevesOpenings.Electrical
         /// still where you stand). Which arc end is the open leaf is told by the leaf drawn from the hinge to it; when no
         /// leaf is drawn, the square a leaf's length around the hinge.
         /// </summary>
-        private static (double X0, double Y0, double X1, double Y1) Doorway((double X, double Y) h, (double X, double Y) a, (double X, double Y) b,
+        internal static (double X0, double Y0, double X1, double Y1) Doorway((double X, double Y) h, (double X, double Y) a, (double X, double Y) b,
                                                                            List<(double X0, double Y0, double X1, double Y1)> doorLines, double tol)
         {
             double leaf = Math.Max(Dist(h, a), Dist(h, b));

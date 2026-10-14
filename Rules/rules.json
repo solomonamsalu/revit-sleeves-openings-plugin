@@ -109,8 +109,8 @@
       "wallGapMin": 1,
       "wallGapMax": 12,
       "openingClearance": 2,
-      "_avoidDoorways": "true = the riser keeps out of doorways and door swings (doorway width, a leaf deep, both sides of the wall). Off until the office decides.",
-      "avoidDoorways": false
+      "_avoidDoorways": "true = the riser keeps out of doorways and door swings (doorway width, a leaf deep, both sides of the wall).",
+      "avoidDoorways": true
     },
     "storm": {
       "sleeveOverPipe": 2,
